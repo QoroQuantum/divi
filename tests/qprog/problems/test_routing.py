@@ -3,16 +3,28 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import itertools
+import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import divi.qprog.problems._binary as binary_module
+import divi.qprog.problems._routing as routing_module
 from divi.hamiltonians import qubo_to_ising, x_mixer, xy_mixer
-from divi.qprog.algorithms import QAOA
+from divi.qprog.algorithms import PCE, QAOA, ProgressivePCE
+from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.ensembles import PartitioningProgramEnsemble
 from divi.qprog.initial_states import SuperpositionState, build_block_xy_mixer_graph
-from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
+from divi.qprog.optimizers import (
+    GridSearchOptimizer,
+    MonteCarloOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.problems import (
+    BinaryOptimizationProblem,
     CVRPProblem,
     RoutingInstance,
     TSPProblem,
@@ -26,6 +38,8 @@ from divi.qprog.problems import (
 from divi.qprog.problems import parse_tsplib_file as parse_tsplib_file_public
 from divi.qprog.problems._routing import (
     _nint,
+    _patch_cycles_into_tour,
+    _split_cities_into_clusters,
     _unpack_explicit,
     create_cvrp_hubo_binary,
     create_cvrp_qubo,
@@ -59,6 +73,110 @@ def four_city_cost():
         [[0, 10, 15, 20], [10, 0, 35, 25], [15, 35, 0, 30], [20, 25, 30, 0]],
         dtype=float,
     )
+
+
+@pytest.fixture
+def two_bowties_problem():
+    return TSPProblem(_TWO_BOWTIES, max_cities_per_partition=4)
+
+
+def build_euclidean_cost(points):
+    xy = np.asarray(points, dtype=float)
+    return np.linalg.norm(xy[:, None] - xy[None, :], axis=2)
+
+
+# Index order 0-1-2-3 crosses itself (cost 2 + 2*sqrt(2)); the optimal tour costs 4.
+_BOWTIE = [(0, 0), (1, 1), (1, 0), (0, 1)]
+_TWO_BOWTIES = build_euclidean_cost([*_BOWTIE, *((x + 50, y) for x, y in _BOWTIE)])
+_TWO_BOWTIES_CLUSTERS = [[0, 1, 2, 3], [4, 5, 6, 7]]
+
+
+def compute_best_local_tour(cost):
+    """Cheapest round trip through every city of ``cost``, starting and ending at 0."""
+    return min(
+        ([0, *order, 0] for order in itertools.permutations(range(1, len(cost)))),
+        key=lambda tour: compute_tour_cost(tour, cost),
+    )
+
+
+def extend_with_tours(problem, choose_tour):
+    """Global solution vector holding ``choose_tour(sub_cost)`` for every partition."""
+    solution = [0] * problem.initial_solution_size()
+    for prog_id, cluster in zip(problem.decompose(), _TWO_BOWTIES_CLUSTERS):
+        sub_cost = _TWO_BOWTIES[np.ix_(cluster, cluster)]
+        solution = problem.extend_solution(solution, prog_id, choose_tour(sub_cost))
+    return solution
+
+
+def compute_diagonal_energies(problem, bits):
+    """Cost-Hamiltonian energy, loss constant included, of each row of ``bits``."""
+    hamiltonian = problem.cost_hamiltonian
+    z = 1 - 2 * bits
+    energies = np.full(len(bits), problem.loss_constant)
+    for pauli, coeff in zip(hamiltonian.paulis, hamiltonian.coeffs):
+        energies += coeff.real * np.prod(z[:, pauli.z], axis=1)
+    return energies
+
+
+def count_zz_terms(hamiltonian):
+    return sum(int(pauli.z.sum() == 2) for pauli in hamiltonian.paulis)
+
+
+def enumerate_route_splits(demands, capacity, n_vehicles):
+    """Every tuple of ``n_vehicles`` routes within ``capacity`` that serves each customer once."""
+    n_customers = len(demands) - 1
+    for order in itertools.permutations(range(1, len(demands))):
+        for cuts in itertools.combinations_with_replacement(
+            range(n_customers + 1), n_vehicles - 1
+        ):
+            bounds = (0, *cuts, n_customers)
+            routes = tuple(order[a:b] for a, b in itertools.pairwise(bounds))
+            if all(sum(demands[c] for c in route) <= capacity for route in routes):
+                yield routes
+
+
+def enumerate_one_hot_per_block_states(n_blocks, block_size):
+    """Every bit row with exactly one set qubit in each of ``n_blocks`` contiguous blocks."""
+    slots = np.array(list(itertools.product(range(block_size), repeat=n_blocks)))
+    bits = np.zeros((len(slots), n_blocks * block_size), dtype=int)
+    bits[np.arange(len(slots))[:, None], np.arange(n_blocks) * block_size + slots] = 1
+    return bits
+
+
+def enumerate_cvrp_manifold(problem, n_customers, n_vehicles):
+    """Bits, Hamiltonian energies and compactness of every one-slot-per-customer state."""
+    bits = enumerate_one_hot_per_block_states(n_customers, n_customers * n_vehicles)
+    occupancy = bits.reshape(len(bits), n_customers, n_vehicles, n_customers).sum(
+        axis=1
+    )
+    compact = (occupancy <= 1).all(axis=(1, 2)) & (
+        occupancy[:, :, 1:] <= occupancy[:, :, :-1]
+    ).all(axis=(1, 2))
+    return bits, compute_diagonal_energies(problem, bits), compact
+
+
+def replace_entry(cost, index, value):
+    changed = np.array(cost, dtype=float)
+    changed[index] = value
+    return changed
+
+
+def build_random_cost(rng, n_nodes):
+    cost = rng.random((n_nodes, n_nodes))
+    np.fill_diagonal(cost, 0.0)
+    return cost
+
+
+def compute_route_cost(routes, cost):
+    return sum(compute_tour_cost(route, cost) for route in routes)
+
+
+def seed_best_bitstrings(ensemble, bitstrings):
+    """Give each program of ``ensemble``, in order, a sampled distribution
+    concentrated on one bitstring, bypassing circuit execution."""
+    for program, bitstring in zip(ensemble.programs.values(), bitstrings):
+        program._results["best_probs"] = {"tag": {bitstring: 1.0}}
+        program._losses_history = [{"dummy_loss": 0.0}]
 
 
 def _write_file(tmp_path, text, name="instance.tsp"):
@@ -108,10 +226,10 @@ def _binary_cvrp_reference_energy(
 
 
 def _cvrp_one_hot_bits(assignments, n_vehicles=2, n_customers=3):
-    """One-hot CVRP bitstring with ``x[v, t, i] = 1`` for each ``(v, t, i)``."""
-    bits = np.zeros((n_vehicles, n_customers, n_customers), dtype=int)
+    """One-hot CVRP bitstring with customer ``i`` in slot ``(v, t)`` for each ``(v, t, i)``."""
+    bits = np.zeros((n_customers, n_vehicles, n_customers), dtype=int)
     for v, t, i in assignments:
-        bits[v, t, i] = 1
+        bits[i, v, t] = 1
     return "".join(str(x) for x in bits.flatten())
 
 
@@ -127,7 +245,7 @@ class TestCreateTspQubo:
     def test_reduced_matrix_values(self, three_city_cost):
         np.testing.assert_array_equal(
             create_tsp_qubo(three_city_cost),
-            [[6, 8, 0, 20], [0, 6, 20, 0], [0, 0, 11, 8], [0, 0, 0, 11]],
+            [[6, 0, 8, 20], [0, 6, 20, 8], [0, 0, 11, 0], [0, 0, 0, 11]],
         )
 
     def test_unreduced_matrix_values(self, three_city_cost):
@@ -712,6 +830,23 @@ def test_decode_binary_tsp_solution():
     assert decode_binary_tsp_solution("0", cfg, 4) is None
 
 
+def build_tour_bits(tour):
+    """One-hot bitstring of a closed tour over local cities ``0..m`` that starts at 0."""
+    return "".join(map(str, _tsp_assignment_bits([city - 1 for city in tour[1:-1]])))
+
+
+def build_binary_tour_bits(tour):
+    """Binary-encoded slot bits (2 bits per slot, little-endian) of a 4-city tour from 0."""
+    return "".join(f"{city & 1}{city >> 1}" for city in tour[1:-1])
+
+
+def drop_first_one(bitstring):
+    return bitstring.replace("1", "0", 1)
+
+
+_BOWTIE_BEST_TOUR = compute_best_local_tour(_TWO_BOWTIES[:4, :4])
+
+
 class TestTSPProblem:
     @pytest.mark.parametrize(
         "cost_fixture, n_free_cities",
@@ -744,7 +879,8 @@ class TestTSPProblem:
     def test_compute_energy(self, three_city_cost):
         problem = TSPProblem(three_city_cost, start_city=0)
         assert problem.compute_energy("1001") == 45.0  # 10 + 20 + 15
-        assert problem.compute_energy("1100") is None  # infeasible
+        with pytest.raises(ValueError, match="does not encode a valid tour"):
+            problem.compute_energy("1100")
 
     @pytest.mark.parametrize(
         "encoding, bitstring", [("one_hot", "100010001"), ("binary", "100111")]
@@ -797,6 +933,599 @@ class TestTSPProblem:
         assert e1 is not None and e2 is not None
         assert e1 == e2  # symmetric cost matrix
 
+    @pytest.mark.parametrize("start_city", [-1, 4])
+    def test_out_of_range_start_city_rejected(self, four_city_cost, start_city):
+        with pytest.raises(ValueError, match="out of range"):
+            TSPProblem(four_city_cost, start_city=start_city)
+
+    @pytest.mark.parametrize(
+        "cost_change, kwargs, error, message",
+        [
+            ((0, 1), {"value": np.nan}, ValueError, "cost_matrix must be finite"),
+            ((2, 3), {"value": np.inf}, ValueError, "cost_matrix must be finite"),
+            (None, {"encoding": "dense"}, ValueError, "encoding must be"),
+            (None, {"start_city": 1.0}, TypeError, "start_city must be an integer"),
+            (None, {"start_city": True}, TypeError, "start_city must be an integer"),
+        ],
+        ids=["nan", "inf", "encoding", "float-start-city", "bool-start-city"],
+    )
+    def test_invalid_arguments_are_rejected(
+        self, four_city_cost, cost_change, kwargs, error, message
+    ):
+        cost = four_city_cost
+        if cost_change is not None:
+            cost = replace_entry(cost, cost_change, kwargs.pop("value"))
+        with pytest.raises(error, match=message):
+            TSPProblem(cost, **kwargs)
+
+    @pytest.mark.parametrize("n_cities", [1, 2])
+    def test_fewer_than_three_cities_rejected(self, n_cities):
+        with pytest.raises(ValueError, match="at least 3 cities"):
+            TSPProblem(np.ones((n_cities, n_cities)) - np.eye(n_cities))
+
+    def test_non_square_cost_rejected(self):
+        with pytest.raises(ValueError, match="must be square"):
+            TSPProblem(np.ones((3, 4)))
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    @pytest.mark.parametrize("integer_type", [np.int32, np.int64])
+    def test_numpy_integer_start_city_is_accepted(
+        self, four_city_cost, encoding, integer_type
+    ):
+        problem = TSPProblem(
+            four_city_cost, start_city=integer_type(2), encoding=encoding
+        )
+        bits = "100010001" if encoding == "one_hot" else "100111"
+        assert problem.compute_energy(bits) == 80.0
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_mutating_the_cost_matrix_after_construction_changes_nothing(
+        self, four_city_cost, encoding
+    ):
+        bits = "100010001" if encoding == "one_hot" else "100111"
+        cost = four_city_cost.copy()
+        problem = TSPProblem(cost, encoding=encoding)
+        expected = TSPProblem(four_city_cost, encoding=encoding)
+        cost[0, 1] = 999.0
+        assert problem.compute_energy(bits) == expected.compute_energy(bits)
+        assert problem.penalty_weight == expected.penalty_weight
+        n_variables = len(problem.canonical_problem.variable_order)
+        point = np.full(n_variables, 0.5)
+        assert problem.relaxed_energy(point) == expected.relaxed_energy(point)
+        _assert_same_ising(problem, expected, exact=encoding == "one_hot")
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_is_binary_optimization_problem(self, four_city_cost, encoding):
+        problem = TSPProblem(four_city_cost, encoding=encoding)
+        assert isinstance(problem, BinaryOptimizationProblem)
+        assert problem.canonical_problem.variable_order == tuple(
+            range(problem.binary_config.n_qubits if encoding == "binary" else 9)
+        )
+        assert len(problem.constraints) == (6 if encoding == "one_hot" else 0)
+
+    def test_one_hot_constraints_cover_every_step_and_city(self, four_city_cost):
+        problem = TSPProblem(four_city_cost)
+        groups = {frozenset(c.coefficients) for c in problem.constraints}
+        steps = {frozenset(range(t, 9, 3)) for t in range(3)}
+        cities = {frozenset(range(3 * i, 3 * i + 3)) for i in range(3)}
+        assert groups == steps | cities
+        assert {(c.sense, c.bound) for c in problem.constraints} == {("==", 1.0)}
+
+    @pytest.mark.parametrize(
+        "encoding, expected", [("one_hot", 80.0), ("binary", 160.0)]
+    )
+    def test_default_penalty_scales_with_the_nearest_neighbour_tour(
+        self, four_city_cost, encoding, expected
+    ):
+        # Nearest-neighbour tour 0-1-3-2-0 costs 10 + 25 + 30 + 15.
+        problem = TSPProblem(four_city_cost, encoding=encoding)
+        assert problem.penalty_weight == expected
+
+    def test_default_penalty_follows_the_objective_weight(self, four_city_cost):
+        assert TSPProblem(four_city_cost, objective_weight=0.5).penalty_weight == 40.0
+
+    def test_default_penalty_for_all_zero_costs_is_one(self):
+        assert TSPProblem(np.zeros((4, 4))).penalty_weight == 1.0
+
+    def test_explicit_penalty_wins(self, four_city_cost):
+        assert TSPProblem(four_city_cost, penalty_weight=7.0).penalty_weight == 7.0
+
+    @pytest.mark.parametrize("penalty_weight", [0.0, -1.0, math.inf, math.nan])
+    def test_invalid_explicit_penalty_rejected(self, four_city_cost, penalty_weight):
+        with pytest.raises(ValueError, match="finite and positive"):
+            TSPProblem(four_city_cost, penalty_weight=penalty_weight)
+
+    @pytest.mark.parametrize(
+        "kwargs, negative_cost",
+        [({"objective_weight": 0.0}, False), ({}, True)],
+        ids=["zero-objective-weight", "negative-cost"],
+    )
+    def test_default_penalty_needs_a_positive_objective_and_costs(
+        self, four_city_cost, kwargs, negative_cost
+    ):
+        cost = four_city_cost.copy()
+        if negative_cost:
+            cost[0, 1] = cost[1, 0] = -1.0
+        with pytest.raises(ValueError, match="penalty_weight must be given"):
+            TSPProblem(cost, **kwargs)
+        assert TSPProblem(cost, penalty_weight=5.0, **kwargs).penalty_weight == 5.0
+
+    @pytest.mark.parametrize("scale", [1e-3, 1.0, 1e3])
+    @pytest.mark.parametrize(
+        "n_cities, start_city", [(4, 0), (4, 2), (4, 3), (5, 0), (5, 2), (5, 4)]
+    )
+    def test_per_city_one_hot_subspace_ground_state_is_a_valid_tour(
+        self, n_cities, start_city, scale
+    ):
+        """The XY mixer keeps each city in one step, so with the default penalty
+        the ground state of the cost Hamiltonian within that subspace must not
+        collide two cities."""
+        cost = scale * _M5_COST[:n_cities, :n_cities]
+        problem = TSPProblem(cost, start_city=start_city)
+        m = n_cities - 1
+        bits = enumerate_one_hot_per_block_states(m, m)
+        energies = compute_diagonal_energies(problem, bits)
+        feasible = np.array([problem.is_feasible("".join(map(str, b))) for b in bits])
+        assert feasible.sum() == math.factorial(m)
+        assert feasible[np.argmin(energies)]
+        assert energies[~feasible].min() > energies[feasible].min() + 1e-9 * scale
+        others = [c for c in range(n_cities) if c != start_city]
+        tour_costs = [
+            compute_tour_cost([start_city, *order, start_city], cost)
+            for order in itertools.permutations(others)
+        ]
+        np.testing.assert_allclose(
+            np.sort(energies[feasible]) + problem.penalty_weight * m,
+            np.sort(tour_costs),
+        )
+
+    def test_reduced_and_full_formulations_differ_by_a_constant_on_tours(
+        self, four_city_cost
+    ):
+        problem = TSPProblem(four_city_cost)
+        bits = enumerate_one_hot_per_block_states(3, 3)
+        tours = bits[[problem.is_feasible("".join(map(str, b))) for b in bits]]
+        reduced = compute_diagonal_energies(problem, tours)
+        full = problem.relaxed_energy(tours.T.astype(float))
+        np.testing.assert_allclose(reduced - full, -problem.penalty_weight * 3)
+
+    def test_qaoa_cost_has_only_the_reduced_penalty_terms(self):
+        problem = TSPProblem(_M5_COST)
+        args = (_M5_COST, 0, problem.penalty_weight, 1.0)
+        reduced = qubo_to_ising(create_tsp_qubo(*args))
+        full = qubo_to_ising(create_tsp_qubo(*args, reduced=False))
+        assert problem.cost_hamiltonian == reduced.cost_hamiltonian
+        assert problem.loss_constant == reduced.loss_constant
+        assert count_zz_terms(problem.cost_hamiltonian) < count_zz_terms(
+            full.cost_hamiltonian
+        )
+
+
+class TestTSPFeasibilityRanking:
+    @pytest.fixture
+    def qaoa(self, four_city_cost, dummy_simulator, default_optimizer):
+        qaoa = QAOA(
+            TSPProblem(four_city_cost),
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+        valid = build_tour_bits([0, 1, 3, 2, 0])
+        qaoa._results["best_probs"] = {
+            0: {valid: 0.4, drop_first_one(valid): 0.3, "0" * 9: 0.2, "1" * 9: 0.1}
+        }
+        qaoa._losses_history = [{0: -1.0}]
+        return qaoa
+
+    def test_filter_keeps_only_the_sampled_tour(self, qaoa, four_city_cost):
+        (entry,) = qaoa.get_top_solutions(feasibility="filter", include_decoded=True)
+        assert entry.decoded == [0, 1, 3, 2, 0]
+        assert entry.energy == compute_tour_cost(entry.decoded, four_city_cost)
+        assert entry.prob == pytest.approx(0.4)
+
+    def test_repair_turns_every_sample_into_a_costed_tour(self, qaoa, four_city_cost):
+        top = qaoa.get_top_solutions(feasibility="repair", include_decoded=True)
+        assert [e.energy for e in top] == sorted(e.energy for e in top)
+        assert sum(e.prob for e in top) == pytest.approx(1.0)
+        for entry in top:
+            assert qaoa.problem.is_feasible(entry.bitstring)
+            assert entry.energy == compute_tour_cost(entry.decoded, four_city_cost)
+
+
+class TestTSPLazyHamiltonians:
+    @pytest.fixture
+    def spies(self, mocker):
+        return SimpleNamespace(
+            reduced=mocker.spy(routing_module, "qubo_to_ising"),
+            full=mocker.spy(binary_module, "qubo_to_ising"),
+            xy_mixer=mocker.spy(routing_module, "xy_mixer"),
+        )
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_construction_builds_no_ising(self, four_city_cost, spies, encoding):
+        TSPProblem(four_city_cost, encoding=encoding)
+        spies.reduced.assert_not_called()
+        spies.full.assert_not_called()
+
+    def test_one_hot_problem_data_needs_no_ising(self, four_city_cost, spies):
+        problem = TSPProblem(four_city_cost)
+        _ = problem.recommended_initial_state
+        _ = problem.decode_fn
+        _ = problem.constraints
+        _ = problem.canonical_problem
+        problem.is_feasible("0" * 9)
+        problem.compute_energy("100010001")
+        problem.relaxed_energy(np.zeros(9))
+        problem._solution_key("0" * 9)
+        spies.reduced.assert_not_called()
+        spies.full.assert_not_called()
+
+    def test_one_hot_mixer_is_built_once_and_needs_no_ising(
+        self, four_city_cost, spies
+    ):
+        problem = TSPProblem(four_city_cost)
+        assert problem.mixer_hamiltonian is problem.mixer_hamiltonian
+        spies.xy_mixer.assert_called_once()
+        spies.reduced.assert_not_called()
+        spies.full.assert_not_called()
+
+    def test_one_hot_cost_builds_only_the_reduced_ising_once(
+        self, four_city_cost, spies
+    ):
+        problem = TSPProblem(four_city_cost)
+        for _ in range(2):
+            _ = problem.cost_hamiltonian, problem.loss_constant
+        spies.reduced.assert_called_once()
+        spies.full.assert_not_called()
+
+    def test_full_ising_is_built_separately_on_demand(self, four_city_cost, spies):
+        problem = TSPProblem(four_city_cost)
+        _ = problem.cost_hamiltonian
+        _ = problem.metadata
+        spies.reduced.assert_called_once()
+        spies.full.assert_called_once()
+
+    def test_binary_cost_builds_the_full_ising_once(self, four_city_cost, spies):
+        problem = TSPProblem(four_city_cost, encoding="binary")
+        for _ in range(2):
+            _ = problem.cost_hamiltonian, problem.loss_constant
+        spies.full.assert_called_once()
+        spies.reduced.assert_not_called()
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_decompose_builds_no_ising(self, spies, encoding):
+        problem = TSPProblem(
+            _TWO_BOWTIES, encoding=encoding, max_cities_per_partition=4
+        )
+        assert len(problem.decompose()) == 2
+        spies.reduced.assert_not_called()
+        spies.full.assert_not_called()
+
+
+class TestSplitCitiesIntoClusters:
+    def test_recovers_separated_groups(self):
+        assert _split_cities_into_clusters(_TWO_BOWTIES, 4) == _TWO_BOWTIES_CLUSTERS
+
+    @pytest.mark.parametrize("seed", range(5))
+    @pytest.mark.parametrize("max_size", [3, 4])
+    def test_packs_within_max_size(self, seed, max_size):
+        cost = build_euclidean_cost(np.random.default_rng(seed).random((9, 2)))
+        clusters = _split_cities_into_clusters(cost, max_size)
+        assert sorted(c for cluster in clusters for c in cluster) == list(range(9))
+        sizes = [len(cluster) for cluster in clusters]
+        assert max(sizes) <= max_size
+        assert all(a + b > max_size for a, b in itertools.combinations(sizes, 2))
+        assert all(cluster == sorted(cluster) for cluster in clusters)
+        assert clusters == sorted(clusters, key=lambda cluster: cluster[0])
+        assert clusters == _split_cities_into_clusters(cost, max_size)
+
+
+class TestPatchCyclesIntoTour:
+    @pytest.mark.parametrize("cycles", [[], [[0, 1], []]], ids=["none", "empty-cycle"])
+    def test_rejects_missing_cities(self, cycles):
+        with pytest.raises(ValueError, match="non-empty"):
+            _patch_cycles_into_tour(cycles, _TWO_BOWTIES)
+
+    def test_merges_cycles_into_one_covering_tour(self):
+        tour = _patch_cycles_into_tour(_TWO_BOWTIES_CLUSTERS, _TWO_BOWTIES)
+        assert sorted(tour) == list(range(8))
+
+
+class TestTSPPartitioning:
+    def test_decompose_requires_max_cities(self, three_city_cost):
+        with pytest.raises(ValueError, match="max_cities_per_partition was not set"):
+            TSPProblem(three_city_cost).decompose()
+
+    def test_max_cities_below_three_rejected(self, four_city_cost):
+        with pytest.raises(ValueError, match="must be at least 3"):
+            TSPProblem(four_city_cost, max_cities_per_partition=2)
+
+    def test_decompose_skips_clusters_under_three_cities(self):
+        cost = build_euclidean_cost([(x, 0) for x in (0, 1, 2, 50, 51, 52, 100)])
+        problem = TSPProblem(cost, max_cities_per_partition=3)
+        sub_problems = problem.decompose()
+        assert sorted(sub_problems) == [("P0", 3), ("P1", 3)]
+        assert problem.initial_solution_size() == 7
+
+    def test_decompose_with_cap_at_least_n_gives_one_partition(self, four_city_cost):
+        problem = TSPProblem(four_city_cost, max_cities_per_partition=10)
+        assert list(problem.decompose()) == [("P0", 4)]
+
+    def test_decompose_rejects_when_no_cluster_has_three_cities(self):
+        cost = build_euclidean_cost([(0, 0), (1, 0), (100, 0), (101, 0)])
+        problem = TSPProblem(cost, max_cities_per_partition=3)
+        with pytest.raises(ValueError, match="No city cluster has three or more"):
+            problem.decompose()
+
+    def test_decompose_rejects_asymmetric_cost(self):
+        cost = _TWO_BOWTIES.copy()
+        cost[0, 1] = 99.0
+        problem = TSPProblem(cost, max_cities_per_partition=4)
+        with pytest.raises(ValueError, match="must be symmetric"):
+            problem.decompose()
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_sub_problems_are_tsp_problems_of_the_same_encoding(self, encoding):
+        problem = TSPProblem(
+            _TWO_BOWTIES, encoding=encoding, max_cities_per_partition=4
+        )
+        for sub in problem.decompose().values():
+            assert isinstance(sub, TSPProblem)
+            assert isinstance(sub, BinaryOptimizationProblem)
+            assert sub.encoding == encoding
+            assert (sub.binary_config is None) is (encoding == "one_hot")
+
+    def test_default_penalty_is_recomputed_per_sub_problem(self, two_bowties_problem):
+        sub_cost = _TWO_BOWTIES[:4, :4]
+        for sub in two_bowties_problem.decompose().values():
+            assert sub.penalty_weight == TSPProblem(sub_cost).penalty_weight
+            assert sub.penalty_weight != two_bowties_problem.penalty_weight
+
+    def test_explicit_penalty_is_forwarded_to_sub_problems(self):
+        problem = TSPProblem(
+            _TWO_BOWTIES, penalty_weight=7.0, max_cities_per_partition=4
+        )
+        assert {sub.penalty_weight for sub in problem.decompose().values()} == {7.0}
+
+    def test_extend_solution_records_cluster_positions(self, two_bowties_problem):
+        solution = two_bowties_problem.extend_solution(
+            [0] * 8, ("P1", 4), [0, 2, 1, 3, 0]
+        )
+        assert solution == [0, 0, 0, 0, 1, 3, 2, 4]
+
+    def test_extend_solution_without_a_tour_uses_index_order(self, two_bowties_problem):
+        solution = two_bowties_problem.extend_solution(
+            [0] * 8, ("P1", 4), [0, 2, 1, 3, 0]
+        )
+        assert two_bowties_problem.extend_solution(solution, ("P1", 4), None) == [
+            0,
+            0,
+            0,
+            0,
+            1,
+            2,
+            3,
+            4,
+        ]
+
+    def test_all_none_candidates_aggregate_to_index_order_tour(
+        self, two_bowties_problem
+    ):
+        fallback = extend_with_tours(two_bowties_problem, lambda _: None)
+        assert fallback == [1, 2, 3, 4] * 2
+        ((tour, tour_cost),) = two_bowties_problem.postprocess_candidates(
+            [(0.0, fallback)]
+        )
+        assert tour_cost == compute_tour_cost(tour, _TWO_BOWTIES)
+
+    def test_aggregated_tour_is_valid_and_costed(self):
+        problem = TSPProblem(_TWO_BOWTIES, start_city=5, max_cities_per_partition=4)
+        solution = extend_with_tours(problem, compute_best_local_tour)
+        ((tour, tour_cost),) = problem.postprocess_candidates([(0.0, solution)])
+        assert tour[0] == tour[-1] == 5
+        assert sorted(tour[:-1]) == list(range(8))
+        assert tour_cost == compute_tour_cost(tour, _TWO_BOWTIES)
+        assert problem.evaluate_global_solution(solution) == tour_cost
+
+    def test_optimal_sub_tours_beat_index_order_fallback(self, two_bowties_problem):
+        optimal = extend_with_tours(two_bowties_problem, compute_best_local_tour)
+        fallback = extend_with_tours(two_bowties_problem, lambda _: None)
+        assert two_bowties_problem.evaluate_global_solution(
+            optimal
+        ) < two_bowties_problem.evaluate_global_solution(fallback)
+
+    def test_postprocess_returns_distinct_tours_cheapest_first(
+        self, two_bowties_problem
+    ):
+        optimal = extend_with_tours(two_bowties_problem, compute_best_local_tour)
+        fallback = extend_with_tours(two_bowties_problem, lambda _: None)
+        results = two_bowties_problem.postprocess_candidates(
+            [(0.0, fallback), (0.0, optimal), (0.0, optimal)]
+        )
+        assert len(results) == 2
+        assert results[0][1] < results[1][1]
+
+    def test_sub_problem_decodes_an_infeasible_bitstring_to_its_repair(
+        self, two_bowties_problem
+    ):
+        sub = two_bowties_problem.decompose()[("P0", 4)]
+        infeasible = drop_first_one(build_tour_bits(_BOWTIE_BEST_TOUR))
+        assert sub.is_feasible(infeasible) is False
+        assert sub.decode_fn(infeasible) == _BOWTIE_BEST_TOUR
+        with pytest.raises(ValueError, match="does not encode a valid tour"):
+            sub.compute_energy(infeasible)
+
+    def test_standalone_problem_still_decodes_an_infeasible_bitstring_to_none(self):
+        infeasible = drop_first_one(build_tour_bits(_BOWTIE_BEST_TOUR))
+        assert TSPProblem(_TWO_BOWTIES[:4, :4]).decode_fn(infeasible) is None
+
+    def test_repaired_candidate_extends_the_global_solution_with_its_tour(
+        self, two_bowties_problem
+    ):
+        sub = two_bowties_problem.decompose()[("P0", 4)]
+        repaired = sub.decode_fn(drop_first_one(build_tour_bits(_BOWTIE_BEST_TOUR)))
+        solution = two_bowties_problem.extend_solution([0] * 8, ("P0", 4), repaired)
+        assert solution == two_bowties_problem.extend_solution(
+            [0] * 8, ("P0", 4), _BOWTIE_BEST_TOUR
+        )
+        assert solution[:4] != [1, 2, 3, 4]
+
+    @pytest.mark.parametrize("damage", [str, drop_first_one], ids=["valid", "repaired"])
+    def test_aggregation_follows_the_sampled_sub_tours(
+        self, dummy_simulator, two_bowties_problem, damage
+    ):
+        ensemble = PartitioningProgramEnsemble(
+            problem=two_bowties_problem,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            backend=dummy_simulator,
+        )
+        ensemble.create_programs()
+        seed_best_bitstrings(ensemble, [damage(build_tour_bits(_BOWTIE_BEST_TOUR))] * 2)
+
+        tour, tour_cost = ensemble.aggregate_results()
+
+        sampled = extend_with_tours(two_bowties_problem, lambda _: _BOWTIE_BEST_TOUR)
+        index_order = extend_with_tours(two_bowties_problem, lambda _: None)
+        assert (tour, tour_cost) == two_bowties_problem.postprocess_candidates(
+            [(0.0, sampled)]
+        )[0]
+        assert tour_cost < two_bowties_problem.evaluate_global_solution(index_order)
+
+    def test_binary_sub_problem_keeps_none_for_an_invalid_tour(self):
+        problem = TSPProblem(
+            _TWO_BOWTIES, encoding="binary", max_cities_per_partition=4
+        )
+        sub = problem.decompose()[("P0", 4)]
+        assert sub.decode_fn("0" * 6) is None
+        assert sub.decode_fn(build_binary_tour_bits(_BOWTIE_BEST_TOUR)) == (
+            _BOWTIE_BEST_TOUR
+        )
+
+    def test_binary_partitioning_aggregates_to_a_valid_tour(self, dummy_simulator):
+        problem = TSPProblem(
+            _TWO_BOWTIES, encoding="binary", max_cities_per_partition=4
+        )
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            backend=dummy_simulator,
+        )
+        ensemble.create_programs()
+        seed_best_bitstrings(
+            ensemble, [build_binary_tour_bits(_BOWTIE_BEST_TOUR), "0" * 6]
+        )
+
+        tour, tour_cost = ensemble.aggregate_results()
+
+        expected = problem.extend_solution(
+            problem.extend_solution([0] * 8, ("P0", 4), _BOWTIE_BEST_TOUR),
+            ("P1", 4),
+            None,
+        )
+        assert (tour, tour_cost) == problem.postprocess_candidates([(0.0, expected)])[0]
+        assert tour[0] == tour[-1] == 0
+        assert sorted(tour[:-1]) == list(range(8))
+        assert tour_cost == compute_tour_cost(tour, _TWO_BOWTIES)
+
+    @pytest.mark.parametrize("routine", ["pce", "progressive_pce"])
+    def test_partitions_build_pce_programs(
+        self, dummy_simulator, two_bowties_problem, routine
+    ):
+        ensemble = PartitioningProgramEnsemble(
+            problem=two_bowties_problem,
+            n_layers=1,
+            quantum_routine=routine,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            backend=dummy_simulator,
+        )
+        ensemble.create_programs()
+        assert sorted(ensemble.programs) == [("P0", 4), ("P1", 4)]
+        assert all(
+            isinstance(program, PCE | ProgressivePCE)
+            for program in ensemble.programs.values()
+        )
+
+    def test_partitioned_run_accepts_checkpointing(
+        self, dummy_simulator, two_bowties_problem, tmp_path
+    ):
+        ensemble = PartitioningProgramEnsemble(
+            problem=two_bowties_problem,
+            n_layers=1,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+        ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+        assert (tmp_path / "round_001" / "round_completion.json").is_file()
+
+
+@pytest.mark.e2e
+class TestTSPPartitioningE2E:
+    @pytest.mark.parametrize("routine", ["qaoa", "pce"])
+    def test_partitioned_ensemble_returns_valid_tour(
+        self, default_test_simulator, two_bowties_problem, routine
+    ):
+        ensemble = PartitioningProgramEnsemble(
+            problem=two_bowties_problem,
+            n_layers=1,
+            quantum_routine=routine,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=3,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+        ensemble.run()
+        tour, tour_cost = ensemble.aggregate_results()
+        assert tour[0] == tour[-1] == 0
+        assert sorted(tour[:-1]) == list(range(8))
+        assert tour_cost == compute_tour_cost(tour, _TWO_BOWTIES)
+
+
+class TestTSPProblemPCE:
+    @pytest.fixture
+    def pce(self, four_city_cost, dummy_simulator, default_optimizer):
+        return PCE(
+            TSPProblem(four_city_cost),
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+
+    def test_encodes_every_assignment_variable(self, pce):
+        assert pce.n_vars == 9
+        assert pce.problem.penalty_weight == 80.0
+
+    @staticmethod
+    def sample_every_state(pce):
+        n_states = 2**pce.n_qubits
+        pce._results["best_probs"] = {
+            0: {format(i, f"0{pce.n_qubits}b"): 1 / n_states for i in range(n_states)}
+        }
+        pce._losses_history = [{0: -1.0}]
+
+    def test_filter_ranking_drops_states_that_are_not_tours(self, pce):
+        self.sample_every_state(pce)
+        assert pce.get_top_solutions(feasibility="filter") == []
+
+    def test_repair_ranking_returns_costed_tours_cheapest_first(
+        self, pce, four_city_cost
+    ):
+        self.sample_every_state(pce)
+
+        top = pce.get_top_solutions(feasibility="repair", include_decoded=True)
+
+        assert top
+        for entry in top:
+            assert pce.problem.is_feasible(entry.bitstring)
+            assert entry.decoded == pce.problem.decode_fn(entry.bitstring)
+            assert entry.energy == pytest.approx(
+                compute_tour_cost(entry.decoded, four_city_cost)
+            )
+        assert [e.energy for e in top] == sorted(e.energy for e in top)
+        assert sum(e.prob for e in top) == pytest.approx(1.0)
+
 
 class TestTSPProblemBinary:
     """Binary CE-QAOA encoding for TSP — log-encoded slot bits + transverse mixer."""
@@ -839,7 +1568,8 @@ class TestTSPProblemBinary:
         # Slot value 0 = "empty" — not allowed in a TSP tour of length n_cust.
         bs = "00" + "01" + "11"
         assert problem.is_feasible(bs) is False
-        assert problem.compute_energy(bs) is None
+        with pytest.raises(ValueError, match="does not encode a valid tour"):
+            problem.compute_energy(bs)
 
     def test_repair_not_implemented(self, four_city_cost):
         problem = TSPProblem(four_city_cost, encoding="binary")
@@ -910,42 +1640,77 @@ class TestTSPProblemBinary:
 class TestCreateCvrpQubo:
     def test_matrix_values(self):
         Q = create_cvrp_qubo(
-            np.array([[0, 1, 2], [3, 0, 4], [5, 6, 0.0]]),
-            np.array([0, 1, 2.0]),
-            capacity=2.0,
-            n_vehicles=2,
+            np.array([[0, 1, 2], [3, 0, 4], [5, 6, 0.0]]), n_vehicles=2
         )
         np.testing.assert_array_equal(
             Q,
             [
-                [-15, 16, 16, 20, 8, 0, 8, 0],
-                [0, -18, 22, 40, 0, 8, 0, 8],
-                [0, 0, -13, 16, 8, 0, 8, 0],
-                [0, 0, 0, -15, 0, 8, 0, 8],
-                [0, 0, 0, 0, -15, 16, 16, 20],
-                [0, 0, 0, 0, 0, -18, 22, 40],
-                [0, 0, 0, 0, 0, 0, -13, 16],
-                [0, 0, 0, 0, 0, 0, 0, -15],
+                [4, -7, 0, 0, 8, -3, 0, 0],
+                [0, 7, 0, 0, -3, 8, 0, 0],
+                [0, 0, 4, -7, 0, 0, 8, -3],
+                [0, 0, 0, 7, 0, 0, -3, 8],
+                [0, 0, 0, 0, 7, -9, 0, 0],
+                [0, 0, 0, 0, 0, 9, 0, 0],
+                [0, 0, 0, 0, 0, 0, 7, -9],
+                [0, 0, 0, 0, 0, 0, 0, 9],
             ],
         )
 
-    def test_energy_of_full_routes_is_tour_cost_plus_a_constant(self):
+    def test_energy_is_penalties_and_route_cost(self):
+        cost = np.array([[0, 1, 2], [3, 0, 4], [5, 6, 0.0]])
+        Q = create_cvrp_qubo(cost, n_vehicles=2)
+
+        def reference(x):
+            energy = 0.0
+            for v in range(2):
+                occupancy = x[:, v, :].sum(axis=0)
+                energy += sum(4 * s * (s - 1) for s in occupancy)
+                energy += 4 * occupancy[1] * (1 - occupancy[0])
+                for i in range(2):
+                    energy += cost[0, i + 1] * x[i, v, 0]
+                    energy += cost[i + 1, 0] * x[i, v, 0] * (1 - occupancy[1])
+                    energy += cost[i + 1, 0] * x[i, v, 1]
+                    for j in range(2):
+                        energy += cost[i + 1, j + 1] * x[i, v, 0] * x[j, v, 1]
+            return energy
+
+        def route_cost(x):
+            total = 0.0
+            for v in range(2):
+                steps = [np.flatnonzero(x[:, v, t]) for t in range(2)]
+                route = [0, *(int(s[0]) + 1 for s in steps if len(s)), 0]
+                total += compute_tour_cost(route, cost)
+            return total
+
+        n_compact = 0
+        for bits in itertools.product([0, 1], repeat=8):
+            x = np.array(bits, dtype=float)
+            energy = x @ Q @ x
+            grid = x.reshape(2, 2, 2)  # customer, vehicle, step
+            assert energy == pytest.approx(reference(grid))
+            occupancy = grid.sum(axis=0)
+            if np.all(occupancy <= 1) and np.all(occupancy[:, 1] <= occupancy[:, 0]):
+                n_compact += 1
+                assert energy == pytest.approx(route_cost(grid))
+        assert n_compact == 7**2
+
+    def test_energy_of_full_routes_is_the_tour_cost(self):
         rng = np.random.default_rng(3)
         cost = rng.integers(1, 20, (4, 4)).astype(float)
         np.fill_diagonal(cost, 0.0)
-        Q = create_cvrp_qubo(cost, np.array([0, 1, 1, 1.0]), 10.0, n_vehicles=1)
+        Q = create_cvrp_qubo(cost, n_vehicles=1)
         offsets = set()
         for order in itertools.permutations(range(3)):
             x = np.zeros((3, 3))
-            x[np.arange(3), order] = 1
+            x[order, np.arange(3)] = 1
             x = x.ravel()
             route = [0, *(c + 1 for c in order), 0]
             offsets.add(round(float(x @ Q @ x) - compute_tour_cost(route, cost), 9))
-        assert len(offsets) == 1
+        assert offsets == {0.0}
 
 
-def _build_cvrp_qubo(cost, demands):
-    return create_cvrp_qubo(cost, demands, 10.0, n_vehicles=2)
+def _build_cvrp_qubo(cost, _demands):
+    return create_cvrp_qubo(cost, n_vehicles=2)
 
 
 def _build_cvrp_hubo(cost, demands):
@@ -978,19 +1743,29 @@ def test_routing_builders_reject_non_square_cost(builder, cost):
         builder(cost, np.zeros(len(cost)))
 
 
-@pytest.mark.parametrize(
-    "builder", [_build_cvrp_qubo, _build_cvrp_hubo], ids=["cvrp-qubo", "cvrp-hubo"]
-)
 @pytest.mark.parametrize("n_demands", [2, 5], ids=["short", "long"])
-def test_cvrp_builders_reject_demand_length_mismatch(builder, n_demands):
+def test_cvrp_hubo_builder_rejects_demand_length_mismatch(n_demands):
     with pytest.raises(ValueError, match="demands length"):
-        builder(CVRP_COST, np.zeros(n_demands))
+        _build_cvrp_hubo(CVRP_COST, np.zeros(n_demands))
+
+
+@pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+@pytest.mark.parametrize("n_demands", [2, 5], ids=["short", "long"])
+def test_cvrp_problem_rejects_demand_length_mismatch(encoding, n_demands):
+    with pytest.raises(ValueError, match="demands length"):
+        CVRPProblem(
+            CVRP_COST,
+            demands=np.zeros(n_demands),
+            capacity=10.0,
+            n_vehicles=2,
+            encoding=encoding,
+        )
 
 
 def test_basic():
     bs, nb = build_cvrp_block_structure(3, 2)
-    assert bs == 3
-    assert nb == 6  # 2 vehicles * 3 steps
+    assert bs == 6  # 2 vehicles * 3 steps per customer
+    assert nb == 3  # one block per customer
 
 
 @pytest.mark.parametrize(
@@ -1044,6 +1819,9 @@ class TestCvrpSolutionUtils:
             missing_customer, 3, 2, CVRP_DEMANDS, 10.0, depot=0
         )
 
+        shared_slot = _cvrp_one_hot_bits([(0, 0, 0), (0, 0, 1), (1, 0, 2)])
+        assert not is_valid_cvrp_solution(shared_slot, 3, 2, CVRP_DEMANDS, 10.0)
+
         capacity_violation = _cvrp_one_hot_bits([(0, 0, 0), (0, 1, 1), (0, 2, 2)])
         assert not is_valid_cvrp_solution(
             capacity_violation, 3, 2, CVRP_DEMANDS, 5.0, depot=0
@@ -1060,115 +1838,128 @@ class TestCvrpSolutionUtils:
 
     def test_repair_moves_overflow_into_tolerance_headroom(self):
         assert repair_cvrp_solution(
-            "10001000", 2, 2, np.zeros((3, 3)), np.array([0, 1e-9, 1e-9]), 0.0
-        ) == ("10000100", [[0, 1, 0], [0, 2, 0]], 0.0)
+            _cvrp_one_hot_bits([(0, 0, 0), (1, 0, 0)], n_customers=2),
+            2,
+            2,
+            np.zeros((3, 3)),
+            np.array([0, 1e-9, 1e-9]),
+            0.0,
+        ) == (
+            _cvrp_one_hot_bits([(0, 0, 0), (1, 0, 1)], n_customers=2),
+            [[0, 1, 0], [0, 2, 0]],
+            0.0,
+        )
 
     def test_repair_feasible_with_defaults(self):
         assert repair_cvrp_solution(
             _SPLIT_ROUTES_BITS, 3, 2, CVRP_COST, CVRP_DEMANDS, 10.0
-        ) == ("100010000001000000", [[0, 1, 2, 0], [0, 3, 0]], 90.0)
+        ) == (_SPLIT_ROUTES_BITS, [[0, 1, 2, 0], [0, 3, 0]], 90.0)
 
     @pytest.mark.parametrize(
-        "bitstring, n_customers, n_vehicles, demands, capacity, expected",
+        "assignments, n_customers, n_vehicles, demands, capacity, repaired, routes, cost",
         [
             (
-                "100010001000000000",
+                [(0, 0, 0), (0, 1, 1), (0, 2, 2)],
                 3,
                 2,
                 [0, 3, 1, 3],
                 3.0,
-                ("100000001010000000", [[0, 1, 3, 0], [0, 2, 0]], 90.0),
+                [(0, 0, 0), (0, 2, 2), (1, 0, 1)],
+                [[0, 1, 3, 0], [0, 2, 0]],
+                90.0,
             ),
             (
-                "100000010000001000",
+                [(0, 0, 0), (0, 2, 1), (1, 1, 2)],
                 3,
                 2,
                 [0, 4, 2, 1],
                 3.0,
-                ("100000000010001000", [[0, 1, 0], [0, 2, 3, 0]], 67.0),
+                [(0, 0, 0), (1, 0, 1), (1, 1, 2)],
+                [[0, 1, 0], [0, 2, 3, 0]],
+                67.0,
             ),
             (
-                "100000000010000001",
+                [(0, 0, 0), (1, 0, 1), (1, 2, 2)],
                 3,
                 2,
                 [0, 4, 1, 2],
                 2.0,
-                ("100000000010000001", [[0, 1, 0], [0, 2, 3, 0]], 67.0),
+                [(0, 0, 0), (1, 0, 1), (1, 2, 2)],
+                [[0, 1, 0], [0, 2, 3, 0]],
+                67.0,
             ),
             (
-                "000000000100010001",
+                [(1, 0, 0), (1, 1, 1), (1, 2, 2)],
                 3,
                 2,
                 [0, 1, 2, 1],
                 3.0,
-                ("001000000100010000", [[0, 3, 0], [0, 1, 2, 0]], 90.0),
+                [(0, 0, 2), (1, 0, 0), (1, 1, 1)],
+                [[0, 3, 0], [0, 1, 2, 0]],
+                90.0,
             ),
             (
-                "00000000100001000010000100000000",
+                [(0, 2, 0), (0, 3, 1), (1, 0, 2), (1, 1, 3)],
                 4,
                 2,
                 [0, 3, 1, 3, 1],
                 3.0,
-                (
-                    "00000000100001000010000100000000",
-                    [[0, 1, 2, 0], [0, 3, 4, 0]],
-                    25.0,
-                ),
+                [(0, 2, 0), (0, 3, 1), (1, 0, 2), (1, 1, 3)],
+                [[0, 1, 2, 0], [0, 3, 4, 0]],
+                25.0,
             ),
             (
-                "000010000000010000000010000000010000000000000000",
+                [(0, 1, 0), (0, 3, 1), (1, 1, 2), (1, 3, 3)],
                 4,
                 3,
                 [0, 2, 3, 3, 2],
                 4.0,
-                (
-                    "000110000000000000000010000000000100000000000000",
-                    [[0, 4, 1, 0], [0, 3, 0], [0, 2, 0]],
-                    22.0,
-                ),
+                [(0, 0, 3), (0, 1, 0), (1, 1, 2), (2, 0, 1)],
+                [[0, 4, 1, 0], [0, 3, 0], [0, 2, 0]],
+                22.0,
             ),
             (
-                "00000000000010000100000000100001",
+                [(0, 3, 0), (1, 0, 1), (1, 2, 2), (1, 3, 3)],
                 4,
                 2,
                 [0, 3, 4, 2, 3],
                 5.0,
-                (
-                    "00100000000010000100000000000001",
-                    [[0, 3, 1, 0], [0, 2, 4, 0]],
-                    25.0,
-                ),
+                [(0, 0, 2), (0, 3, 0), (1, 0, 1), (1, 3, 3)],
+                [[0, 3, 1, 0], [0, 2, 4, 0]],
+                25.0,
             ),
             (
-                "10000000010000100000000100000000",
+                [(0, 0, 0), (0, 2, 1), (0, 3, 2), (1, 1, 3)],
                 4,
                 2,
                 [0, 3, 2, 1, 3],
                 4.0,
-                (
-                    "10000000010000000010000100000000",
-                    [[0, 1, 2, 0], [0, 3, 4, 0]],
-                    25.0,
-                ),
+                [(0, 0, 0), (0, 2, 1), (1, 0, 2), (1, 1, 3)],
+                [[0, 1, 2, 0], [0, 3, 4, 0]],
+                25.0,
             ),
         ],
     )
     def test_repair_capacity_reassignment(
-        self, bitstring, n_customers, n_vehicles, demands, capacity, expected
+        self,
+        assignments,
+        n_customers,
+        n_vehicles,
+        demands,
+        capacity,
+        repaired,
+        routes,
+        cost,
     ):
-        cost = CVRP_COST if n_customers == 3 else _M5_COST
-        assert (
-            repair_cvrp_solution(
-                bitstring,
-                n_customers,
-                n_vehicles,
-                cost,
-                np.array(demands, dtype=float),
-                capacity,
-                depot=0,
-            )
-            == expected
-        )
+        assert repair_cvrp_solution(
+            _cvrp_one_hot_bits(assignments, n_vehicles, n_customers),
+            n_customers,
+            n_vehicles,
+            CVRP_COST if n_customers == 3 else _M5_COST,
+            np.array(demands, dtype=float),
+            capacity,
+            depot=0,
+        ) == (_cvrp_one_hot_bits(repaired, n_vehicles, n_customers), routes, cost)
 
     def test_repair_produces_valid(self):
         # All zeros -> infeasible
@@ -1182,10 +1973,90 @@ class TestCvrpSolutionUtils:
         # each route in the depot regardless, so the wrapper proves nothing.
         assert is_valid_cvrp_solution(repaired_bs, 3, 2, CVRP_DEMANDS, 10.0, depot=0)
 
+    def test_repair_swaps_customers_when_moving_one_cannot_fit(self):
+        cost = build_random_cost(np.random.default_rng(0), 4)
+        problem = CVRPProblem(
+            cost, demands=np.array([0, 2, 1, 3.0]), capacity=3.0, n_vehicles=2
+        )
+        repaired, routes, repaired_cost = problem.repair_infeasible_bitstring(
+            "100000000100100000"
+        )
+        assert repaired == _cvrp_one_hot_bits([(0, 0, 2), (1, 0, 1), (1, 1, 0)])
+        assert routes == [[0, 3, 0], [0, 2, 1, 0]]
+        assert repaired_cost == compute_route_cost(routes, cost)
+
+    def test_repair_makes_every_manifold_state_feasible_when_a_packing_exists(self):
+        cost = build_random_cost(np.random.default_rng(1), 4)
+        demands = np.array([0, 2, 1, 3.0])
+        for bits in enumerate_one_hot_per_block_states(3, 6):
+            repaired, routes, repaired_cost = repair_cvrp_solution(
+                "".join(map(str, bits)), 3, 2, cost, demands, 3.0
+            )
+            assert is_valid_cvrp_solution(repaired, 3, 2, demands, 3.0)
+            assert repaired_cost == pytest.approx(compute_route_cost(routes, cost))
+
+    @pytest.mark.parametrize("seed", range(6))
+    def test_repair_is_feasible_exactly_when_a_packing_exists(self, seed):
+        rng = np.random.default_rng(seed)
+        for _ in range(12):
+            n_customers = int(rng.integers(1, 5))
+            n_vehicles = int(rng.integers(1, 4))
+            cost = build_random_cost(rng, n_customers + 1)
+            demands = np.concatenate([[0.0], rng.integers(0, 6, n_customers)])
+            capacity = float(rng.integers(1, 9))
+            packing_exists = any(
+                all(
+                    sum(demands[1 + i] for i in range(n_customers) if v_of[i] == v)
+                    <= capacity
+                    for v in range(n_vehicles)
+                )
+                for v_of in itertools.product(range(n_vehicles), repeat=n_customers)
+            )
+            n_bits = n_vehicles * n_customers**2
+            for _ in range(40):
+                bitstring = "".join(map(str, rng.integers(0, 2, n_bits)))
+                repaired, routes, repaired_cost = repair_cvrp_solution(
+                    bitstring, n_customers, n_vehicles, cost, demands, capacity
+                )
+                assert (
+                    is_valid_cvrp_solution(
+                        repaired, n_customers, n_vehicles, demands, capacity
+                    )
+                    is packing_exists
+                )
+                assert repaired_cost == pytest.approx(compute_route_cost(routes, cost))
+
+    def test_repair_leaves_feasible_manifold_states_unchanged(self):
+        cost = build_random_cost(np.random.default_rng(2), 4)
+        demands = np.array([0, 2, 1, 3.0])
+        for bits in enumerate_one_hot_per_block_states(3, 6):
+            bitstring = "".join(map(str, bits))
+            if is_valid_cvrp_solution(bitstring, 3, 2, demands, 3.0):
+                assert (
+                    repair_cvrp_solution(bitstring, 3, 2, cost, demands, 3.0)[0]
+                    == bitstring
+                )
+
+    def test_repair_is_idempotent(self):
+        cost = build_random_cost(np.random.default_rng(3), 4)
+        demands = np.array([0, 2, 1, 3.0])
+        for bits in enumerate_one_hot_per_block_states(3, 6):
+            once = repair_cvrp_solution(
+                "".join(map(str, bits)), 3, 2, cost, demands, 3.0
+            )
+            twice = repair_cvrp_solution(once[0], 3, 2, cost, demands, 3.0)
+            assert twice == once
+
+    def test_repair_returns_the_over_capacity_result_when_no_packing_exists(self):
+        demands = np.array([0, 2, 2, 2.0])
+        bitstring = _cvrp_one_hot_bits([(0, 0, 0), (0, 1, 1), (0, 2, 2)])
+        repaired, _, _ = repair_cvrp_solution(bitstring, 3, 2, CVRP_COST, demands, 3.0)
+        assert not is_valid_cvrp_solution(repaired, 3, 2, demands, 3.0)
+
 
 class TestCVRPProblem:
     def test_one_hot_construction(self):
-        """3 customers × 2 vehicles × 3 steps: one 3-way block per (vehicle, step)."""
+        """3 customers × 2 vehicles × 3 steps: one 6-way block per customer."""
         problem = CVRPProblem(
             CVRP_COST,
             demands=CVRP_DEMANDS,
@@ -1195,7 +2066,121 @@ class TestCVRPProblem:
         )
         assert problem.cost_hamiltonian.num_qubits == 18
         state = problem.recommended_initial_state
+        assert (state.block_size, state.n_blocks) == (6, 3)
         assert (state.block_size, state.n_blocks) == build_cvrp_block_structure(3, 2)
+
+    def test_hamiltonians_are_built_on_first_use(self, mocker):
+        spy_ising = mocker.spy(routing_module, "qubo_to_ising")
+        spy_mixer = mocker.spy(routing_module, "xy_mixer")
+        problem = CVRPProblem(
+            CVRP_COST, demands=CVRP_DEMANDS, capacity=6.0, n_vehicles=2
+        )
+        _ = problem.recommended_initial_state
+        _ = problem.decode_fn
+        _ = problem.is_feasible("0" * 18)
+        spy_ising.assert_not_called()
+        spy_mixer.assert_not_called()
+        _ = problem.mixer_hamiltonian
+        spy_mixer.assert_called_once()
+        spy_ising.assert_not_called()
+        _ = problem.cost_hamiltonian
+        spy_ising.assert_called_once()
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_ising_and_mixer_are_built_once(self, mocker, encoding):
+        spy_ising = mocker.spy(routing_module, "qubo_to_ising")
+        spy_mixer = mocker.spy(
+            routing_module, "xy_mixer" if encoding == "one_hot" else "x_mixer"
+        )
+        problem = CVRPProblem(
+            CVRP_COST,
+            demands=CVRP_DEMANDS,
+            capacity=6.0,
+            n_vehicles=2,
+            encoding=encoding,
+        )
+        spy_ising.assert_not_called()
+        for _ in range(2):
+            _ = problem.cost_hamiltonian, problem.loss_constant
+            _ = problem.mixer_hamiltonian
+        spy_ising.assert_called_once()
+        spy_mixer.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "n_vehicles, capacity", [(1, 9.0), (2, 6.0), (3, 6.0)], ids=["V1", "V2", "V3"]
+    )
+    def test_reachable_subspace_holds_the_optimal_routing(self, n_vehicles, capacity):
+        """W-state support and XY-mixer sectors hold one slot per customer. The
+        Hamiltonian ignores capacity, so its minimum over the feasible states of
+        that subspace is the optimal capacitated routing, while its overall
+        ground state is a compact assignment that may exceed capacity."""
+        problem = CVRPProblem(
+            CVRP_COST,
+            demands=CVRP_DEMANDS,
+            capacity=capacity,
+            n_vehicles=n_vehicles,
+            penalty_weight=60.0,
+        )
+        bits = enumerate_one_hot_per_block_states(3, 3 * n_vehicles)
+        assert len(bits) == (3 * n_vehicles) ** 3
+        state = problem.recommended_initial_state
+        assert (state.n_blocks, state.block_size) == (3, 3 * n_vehicles)
+        energies = compute_diagonal_energies(problem, bits)
+        bitstrings = ["".join(map(str, b)) for b in bits]
+        feasible = np.array([problem.is_feasible(s) for s in bitstrings])
+        assert feasible.any()
+
+        optimum = min(
+            sum(compute_tour_cost([0, *route, 0], CVRP_COST) for route in split)
+            for split in enumerate_route_splits(CVRP_DEMANDS, capacity, n_vehicles)
+        )
+        assert energies[feasible].min() == pytest.approx(optimum)
+
+        ground = np.argmin(energies)
+        occupancy = bits[ground].reshape(3, n_vehicles, 3).sum(axis=0)
+        assert np.all(occupancy <= 1)
+        assert np.all(occupancy[:, 1:] <= occupancy[:, :-1])
+        assert is_valid_cvrp_solution(
+            bitstrings[ground], 3, n_vehicles, CVRP_DEMANDS, math.inf
+        )
+
+    def test_over_capacity_assignment_is_infeasible_until_repaired(self):
+        problem = CVRPProblem(
+            CVRP_COST, demands=CVRP_DEMANDS, capacity=6.0, n_vehicles=2
+        )
+        over_capacity = _cvrp_one_hot_bits([(0, 0, 0), (0, 1, 1), (0, 2, 2)])
+        assert problem.is_feasible(over_capacity) is False
+        repaired, _, _ = problem.repair_infeasible_bitstring(over_capacity)
+        assert problem.is_feasible(repaired) is True
+
+    def test_solution_key_is_the_decoded_routes(self):
+        problem = CVRPProblem(
+            CVRP_COST, demands=CVRP_DEMANDS, capacity=10.0, n_vehicles=2
+        )
+        compact = _cvrp_one_hot_bits([(0, 0, 0), (0, 1, 1), (1, 0, 2)])
+        gapped = _cvrp_one_hot_bits([(0, 0, 0), (0, 2, 1), (1, 0, 2)])
+        other = _cvrp_one_hot_bits([(0, 0, 0), (1, 0, 1), (1, 1, 2)])
+        assert problem._solution_key(compact) == ((0, 1, 2, 0), (0, 3, 0))
+        assert problem._solution_key(gapped) == problem._solution_key(compact)
+        assert problem._solution_key(other) != problem._solution_key(compact)
+
+    def test_filter_ranking_merges_bitstrings_with_the_same_routes(
+        self, dummy_simulator, default_optimizer
+    ):
+        problem = CVRPProblem(
+            CVRP_COST, demands=CVRP_DEMANDS, capacity=10.0, n_vehicles=2
+        )
+        compact = _cvrp_one_hot_bits([(0, 0, 0), (0, 1, 1), (1, 0, 2)])
+        gapped = _cvrp_one_hot_bits([(0, 0, 0), (0, 2, 1), (1, 0, 2)])
+        qaoa = QAOA(
+            problem, n_layers=1, backend=dummy_simulator, optimizer=default_optimizer
+        )
+        qaoa._results["best_probs"] = {0: {compact: 0.3, gapped: 0.2}}
+        qaoa._losses_history = [{0: -1.0}]
+
+        (merged,) = qaoa.get_top_solutions(feasibility="filter")
+
+        assert merged.prob == pytest.approx(0.5)
 
     def test_is_feasible(self):
         problem = CVRPProblem(
@@ -1272,6 +2257,209 @@ class TestCVRPProblem:
             tightened.cost_hamiltonian.num_qubits < baseline.cost_hamiltonian.num_qubits
         )
 
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    @pytest.mark.parametrize(
+        "overrides, error, message",
+        [
+            (
+                {"cost_matrix": replace_entry(CVRP_COST, (0, 1), np.nan)},
+                ValueError,
+                "cost_matrix must be finite",
+            ),
+            (
+                {"cost_matrix": replace_entry(CVRP_COST, (2, 3), np.inf)},
+                ValueError,
+                "cost_matrix must be finite",
+            ),
+            (
+                {"cost_matrix": np.zeros((1, 1)), "demands": np.zeros(1)},
+                ValueError,
+                "at least one customer",
+            ),
+            ({"encoding": "dense"}, ValueError, "encoding must be"),
+            ({"depot": -1}, ValueError, "depot -1 out of range"),
+            ({"depot": 4}, ValueError, "depot 4 out of range"),
+            ({"depot": 0.0}, TypeError, "depot must be an integer"),
+            ({"n_vehicles": 0}, ValueError, "n_vehicles must be at least 1"),
+            ({"n_vehicles": 1.5}, TypeError, "n_vehicles must be an integer"),
+            ({"capacity": 0.0}, ValueError, "capacity must be finite and positive"),
+            ({"capacity": -2.0}, ValueError, "capacity must be finite and positive"),
+            ({"capacity": np.nan}, ValueError, "capacity must be finite and positive"),
+            ({"capacity": np.inf}, ValueError, "capacity must be finite and positive"),
+            (
+                {"demands": np.array([0, np.nan, 4, 2.0])},
+                ValueError,
+                "demands must be finite and non-negative",
+            ),
+            (
+                {"demands": np.array([0, -1, 4, 2.0])},
+                ValueError,
+                "demands must be finite and non-negative",
+            ),
+            (
+                {"demands": np.array([1, 3, 4, 2.0])},
+                ValueError,
+                "demand at the depot must be zero",
+            ),
+            (
+                {"demands": np.array([0, 7, 4, 2.0])},
+                ValueError,
+                "every customer demand must be at most capacity",
+            ),
+            ({"demands": np.zeros((4, 1))}, ValueError, "must be one-dimensional"),
+            ({"penalty_weight": 0.0}, ValueError, "penalty_weight must be finite"),
+            ({"penalty_weight": -1.0}, ValueError, "penalty_weight must be finite"),
+            ({"penalty_weight": np.nan}, ValueError, "penalty_weight must be finite"),
+            ({"penalty_weight": np.inf}, ValueError, "penalty_weight must be finite"),
+        ],
+    )
+    def test_invalid_arguments_are_rejected(self, encoding, overrides, error, message):
+        with pytest.raises(error, match=message):
+            _make_problem("cvrp", **{"encoding": encoding, **overrides})
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_numpy_integer_depot_and_vehicle_count_are_accepted(self, encoding):
+        problem = CVRPProblem(
+            CVRP_COST,
+            **{
+                **_DEPOT_ONE_CVRP,
+                "depot": np.int64(1),
+                "n_vehicles": np.int32(2),
+            },
+            encoding=encoding,
+        )
+        bits = _CUSTOMER_PER_VEHICLE_BITS if encoding == "one_hot" else "101100010000"
+        assert problem.compute_energy(bits) == 110.0
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_mutating_the_inputs_after_construction_changes_nothing(self, encoding):
+        bits = (
+            _CUSTOMER_PER_VEHICLE_BITS
+            if encoding == "one_hot"
+            else "10" + "00" + "11" + "01" + "00" + "00"
+        )
+        cost, demands = CVRP_COST.copy(), CVRP_DEMANDS.copy()
+        problem = _make_problem(
+            "cvrp", encoding=encoding, cost_matrix=cost, demands=demands
+        )
+        expected = _make_problem("cvrp", encoding=encoding)
+        cost[0, 1] = 999.0
+        demands[1] = 99.0
+        assert expected.is_feasible(bits) is True
+        assert problem.is_feasible(bits) is True
+        assert problem.compute_energy(bits) == expected.compute_energy(bits)
+        assert problem.penalty_weight == expected.penalty_weight
+        _assert_same_ising(problem, expected)
+
+    def test_default_penalty_is_the_cost_derived_value_for_one_hot(self):
+        # Nearest-neighbour tour 0-1-2-3-0 costs 10 + 25 + 12 + 20; the largest entry is 30.
+        problem = _make_problem("cvrp")
+        assert problem.penalty_weight == 67.0 + 30.0
+
+    def test_default_penalty_follows_the_objective_weight_and_cost_scale(self):
+        base = _make_problem("cvrp").penalty_weight
+        assert _make_problem("cvrp", objective_weight=0.5).penalty_weight == base / 2
+        scaled = _make_problem("cvrp", cost_matrix=1000.0 * CVRP_COST)
+        assert scaled.penalty_weight == pytest.approx(1000.0 * base)
+
+    def test_default_penalty_scales_the_largest_entry_with_the_customer_count(self):
+        # Nearest-neighbour tour 0-1-2-3-4-0 costs 1 + 5 + 8 + 10 + 4; the largest entry is 10.
+        problem = CVRPProblem(_M5_COST, demands=np.zeros(5), capacity=1.0, n_vehicles=2)
+        assert problem.penalty_weight == 28.0 + 2 * 10.0
+
+    def test_default_penalty_for_all_zero_costs_is_the_objective_weight(self):
+        problem = CVRPProblem(
+            np.zeros((4, 4)), demands=CVRP_DEMANDS, capacity=6.0, n_vehicles=2
+        )
+        assert problem.penalty_weight == 1.0
+
+    def test_binary_default_penalty_is_fixed(self):
+        assert _make_problem("cvrp", encoding="binary").penalty_weight == 4.0
+        scaled = _make_problem(
+            "cvrp", encoding="binary", cost_matrix=1000.0 * CVRP_COST
+        )
+        assert scaled.penalty_weight == 4.0
+
+    @pytest.mark.parametrize("encoding", ["one_hot", "binary"])
+    def test_explicit_penalty_wins(self, encoding):
+        problem = _make_problem("cvrp", encoding=encoding, penalty_weight=7.0)
+        assert problem.penalty_weight == 7.0
+
+    @pytest.mark.parametrize(
+        "kwargs, negative_cost",
+        [({"objective_weight": 0.0}, False), ({}, True)],
+        ids=["zero-objective-weight", "negative-cost"],
+    )
+    def test_default_penalty_needs_a_positive_objective_and_costs(
+        self, kwargs, negative_cost
+    ):
+        cost = replace_entry(CVRP_COST, (1, 2), -1.0) if negative_cost else CVRP_COST
+        with pytest.raises(ValueError, match="penalty_weight must be given"):
+            _make_problem("cvrp", cost_matrix=cost, **kwargs)
+        problem = _make_problem("cvrp", cost_matrix=cost, penalty_weight=5.0, **kwargs)
+        assert problem.penalty_weight == 5.0
+
+    @pytest.mark.parametrize(
+        "cost, demands, capacity, n_vehicles, n_below_old_default",
+        [
+            pytest.param(
+                [[0, 13, 19], [10, 0, 20], [15, 13, 0]],
+                [0, 1, 1],
+                10.0,
+                1,
+                1,
+                id="two-customers-one-vehicle",
+            ),
+            pytest.param(
+                [[0, 18, 10], [14, 0, 10], [1, 14, 0]],
+                [0, 1, 1],
+                10.0,
+                2,
+                2,
+                id="two-customers-two-vehicles",
+            ),
+            pytest.param(CVRP_COST, CVRP_DEMANDS, 6.0, 2, 66, id="tutorial"),
+            pytest.param(
+                [[0, 10, 15, 20], [10, 0, 35, 25], [15, 35, 0, 30], [20, 25, 30, 0]],
+                [0, 3, 4, 2],
+                10.0,
+                2,
+                118,
+                id="docs",
+            ),
+        ],
+    )
+    def test_default_penalty_makes_the_manifold_ground_state_compact(
+        self, cost, demands, capacity, n_vehicles, n_below_old_default
+    ):
+        """Among states with one slot per customer, a compact assignment is the
+        ground state and compact energies are the independent route costs;
+        penalty 4.0 left states below the best compact one."""
+        n_customers = len(demands) - 1
+
+        def enumerate_manifold(**kwargs):
+            problem = CVRPProblem(
+                np.array(cost, dtype=float),
+                demands=np.array(demands, dtype=float),
+                capacity=capacity,
+                n_vehicles=n_vehicles,
+                **kwargs,
+            )
+            return problem, *enumerate_cvrp_manifold(problem, n_customers, n_vehicles)
+
+        _, _, old_energies, old_compact = enumerate_manifold(penalty_weight=4.0)
+        assert (old_energies < old_energies[old_compact].min() - 1e-9).sum() == (
+            n_below_old_default
+        )
+
+        problem, bits, energies, compact = enumerate_manifold()
+        assert compact[np.argmin(energies)]
+        assert energies[~compact].min() > energies[compact].min() + 1e-9
+        route_costs = [
+            problem.compute_energy("".join(map(str, row))) for row in bits[compact]
+        ]
+        np.testing.assert_allclose(energies[compact], route_costs)
+
     def test_one_hot_rejects_max_steps(self):
         with pytest.raises(
             ValueError, match=r"^max_steps is only supported for encoding='binary'\.$"
@@ -1307,24 +2495,33 @@ _CUSTOM_WEIGHTS = dict(penalty_weight=3.0, objective_weight=0.5)
 
 
 def _make_problem(kind, **kwargs):
+    cost = kwargs.pop("cost_matrix", CVRP_COST)
     if kind == "tsp":
-        return TSPProblem(CVRP_COST, **kwargs)
-    return CVRPProblem(CVRP_COST, **_CVRP_ARGS, **kwargs)
+        return TSPProblem(cost, **kwargs)
+    return CVRPProblem(cost, **{**_CVRP_ARGS, **kwargs})
 
 
 def _expected_ising(kind, encoding, **kwargs):
     if kind == "tsp":
         builder = create_tsp_qubo if encoding == "one_hot" else create_tsp_hubo_binary
         poly = builder(CVRP_COST, **kwargs)
+    elif encoding == "one_hot":
+        kwargs.pop("capacity_penalty_weight", None)
+        kwargs.pop("demands", None)
+        poly = create_cvrp_qubo(CVRP_COST, _CVRP_ARGS["n_vehicles"], **kwargs)
     else:
-        builder = create_cvrp_qubo if encoding == "one_hot" else create_cvrp_hubo_binary
-        poly = builder(CVRP_COST, **_CVRP_ARGS, **kwargs)
+        poly = create_cvrp_hubo_binary(CVRP_COST, **{**_CVRP_ARGS, **kwargs})
     return qubo_to_ising(poly if encoding == "one_hot" else poly[0])
 
 
-def _assert_same_ising(problem, expected):
-    assert problem.cost_hamiltonian == expected.cost_hamiltonian
-    assert problem.loss_constant == expected.loss_constant
+def _assert_same_ising(problem, expected, *, exact=True):
+    if exact:
+        assert problem.cost_hamiltonian == expected.cost_hamiltonian
+        assert problem.loss_constant == expected.loss_constant
+        return
+    difference = (problem.cost_hamiltonian - expected.cost_hamiltonian).simplify()
+    np.testing.assert_allclose(difference.coeffs, 0.0, atol=1e-9)
+    assert problem.loss_constant == pytest.approx(expected.loss_constant)
 
 
 _KINDS = pytest.mark.parametrize("kind", ["tsp", "cvrp"])
@@ -1335,7 +2532,11 @@ def _construction_extras(kind, custom):
     if kind == "tsp":
         return dict(start_city=1 if custom else 0)
     return (
-        dict(depot=1, capacity_penalty_weight=2.0)
+        dict(
+            depot=1,
+            demands=_DEPOT_ONE_CVRP["demands"],
+            capacity_penalty_weight=2.0,
+        )
         if custom
         else dict(depot=0, capacity_penalty_weight=4.0)
     )
@@ -1354,8 +2555,12 @@ def test_problem_builds_ising_from_construction_arguments(kind, encoding, custom
     expected_encoding = encoding or "one_hot"
     assert problem.encoding == expected_encoding
     assert (problem.binary_config is None) is (expected_encoding == "one_hot")
+    if not custom and (kind == "tsp" or expected_encoding == "one_hot"):
+        weights = {**weights, "penalty_weight": problem.penalty_weight}
     _assert_same_ising(
-        problem, _expected_ising(kind, expected_encoding, **weights, **extra)
+        problem,
+        _expected_ising(kind, expected_encoding, **weights, **extra),
+        exact=not (kind == "tsp" and expected_encoding == "binary"),
     )
 
 
@@ -1367,11 +2572,12 @@ def test_problem_mixer(kind, encoding):
     if encoding == "binary":
         expected = x_mixer(n)
     else:
-        block_size, n_blocks = (
-            (3, 3) if kind == "tsp" else build_cvrp_block_structure(3, 2)
-        )
+        block_size, n_blocks = (3, 3) if kind == "tsp" else (6, 3)
         graph = build_block_xy_mixer_graph(block_size, n_blocks, range(n))
         expected = xy_mixer(graph, n_qubits=n)
+        for pauli in problem.mixer_hamiltonian.paulis:
+            touched = np.flatnonzero(pauli.x | pauli.z)
+            assert len(set(touched // block_size)) == 1
     assert problem.mixer_hamiltonian == expected
 
 

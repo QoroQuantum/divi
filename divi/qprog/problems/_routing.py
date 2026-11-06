@@ -5,10 +5,11 @@
 """Routing problem classes and utilities for QAOA (TSP, CVRP)."""
 
 import math
+import numbers
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, cached_property
 from heapq import heappop, heappush
 from itertools import combinations, pairwise, product
 from pathlib import Path
@@ -19,7 +20,7 @@ import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import linear_sum_assignment
 
-from divi.hamiltonians import qubo_to_ising, x_mixer, xy_mixer
+from divi.hamiltonians import IsingResult, qubo_to_ising, x_mixer, xy_mixer
 from divi.qprog.initial_states import (
     InitialState,
     SuperpositionState,
@@ -28,6 +29,8 @@ from divi.qprog.initial_states import (
 )
 
 from ._base import QAOAProblem
+from ._binary import BinaryOptimizationProblem
+from ._constraints import LinearConstraint
 
 # --- TSP utilities ---
 
@@ -45,27 +48,28 @@ def create_tsp_qubo(
     variable ``x_{i,t}`` indicates that city *i* is visited at time step *t*.
     The start city is fixed, reducing the problem from *n²* to *(n-1)²* qubits.
 
-    By default the **reduced phase operator** from CE-QAOA
+    The penalty that each time step holds exactly one city is always
+    included. By default the **reduced phase operator** from CE-QAOA
     (`arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_, Eq. 13) is
-    used: row constraints (each time step has exactly one city) are
-    **omitted** because they are enforced structurally by the W-state
-    initialisation and XY mixer.  Only column constraints and the
-    objective remain.
+    used: the penalty that each city takes exactly one time step is omitted,
+    because the W-state initialisation and XY mixer, which act on the blocks of
+    qubits belonging to one city, keep it satisfied.
+
+    Penalty constants are dropped: a valid tour has energy
+    ``objective_weight * tour_cost - n_penalties * penalty_weight * (n - 1)``,
+    with ``n_penalties`` equal to 1 if ``reduced`` else 2.
 
     Args:
         cost_matrix: Symmetric (n × n) distance/cost matrix.
         start_city: Index of the fixed start/end city. Defaults to 0.
         penalty_weight: Penalty strength for constraint violations.
         objective_weight: Weight for the objective function.
-        reduced: If ``True`` (default), omit row penalties — the correct
-            choice when using CE-QAOA (W-state + XY mixer) since row
-            one-hot constraints are enforced by the ansatz.
-
-            Set to ``False`` only if you are using this QUBO with a
-            **standard QAOA** ansatz (Hadamard init + X mixer) or any
-            other method that does **not** structurally enforce row
-            constraints.  In that case both row and column penalties are
-            included so the Hamiltonian alone encodes feasibility.
+        reduced: If ``True`` (default), omit the per-city penalties. Only valid
+            for states that keep every city in exactly one time step, as with
+            CE-QAOA's W-state initialisation and XY mixer. If ``False``, the
+            per-city penalties are included as well, so the Hamiltonian alone
+            encodes feasibility under a standard QAOA ansatz (Hadamard
+            initialisation, X mixer).
 
     Returns:
         Upper-triangular QUBO matrix of shape ``(m², m²)`` where
@@ -85,17 +89,15 @@ def create_tsp_qubo(
     I_m = np.eye(m)
     J_m = np.ones((m, m))
 
-    if reduced:
-        # Row penalties OMITTED — enforced by W-state + XY mixer (CE-QAOA).
-        Q = np.zeros((m * m, m * m))
-    else:
-        # Row penalties: A * sum_t (1 - sum_i x_{i,t})^2
-        Q = penalty_weight * np.kron(J_m - I_m, I_m)
+    # Per-step penalties: A * sum_t (1 - sum_i x_{i,t})^2
+    Q = penalty_weight * np.kron(J_m - I_m, I_m)
 
-    # --- Column penalties: A * sum_i (1 - sum_t x_{i,t})^2 ---
-    Q += penalty_weight * np.kron(I_m, J_m - I_m)
+    if not reduced:
+        # Per-city penalties: A * sum_i (1 - sum_t x_{i,t})^2. Omitted when reduced:
+        # the W-state + XY mixer blocks (one per city) enforce them.
+        Q += penalty_weight * np.kron(I_m, J_m - I_m)
 
-    # Linear term: each variable appears in column penalty (and row if not reduced)
+    # Linear term: each variable appears in the per-step penalty (and per-city if not reduced)
     n_penalties = 1 if reduced else 2
     np.fill_diagonal(Q, np.diag(Q) - n_penalties * penalty_weight)
 
@@ -260,137 +262,131 @@ def _check_routing_inputs(
     return n_nodes
 
 
+def _check_encoding(encoding: str) -> None:
+    if encoding not in ("one_hot", "binary"):
+        raise ValueError(f"encoding must be 'one_hot' or 'binary', got {encoding!r}.")
+
+
+def _check_integer(name: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise TypeError(f"{name} must be an integer, got {value!r}.")
+
+
+def _check_node_index(name: str, value: Any, n_nodes: int) -> None:
+    _check_integer(name, value)
+    if not (0 <= value < n_nodes):
+        raise ValueError(f"{name} {value} out of range [0, {n_nodes}).")
+
+
+def _check_cvrp_inputs(
+    cost_matrix: npt.NDArray[np.float64],
+    demands: npt.NDArray[np.float64],
+    capacity: float,
+    n_vehicles: int,
+    depot: int,
+    encoding: str,
+) -> None:
+    if demands.ndim != 1:
+        raise ValueError(f"demands must be one-dimensional, got shape {demands.shape}.")
+    n_nodes = _check_routing_inputs(cost_matrix, demands)
+    if n_nodes < 2:
+        raise ValueError("cost_matrix must cover the depot and at least one customer.")
+    if not np.isfinite(cost_matrix).all():
+        raise ValueError("cost_matrix must be finite.")
+    _check_encoding(encoding)
+    _check_node_index("depot", depot, n_nodes)
+    _check_integer("n_vehicles", n_vehicles)
+    if n_vehicles < 1:
+        raise ValueError(f"n_vehicles must be at least 1, got {n_vehicles}.")
+    if not (math.isfinite(capacity) and capacity > 0):
+        raise ValueError(f"capacity must be finite and positive, got {capacity}.")
+    if not np.isfinite(demands).all() or (demands < 0).any():
+        raise ValueError("demands must be finite and non-negative.")
+    if demands[depot] != 0:
+        raise ValueError(f"demand at the depot must be zero, got {demands[depot]}.")
+    if demands.max() > capacity + 1e-9:
+        raise ValueError(
+            f"every customer demand must be at most capacity {capacity}, "
+            f"got {demands.max()}."
+        )
+
+
 def create_cvrp_qubo(
     cost_matrix: npt.NDArray[np.floating],
-    demands: npt.NDArray[np.floating],
-    capacity: float,
     n_vehicles: int,
     depot: int = 0,
     penalty_weight: float = 4.0,
     objective_weight: float = 1.0,
-    capacity_penalty_weight: float = 4.0,
 ) -> npt.NDArray[np.floating]:
     """Generate a QUBO for CVRP with a fixed depot.
 
-    Uses one-hot block encoding where each vehicle *v* has a block of
-    ``n_customers × max_steps`` qubits. The depot is fixed and not encoded.
+    Uses one-hot block encoding where ``x_{i,v,t}`` indicates that customer *i*
+    is served by vehicle *v* at step *t*. The depot is fixed and not encoded.
 
-    Constraints enforced via init + mixer (row one-hot per vehicle block):
-    - Each vehicle visits at most one customer per time step.
+    Enforced by the W-state initialisation and XY mixer, which act on each
+    customer's block of ``n_vehicles × max_steps`` qubits (reduced phase
+    operator, as in :func:`create_tsp_qubo`):
+    - Each customer is visited exactly once across all vehicles and steps.
 
-    Constraints in the phase operator (penalties):
-    - **Column one-hot** (penalty_weight): each customer visited exactly once
-      across all vehicles.
-    - **Capacity** (capacity_penalty_weight): each vehicle route does not exceed capacity.
-    - **Objective** (objective_weight): minimise total travel distance.
+    Penalties in the phase operator:
+    - **Slot occupancy** (penalty_weight): penalises two customers in one
+      (vehicle, step) slot.
+    - **Compactness** (penalty_weight): penalises an occupied step that follows
+      an empty one.
+    - **Objective** (objective_weight): minimise total travel distance. The
+      return edge is charged at the last occupied step.
 
-    Variable ordering: ``x_{v,i,t}`` → qubit ``v * K * T + t * K + i``
-    where K = n_customers, T = max_steps = K.
+    Variable ordering: ``x_{i,v,t}`` → qubit ``i * V * T + v * T + t``
+    where K = n_customers, V = n_vehicles, T = max_steps = K.
+
+    Capacity is not penalised; it is enforced when decoding, filtering and
+    repairing solutions.
 
     The QUBO matrix is built via Kronecker products and vectorised
     numpy operations.
 
     Args:
         cost_matrix: Distance matrix of shape ``(n_nodes, n_nodes)``.
-        demands: Customer demands, shape ``(n_nodes,)``. Depot demand should be 0.
-        capacity: Vehicle capacity.
         n_vehicles: Number of vehicles.
         depot: Index of the depot node. Defaults to 0.
-        penalty_weight: Penalty for customer-visit constraints.
+        penalty_weight: Penalty for slot-occupancy and compactness violations.
         objective_weight: Weight for the objective function.
-        capacity_penalty_weight: Penalty for capacity constraint violations.
 
     Returns:
         Upper-triangular QUBO matrix compatible with ``QUBOProblemTypes``.
 
     Raises:
-        ValueError: If inputs are inconsistent.
+        ValueError: If ``cost_matrix`` is not square.
     """
-    n_nodes = _check_routing_inputs(cost_matrix, demands)
+    n_nodes = _check_routing_inputs(cost_matrix)
 
     customers = [c for c in range(n_nodes) if c != depot]
     K = len(customers)  # n_customers
     V = n_vehicles
     T = K  # max_steps = n_customers (worst case)
-    N = V * K * T  # total qubits
 
-    # Variable ordering: x_{v,i,t} -> qubit v*K*T + t*K + i
-    # Reshape views use (V, T, K) -> flatten to N
-
+    # Variable ordering: x_{i,v,t} -> qubit i*V*T + v*T + t
     I_K = np.eye(K)
-    J_T = np.ones((T, T))
-    I_V = np.eye(V)
-    J_V = np.ones((V, V))
+    J_K = np.ones((K, K))
 
-    Q = np.zeros((N, N))
+    # Slot occupancy: A * s * (s - 1) with s = sum_i x_{i,v,t}, no linear term.
+    Q = penalty_weight * np.kron(J_K - I_K, np.eye(V * T))
 
-    # --- Customer visit constraints ---
-    # For each customer i: (sum_{v,t} x_{v,i,t} - 1)^2
-    # The sum runs over all (v,t) pairs for a fixed customer i.
-    # Off-diagonal: 2A between all pairs of qubits sharing the same customer i
-    #   across different (v,t) slots.
-    # In Kronecker form with ordering (V, T, K):
-    #   same-customer coupling = I_K, all (v,t) pairs = J_V ⊗ J_T
-    #   off-diagonal part: (J_V ⊗ J_T - I_{VT}) ⊗ I_K  (exclude self-pairs)
-    visit_offdiag = np.kron(np.kron(J_V, J_T) - np.eye(V * T), I_K)
-    Q += penalty_weight * visit_offdiag
-
-    # Linear: -A per variable (from -2*x + x^2 = -x per constraint)
-    # Each variable participates in exactly one customer constraint
-    np.fill_diagonal(Q, np.diag(Q) - penalty_weight)
-
-    # --- Capacity constraints ---
-    # For each vehicle v: (sum_{i,t} d_i * x_{v,i,t} - C)^2
-    # = sum_{i,t} sum_{j,s} d_i*d_j * x_{v,i,t} * x_{v,j,s}
-    #   - 2C * sum_{i,t} d_i * x_{v,i,t} + C^2
-    #
-    # The quadratic part for a single vehicle is:
-    #   d ⊗ d^T ⊗ J_T  (all timestep pairs, weighted by demand products)
-    # where d is the customer demand vector.
-    d = demands[customers]
-    dd = np.outer(d, d)  # K×K demand product matrix
-
-    # Per-vehicle capacity quadratic: (J_T ⊗ dd) for each vehicle
-    # Across vehicles: block-diagonal (I_V)
-    cap_quad_per_vehicle = np.kron(J_T, dd)  # (KT × KT)
-    Q += capacity_penalty_weight * np.kron(I_V, cap_quad_per_vehicle)
-
-    # Capacity linear: -2C * d_i per variable (+ d_i^2 from diagonal of quad)
-    # The d_i^2 is already in the diagonal of cap_quad.
-    # We need: -2C * d_i additionally on the diagonal.
-    # d_i for each qubit: tile d across all (V, T) slots
-    d_per_qubit = np.tile(d, V * T)
-    np.fill_diagonal(
-        Q, np.diag(Q) - 2.0 * capacity_penalty_weight * capacity * d_per_qubit
+    # Objective: x_{i,v,t} * x_{j,v,t+1} costs W[i,j]; the return edge
+    # c_i * x_{i,v,t} * (1 - s_{v,t+1}) is charged at the last occupied step.
+    W = cost_matrix[np.ix_(customers, customers)]
+    to_depot = cost_matrix[customers, depot]
+    from_depot = cost_matrix[depot, customers]
+    S = np.eye(T, k=1)
+    # Compactness: B * sum_t s_{v,t+1} * (1 - s_{v,t}) keeps routes in steps 0..len-1.
+    step_coupling = (
+        objective_weight * (W - np.outer(to_depot, np.ones(K))) - penalty_weight * J_K
     )
-
-    # --- Objective: travel cost ---
-    W = cost_matrix[np.ix_(customers, customers)]  # K×K reduced cost matrix
-
-    # Consecutive steps: x_{v,i,t} * x_{v,j,t+1} with weight W[i,j]
-    # Shift matrix S[t, t+1] = 1
-    S = np.zeros((T, T))
-    for t in range(T - 1):
-        S[t, t + 1] = 1.0
-
-    # Per-vehicle: W ⊗ S (customer-to-customer across consecutive timesteps)
-    # Across vehicles: block-diagonal (I_V)
-    obj_consecutive = np.kron(S, W)  # (KT × KT)
-    Q += objective_weight * np.kron(I_V, obj_consecutive)
-
-    # Depot edges (linear terms)
-    depot_to_first = cost_matrix[depot, customers]  # K vector
-    last_to_depot = cost_matrix[customers, depot]  # K vector
-
-    for v in range(V):
-        base = v * K * T
-        # depot -> first timestep (t=0): weight on x_{v,i,0}
-        for i in range(K):
-            Q[base + i, base + i] += objective_weight * depot_to_first[i]
-        # last timestep (t=T-1) -> depot: weight on x_{v,i,T-1}
-        for i in range(K):
-            q = base + (T - 1) * K + i
-            Q[q, q] += objective_weight * last_to_depot[i]
+    Q += np.kron(step_coupling, np.kron(np.eye(V), S))
+    linear = objective_weight * np.repeat(to_depot, V * T)
+    linear += penalty_weight * np.tile(np.arange(T) >= 1, K * V)
+    linear[::T] += objective_weight * np.repeat(from_depot, V)
+    np.fill_diagonal(Q, np.diag(Q) + linear)
 
     # Return upper-triangular matrix
     return np.triu(Q + Q.T - np.diag(np.diag(Q)))
@@ -408,11 +404,19 @@ def build_cvrp_block_structure(
 
     Returns:
         tuple[int, int]: Pair ``(block_size, n_blocks)`` where
-        ``block_size = n_customers`` (one qubit per customer per time step) and
-        ``n_blocks = n_vehicles * n_customers`` (one block per vehicle × time step).
+        ``block_size = n_vehicles * n_customers`` (one qubit per vehicle × time
+        step slot) and ``n_blocks = n_customers`` (one block per customer).
     """
     max_steps = n_customers
-    return n_customers, n_vehicles * max_steps
+    return n_vehicles * max_steps, n_customers
+
+
+def _reshape_cvrp_bits(
+    bitstring: str, n_customers: int, n_vehicles: int
+) -> npt.NDArray[np.int_]:
+    """Bits as an array indexed ``[vehicle, step, customer]``."""
+    bits = np.array([int(b) for b in bitstring])
+    return bits.reshape(n_customers, n_vehicles, n_customers).transpose(1, 2, 0)
 
 
 def is_valid_cvrp_solution(
@@ -427,6 +431,7 @@ def is_valid_cvrp_solution(
 
     Validates:
     - Each customer is visited exactly once across all vehicles.
+    - Each (vehicle, step) slot holds at most one customer.
     - Each vehicle's total demand does not exceed capacity.
 
     Args:
@@ -446,13 +451,9 @@ def is_valid_cvrp_solution(
         return False
 
     customers = [c for c in range(len(demands)) if c != depot]
-    bits = np.array([int(b) for b in bitstring]).reshape(
-        n_vehicles, max_steps, n_customers
-    )
+    bits = _reshape_cvrp_bits(bitstring, n_customers, n_vehicles)
 
-    # Check each customer visited exactly once
-    total_visits = bits.sum(axis=(0, 1))
-    if not np.all(total_visits == 1):
+    if not np.all(bits.sum(axis=(0, 1)) == 1) or np.any(bits.sum(axis=2) > 1):
         return False
 
     # Check capacity per vehicle
@@ -497,9 +498,7 @@ def decode_cvrp_solution(
         return None
 
     customers = [c for c in range(n_nodes) if c != depot]
-    bits = np.array([int(b) for b in bitstring]).reshape(
-        n_vehicles, max_steps, n_customers
-    )
+    bits = _reshape_cvrp_bits(bitstring, n_customers, n_vehicles)
 
     routes = []
     for v in range(n_vehicles):
@@ -514,6 +513,125 @@ def decode_cvrp_solution(
     return routes
 
 
+_MAX_EXACT_REPAIR_CUSTOMERS = 10
+
+
+def _plan_cvrp_vehicle_routes(
+    match: npt.NDArray[np.floating],
+    from_depot: npt.NDArray[np.floating],
+    between: npt.NDArray[np.floating],
+    to_depot: npt.NDArray[np.floating],
+    empty_cost: float,
+) -> dict[int, tuple[tuple[int, float], tuple[int, ...]]]:
+    """Best ``((-matches, cost), order)`` for every customer subset on one vehicle.
+
+    ``match[t, i]`` is 1 when customer ``i`` at step ``t`` agrees with the
+    input bits. Dynamic programming over subsets and last customers.
+    """
+    n = len(from_depot)
+    table: dict[tuple[int, int], tuple[int, float, int]] = {}
+    best: dict[int, tuple[tuple[int, float], tuple[int, ...]]] = {
+        0: ((0, empty_cost), ())
+    }
+    for mask in range(1, 1 << n):
+        step = mask.bit_count() - 1
+        finals = []
+        for j in range(n):
+            if not mask >> j & 1:
+                continue
+            prev = mask ^ (1 << j)
+            gain = -int(match[step, j])
+            if prev == 0:
+                entry = (gain, float(from_depot[j]), -1)
+            else:
+                entry = min(
+                    (
+                        table[prev, i][0] + gain,
+                        table[prev, i][1] + float(between[i, j]),
+                        i,
+                    )
+                    for i in range(n)
+                    if prev >> i & 1
+                )
+            table[mask, j] = entry
+            finals.append((entry[0], entry[1] + float(to_depot[j]), j))
+        neg_matches, cost, last = min(finals)
+        order = []
+        covered, j = mask, last
+        while j >= 0:
+            order.append(j)
+            covered, j = covered ^ (1 << j), table[covered, j][2]
+        best[mask] = ((neg_matches, cost), tuple(reversed(order)))
+    return best
+
+
+def _search_feasible_cvrp_routes(
+    bits: npt.NDArray[np.floating],
+    cost_matrix: npt.NDArray[np.floating],
+    customer_demands: npt.NDArray[np.floating],
+    capacity: float,
+    customers: Sequence[int],
+    n_vehicles: int,
+    depot: int,
+) -> npt.NDArray[np.int_] | None:
+    """Capacity-feasible compact assignment as a ``[vehicle, step, customer]`` array.
+
+    Picks, over every split of the customers into vehicle loads within
+    ``capacity``, the assignment that agrees with the most input ``bits``, then
+    has the lowest route cost. Returns ``None`` when no split fits.
+    """
+    n = len(customers)
+    from_depot = cost_matrix[depot, customers]
+    between = cost_matrix[np.ix_(customers, customers)]
+    to_depot = cost_matrix[customers, depot]
+    loads = [0.0] * (1 << n)
+    for mask in range(1, 1 << n):
+        low = mask & -mask
+        loads[mask] = loads[mask ^ low] + float(customer_demands[low.bit_length() - 1])
+
+    full = (1 << n) - 1
+    reached: dict[int, tuple[int, float]] = {0: (0, 0.0)}
+    stages = []
+    for v in range(n_vehicles):
+        plans = _plan_cvrp_vehicle_routes(
+            bits[v * n : (v + 1) * n],
+            from_depot,
+            between,
+            to_depot,
+            float(cost_matrix[depot, depot]),
+        )
+        extended: dict[int, tuple[int, float]] = {}
+        picks: dict[int, int] = {}
+        for covered, (neg_matches, cost) in reached.items():
+            rest = full ^ covered
+            sub = rest
+            while True:
+                if loads[sub] <= capacity + 1e-9:
+                    (sub_matches, sub_cost), _ = plans[sub]
+                    total = covered | sub
+                    candidate = (neg_matches + sub_matches, cost + sub_cost)
+                    if total not in extended or candidate < extended[total]:
+                        extended[total] = candidate
+                        picks[total] = sub
+                if sub == 0:
+                    break
+                sub = (sub - 1) & rest
+        reached = extended
+        stages.append((picks, plans))
+    if full not in reached:
+        return None
+
+    packed = np.zeros((n_vehicles, n, n), dtype=int)
+    covered = full
+    for v in reversed(range(n_vehicles)):
+        picks, plans = stages[v]
+        sub = picks[covered]
+        for step, customer in enumerate(plans[sub][1]):
+            packed[v, step, customer] = 1
+        covered ^= sub
+    return packed
+
+
 def repair_cvrp_solution(
     bitstring: str,
     n_customers: int,
@@ -525,11 +643,16 @@ def repair_cvrp_solution(
 ) -> tuple[str, list[list[int]], float]:
     """Repair an infeasible CVRP bitstring.
 
-    Uses a greedy assignment strategy:
     1. Parse the soft assignment matrix.
     2. Use the Hungarian algorithm on a cost matrix derived from the
        soft assignments to find the best customer-to-(vehicle, timestep) mapping.
     3. Verify capacity constraints; reassign overflows greedily.
+    4. If a vehicle is still over capacity and there are at most
+       ``_MAX_EXACT_REPAIR_CUSTOMERS`` customers, search every split of the
+       customers into vehicle loads within capacity. Among the compact
+       assignments of those splits, the one agreeing with the most input bits
+       wins, then the lowest route cost. When no split fits, the result of
+       step 3 is returned.
 
     Args:
         bitstring: Binary string.
@@ -547,8 +670,10 @@ def repair_cvrp_solution(
     n_nodes = len(demands)
     customers = [c for c in range(n_nodes) if c != depot]
 
-    bits = np.array([int(b) for b in bitstring], dtype=np.float64).reshape(
-        n_vehicles * max_steps, n_customers
+    bits = (
+        np.array([int(b) for b in bitstring], dtype=np.float64)
+        .reshape(n_customers, n_vehicles * max_steps)
+        .T
     )
 
     # Use Hungarian algorithm to find best assignment of customers
@@ -600,7 +725,23 @@ def repair_cvrp_solution(
                 else:
                     vehicle_demand += cust_demand
 
-    repaired_bitstring = "".join(str(x) for x in repaired.flatten())
+    if (
+        0 < n_customers <= _MAX_EXACT_REPAIR_CUSTOMERS
+        and np.einsum("vtc,c->v", repaired, customer_demands).max() > capacity + 1e-9
+    ):
+        packed = _search_feasible_cvrp_routes(
+            bits,
+            cost_matrix,
+            customer_demands,
+            capacity,
+            customers,
+            n_vehicles,
+            depot,
+        )
+        if packed is not None:
+            repaired = packed
+
+    repaired_bitstring = "".join(str(x) for x in repaired.transpose(2, 0, 1).flatten())
     routes = decode_cvrp_solution(
         repaired_bitstring, n_customers, n_vehicles, depot, n_nodes
     )
@@ -1471,13 +1612,13 @@ def parse_vrp_solution(
 
 
 class _RoutingProblemBase(QAOAProblem):
-    """Shared base for routing problems.
+    """Base for the QUBO/HUBO-backed :class:`CVRPProblem`.
 
-    Stores the :class:`IsingResult` and mixer after subclass constructors
-    call :meth:`_init_ising`.
+    The constructor calls :meth:`_set_hamiltonian_spec`; the Ising conversion
+    and mixer are built on first use.
     """
 
-    def _init_ising(
+    def _set_hamiltonian_spec(
         self,
         qubo,
         *,
@@ -1486,53 +1627,208 @@ class _RoutingProblemBase(QAOAProblem):
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
         use_constrained_mixer: bool = True,
     ) -> None:
-        """Shared Ising conversion + mixer setup."""
+        self._qubo = qubo
         self._block_size = block_size
         self._n_blocks = n_blocks
-        self._ising = qubo_to_ising(qubo, hamiltonian_builder=hamiltonian_builder)
+        self._hamiltonian_builder = hamiltonian_builder
+        self._use_constrained_mixer = use_constrained_mixer
 
-        if use_constrained_mixer:
-            graph = build_block_xy_mixer_graph(
-                block_size, n_blocks, range(self._ising.n_qubits)
-            )
-            self._mixer_hamiltonian = xy_mixer(graph, n_qubits=self._ising.n_qubits)
-        else:
-            self._mixer_hamiltonian = x_mixer(self._ising.n_qubits)
+    @cached_property
+    def _ising(self) -> IsingResult:
+        return qubo_to_ising(self._qubo, hamiltonian_builder=self._hamiltonian_builder)
 
     @property
     def cost_hamiltonian(self) -> SparsePauliOp:
         return self._ising.cost_hamiltonian
 
-    @property
+    @cached_property
     def mixer_hamiltonian(self) -> SparsePauliOp:
-        return self._mixer_hamiltonian
+        if not self._use_constrained_mixer:
+            return x_mixer(self._ising.n_qubits)
+        n_qubits = self._block_size * self._n_blocks
+        graph = build_block_xy_mixer_graph(
+            self._block_size, self._n_blocks, range(n_qubits)
+        )
+        return xy_mixer(graph, n_qubits=n_qubits)
 
     @property
     def loss_constant(self) -> float:
         return self._ising.loss_constant
 
 
+# --- TSP decomposition ---
+
+
+def _split_cities_into_clusters(
+    cost_matrix: npt.NDArray[np.floating], max_size: int
+) -> list[list[int]]:
+    """Group cities into clusters of at most ``max_size`` by average-linkage
+    agglomeration, merging the closest pair whose union still fits.
+    Deterministic; clusters are sorted city lists ordered by first city."""
+    n = len(cost_matrix)
+    sums = np.array((cost_matrix + cost_matrix.T) / 2, dtype=np.float64)
+    sizes = np.ones(n)
+    members = [[city] for city in range(n)]
+    upper = np.triu(np.ones((n, n), dtype=bool), k=1)
+    while True:
+        fits = upper & (sizes[:, None] + sizes[None, :] <= max_size)
+        if not fits.any():
+            break
+        average = np.where(fits, sums / np.outer(sizes, sizes), np.inf)
+        a, b = divmod(int(np.argmin(average)), n)
+        sums[a] += sums[b]
+        sums[:, a] += sums[:, b]
+        sizes[a] += sizes[b]
+        sizes[b] = max_size + 1
+        members[a] = sorted(members[a] + members[b])
+        members[b] = []
+    return sorted((cluster for cluster in members if cluster), key=lambda c: c[0])
+
+
+def _patch_cycles_into_tour(
+    cycle_groups: Sequence[Sequence[int]], cost_matrix: npt.NDArray[np.floating]
+) -> list[int]:
+    """Merge city cycles into one, repeatedly swapping the edge pair whose
+    exchange between two cycles adds the least cost.
+
+    Raises:
+        ValueError: If there are no cycles or a cycle is empty.
+    """
+    cycles: list[list[int]] = [list(cycle) for cycle in cycle_groups]
+    if not cycles or not all(cycles):
+        raise ValueError("cycles must be non-empty and each hold at least one city.")
+    while len(cycles) > 1:
+        best = (math.inf, 0, 1, 0, 0, False)
+        for ia, ib in combinations(range(len(cycles)), 2):
+            a, b = cycles[ia], cycles[ib]
+            for i, j in product(range(len(a)), range(len(b))):
+                a0, a1 = a[i], a[(i + 1) % len(a)]
+                b0, b1 = b[j], b[(j + 1) % len(b)]
+                removed = cost_matrix[a0, a1] + cost_matrix[b0, b1]
+                for reverse, added in (
+                    (False, cost_matrix[a0, b1] + cost_matrix[b0, a1]),
+                    (True, cost_matrix[a0, b0] + cost_matrix[b1, a1]),
+                ):
+                    if added - removed < best[0]:
+                        best = (added - removed, ia, ib, i, j, reverse)
+        _, ia, ib, i, j, reverse = best
+        a, b = cycles[ia], cycles[ib]
+        spliced = b[j::-1] + b[:j:-1] if reverse else b[j + 1 :] + b[: j + 1]
+        merged = a[: i + 1] + spliced + a[i + 1 :]
+        cycles = [c for k, c in enumerate(cycles) if k not in (ia, ib)] + [merged]
+    return cycles[0]
+
+
 # --- TSPProblem ---
 
 
-class TSPProblem(_RoutingProblemBase):
-    """Travelling Salesman Problem for QAOA.
+def _drop_zero_terms(
+    terms: Mapping[tuple[int, ...], float],
+) -> dict[tuple[Hashable, ...], float]:
+    return {key: coeff for key, coeff in terms.items() if coeff != 0.0}
+
+
+def _compute_nearest_neighbour_cost(
+    cost_matrix: npt.NDArray[np.floating], start_city: int
+) -> float:
+    """Cost of the round trip from ``start_city`` that always moves to the closest unvisited city."""
+    unvisited = set(range(len(cost_matrix))) - {start_city}
+    city, total = start_city, 0.0
+    while unvisited:
+        nearest = min(unvisited, key=cost_matrix[city].__getitem__)
+        total += cost_matrix[city, nearest]
+        unvisited.remove(nearest)
+        city = nearest
+    return float(total + cost_matrix[city, start_city])
+
+
+def _check_default_penalty_inputs(
+    cost_matrix: npt.NDArray[np.floating], objective_weight: float
+) -> None:
+    if objective_weight <= 0 or (cost_matrix < 0).any():
+        raise ValueError(
+            "penalty_weight must be given when objective_weight is not positive "
+            "or cost_matrix has negative entries."
+        )
+
+
+def _compute_default_tsp_penalty(
+    cost_matrix: npt.NDArray[np.floating],
+    start_city: int,
+    objective_weight: float,
+    encoding: str,
+) -> float:
+    """Penalty weight: ``objective_weight`` times the nearest-neighbour tour cost,
+    doubled for ``"binary"``."""
+    _check_default_penalty_inputs(cost_matrix, objective_weight)
+    scale = objective_weight * (
+        _compute_nearest_neighbour_cost(cost_matrix, start_city) or 1.0
+    )
+    return scale if encoding == "one_hot" else 2.0 * scale
+
+
+def _compute_default_cvrp_penalty(
+    cost_matrix: npt.NDArray[np.floating], depot: int, objective_weight: float
+) -> float:
+    """One-hot CVRP penalty weight: ``objective_weight`` times the nearest-neighbour
+    tour cost from the depot plus ``max(n_customers - 2, 1)`` times the largest
+    cost entry, or ``objective_weight`` when both are zero."""
+    _check_default_penalty_inputs(cost_matrix, objective_weight)
+    n_customers = len(cost_matrix) - 1
+    scale = _compute_nearest_neighbour_cost(cost_matrix, depot) + max(
+        n_customers - 2, 1
+    ) * float(cost_matrix.max())
+    return objective_weight * (scale or 1.0)
+
+
+class TSPProblem(BinaryOptimizationProblem):
+    """Travelling Salesman Problem for QAOA and PCE.
+
+    A :class:`~divi.qprog.problems.BinaryOptimizationProblem` over the
+    assignment variables ``x_{i,t}`` (city *i* at time step *t*, qubit
+    ``i*(n-1) + t``) whose objective is the tour length.
 
     Supports two encodings:
 
-    * ``"one_hot"`` — assignment-matrix encoding with W-state initialisation
-      and an XY mixer that preserves the one-hot constraint per time slot.
-      Qubit count: ``(n-1)²``.
-    * ``"binary"`` — log-encoded slot bits (CE-QAOA binary) with
-      Hadamard initialisation and a transverse-field mixer. Qubit count:
-      ``(n-1) · ⌈log₂(n)⌉`` before quadratization.
+    * ``"one_hot"`` — each city takes one time step and each step holds one
+      city, both encoded as constraints, so ``constraints`` is populated
+      and :class:`~divi.qprog.algorithms.PCE`, ``relaxed_energy`` and
+      :func:`~divi.backends.characterization.characterize_and_validate` use
+      both. QAOA starts from a W-state with an XY mixer on each city's block
+      of qubits, and its cost Hamiltonian omits the per-city penalty the mixer
+      enforces. Qubit count: ``(n-1)²``.
+    * ``"binary"`` — log-encoded slot bits with Hadamard initialisation and a
+      transverse-field mixer. Qubit count: ``(n-1) · ⌈log₂(n)⌉``. No linear
+      constraints; the Hamiltonian omits the constant of each city's visit
+      penalty.
+
+    The Hamiltonians are built on first use, and the constructor copies
+    ``cost_matrix``.
 
     Args:
-        cost_matrix: Symmetric distance/cost matrix of shape ``(n, n)``.
-        start_city: Index of the fixed start city. Defaults to 0.
+        cost_matrix: Symmetric, finite distance/cost matrix of shape ``(n, n)``
+            with ``n >= 3``.
+        start_city: Integer index of the fixed start city. Defaults to 0.
         encoding: ``"one_hot"`` or ``"binary"``. Defaults to ``"one_hot"``.
-        penalty_weight: Constraint penalty strength. Defaults to 4.0.
+        penalty_weight: Constraint penalty strength. ``None`` (default) picks
+            ``objective_weight`` times the nearest-neighbour tour cost (twice
+            that for ``"binary"``). Needs non-negative costs and a positive
+            ``objective_weight``.
         objective_weight: Objective weight. Defaults to 1.0.
+        max_cities_per_partition: Enables :meth:`decompose`. Cities are
+            clustered into groups of at most this many (at least 3; ``n`` or
+            more gives one group). Each group of three or more becomes a
+            sub-:class:`TSPProblem`, and aggregation patches the sub-tours by
+            repeatedly merging the pair whose edge exchange adds the least
+            cost. Invalid one-hot sub-solutions are Hungarian-repaired; invalid
+            binary ones fall back to index order. Requires a symmetric cost
+            matrix.
+
+    Raises:
+        ValueError: If ``cost_matrix`` is not square, has fewer than 3 cities or
+            a non-finite entry, if ``encoding`` is not ``"one_hot"`` or
+            ``"binary"``, or if ``start_city`` is out of range.
+        TypeError: If ``start_city`` is not an integer.
     """
 
     def __init__(
@@ -1541,35 +1837,62 @@ class TSPProblem(_RoutingProblemBase):
         *,
         start_city: int = 0,
         encoding: Literal["one_hot", "binary"] = "one_hot",
-        penalty_weight: float = 4.0,
+        penalty_weight: float | None = None,
         objective_weight: float = 1.0,
+        max_cities_per_partition: int | None = None,
     ):
-        self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
+        if max_cities_per_partition is not None and max_cities_per_partition < 3:
+            raise ValueError(
+                f"max_cities_per_partition must be at least 3, got {max_cities_per_partition}."
+            )
+        cost_matrix = np.array(cost_matrix, dtype=np.float64)
+        n = _check_routing_inputs(cost_matrix)
+        if n < 3:
+            raise ValueError(f"cost_matrix must cover at least 3 cities, got {n}.")
+        if not np.isfinite(cost_matrix).all():
+            raise ValueError("cost_matrix must be finite.")
+        _check_encoding(encoding)
+        _check_node_index("start_city", start_city, n)
+        start_city = int(start_city)
+        self._cost_matrix = cost_matrix
         self._start_city = start_city
-        self._n_cities = self._cost_matrix.shape[0]
+        self._n_cities = n
         self._encoding = encoding
+        self._objective_weight = objective_weight
+        self._explicit_penalty_weight = penalty_weight
+        self._max_cities_per_partition = max_cities_per_partition
         self._binary_config: BinaryBlockConfig | None = None
-        m = self._n_cities - 1
+        m = n - 1
+        if penalty_weight is None:
+            penalty_weight = _compute_default_tsp_penalty(
+                cost_matrix, start_city, objective_weight, encoding
+            )
 
         if encoding == "binary":
-            hubo, self._binary_config = create_tsp_hubo_binary(
-                self._cost_matrix,
-                start_city=start_city,
-                penalty_weight=penalty_weight,
-                objective_weight=objective_weight,
+            objective, self._binary_config = create_tsp_hubo_binary(
+                cost_matrix, start_city, 0.0, objective_weight
             )
-            self._init_ising(
-                hubo,
-                block_size=self._binary_config.bits_per_slot,
-                n_blocks=self._binary_config.n_slots,
-                hamiltonian_builder="native",
-                use_constrained_mixer=False,
+            penalty, _ = create_tsp_hubo_binary(cost_matrix, start_city, 1.0, 0.0)
+            super().__init__(
+                _drop_zero_terms(objective),
+                penalty=_drop_zero_terms(penalty),
+                penalty_weight=penalty_weight,
             )
         else:
-            qubo = create_tsp_qubo(
-                self._cost_matrix, start_city, penalty_weight, objective_weight
+            steps: list[dict[Hashable, float]] = [
+                {m * city + t: 1.0 for city in range(m)} for t in range(m)
+            ]
+            cities: list[dict[Hashable, float]] = [
+                {m * city + t: 1.0 for t in range(m)} for city in range(m)
+            ]
+            super().__init__(
+                create_tsp_qubo(cost_matrix, start_city, 0.0, objective_weight),
+                constraints=[
+                    LinearConstraint(coefficients, "==", 1)
+                    for coefficients in (*steps, *cities)
+                ],
+                penalty_weight=penalty_weight,
             )
-            self._init_ising(qubo, block_size=m, n_blocks=m)
 
     @property
     def encoding(self) -> str:
@@ -1579,29 +1902,68 @@ class TSPProblem(_RoutingProblemBase):
     def binary_config(self) -> BinaryBlockConfig | None:
         return self._binary_config
 
+    @cached_property
+    def _reduced_ising(self) -> IsingResult:
+        return qubo_to_ising(
+            create_tsp_qubo(
+                self._cost_matrix,
+                self._start_city,
+                self._penalty_weight,
+                self._objective_weight,
+            )
+        )
+
+    @property
+    def cost_hamiltonian(self) -> SparsePauliOp:
+        """Reduced-penalty Hamiltonian for ``"one_hot"``, the full one for ``"binary"``."""
+        if self._encoding == "binary":
+            return super().cost_hamiltonian
+        return self._reduced_ising.cost_hamiltonian
+
+    @property
+    def loss_constant(self) -> float:
+        if self._encoding == "binary":
+            return super().loss_constant
+        return self._reduced_ising.loss_constant
+
+    @property
+    def mixer_hamiltonian(self) -> SparsePauliOp:
+        """XY mixer on each city's block of qubits, or the X mixer for binary encoding."""
+        if self._encoding == "binary":
+            return super().mixer_hamiltonian
+        if self._mixer_cache is None:
+            m = self._n_cities - 1
+            idx = self._canonical_problem.variable_to_idx
+            graph = build_block_xy_mixer_graph(
+                m, m, [idx[qubit] for qubit in range(m * m)]
+            )
+            self._mixer_cache = xy_mixer(graph, n_qubits=m * m)
+        return self._mixer_cache
+
     @property
     def recommended_initial_state(self) -> InitialState:
         if self._encoding == "binary":
             return SuperpositionState()
-        return WState(self._block_size, self._n_blocks)
+        return WState(self._n_cities - 1, self._n_cities - 1)
+
+    def _decode_tour(self, bitstring: str) -> list[int] | None:
+        if self._encoding == "binary" and self._binary_config is not None:
+            return decode_binary_tsp_solution(
+                bitstring, self._binary_config, self._n_cities, self._start_city
+            )
+        return decode_tsp_solution(bitstring, self._n_cities, self._start_city)
 
     @property
     def decode_fn(self) -> Callable[[str], Any]:
-        n_cities = self._n_cities
-        start = self._start_city
-        if self._encoding == "binary" and self._binary_config is not None:
-            cfg = self._binary_config
-            return lambda bs: decode_binary_tsp_solution(bs, cfg, n_cities, start)
-        return lambda bs: decode_tsp_solution(bs, n_cities, start)
+        return self._decode_tour
+
+    def _solution_key(self, bitstring: str) -> Hashable:
+        return bitstring
 
     @property
     def feasible_dimension(self) -> int:
         """Size of the feasible subspace, equal to ``(n-1)!``."""
-        m = self._n_cities - 1
-        result = 1
-        for i in range(1, m + 1):
-            result *= i
-        return result
+        return math.factorial(self._n_cities - 1)
 
     def is_feasible(self, bitstring: str) -> bool:
         if self._encoding == "binary" and self._binary_config is not None:
@@ -1612,7 +1974,6 @@ class TSPProblem(_RoutingProblemBase):
 
     def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
         if self._encoding == "binary":
-            # Binary repair would require its own greedy. Defer until needed.
             raise NotImplementedError(
                 "repair_infeasible_bitstring is not implemented for binary TSP."
             )
@@ -1620,14 +1981,122 @@ class TSPProblem(_RoutingProblemBase):
             bitstring, self._n_cities, self._start_city, self._cost_matrix
         )
 
-    def compute_energy(self, bitstring: str) -> float | None:
-        if self._encoding == "binary" and self._binary_config is not None:
-            tour = decode_binary_tsp_solution(
-                bitstring, self._binary_config, self._n_cities, self._start_city
+    def compute_energy(self, bitstring: str) -> float:
+        """Cost of the tour ``bitstring`` encodes.
+
+        Raises:
+            ValueError: If ``bitstring`` is not a valid tour.
+        """
+        tour = self._decode_tour(bitstring)
+        if tour is None:
+            raise ValueError(f"Bitstring {bitstring!r} does not encode a valid tour.")
+        return compute_tour_cost(tour, self._cost_matrix)
+
+    @cached_property
+    def _clusters(self) -> list[list[int]]:
+        if self._max_cities_per_partition is None:
+            raise ValueError(
+                "Cannot decompose: max_cities_per_partition was not set at construction."
             )
-        else:
-            tour = decode_tsp_solution(bitstring, self._n_cities, self._start_city)
-        return compute_tour_cost(tour, self._cost_matrix) if tour is not None else None
+        cost = self._cost_matrix
+        if not np.allclose(cost, cost.T):
+            raise ValueError("Cannot decompose: cost_matrix must be symmetric.")
+        return _split_cities_into_clusters(cost, self._max_cities_per_partition)
+
+    @cached_property
+    def _partition_clusters(self) -> dict[Hashable, list[int]]:
+        partitions: dict[Hashable, list[int]] = {
+            (f"P{k}", len(cluster)): cluster
+            for k, cluster in enumerate(self._clusters)
+            if len(cluster) >= 3
+        }
+        if not partitions:
+            raise ValueError(
+                "No city cluster has three or more cities, leaving nothing to solve; "
+                "raise max_cities_per_partition or solve the problem without "
+                "partitioning."
+            )
+        return partitions
+
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
+        return {
+            prog_id: _PartitionTSPProblem(
+                self._cost_matrix[np.ix_(cluster, cluster)],
+                encoding=self._encoding,
+                penalty_weight=self._explicit_penalty_weight,
+                objective_weight=self._objective_weight,
+            )
+            for prog_id, cluster in self._partition_clusters.items()
+        }
+
+    def _has_reproducible_decomposition(self) -> bool:
+        return True
+
+    def initial_solution_size(self) -> int:
+        return self._n_cities
+
+    def extend_solution(
+        self,
+        current_solution: Sequence[int],
+        prog_id: Hashable,
+        candidate_decoded: Sequence[int] | None,
+    ) -> list[int]:
+        """Record each city's 1-based tour position in its cluster; ``0`` is unset.
+
+        A ``None`` candidate, which only a binary-encoding sub-problem yields
+        for an invalid tour, puts the cluster in index order.
+        """
+        extended = list(current_solution)
+        cluster = self._partition_clusters[prog_id]
+        order = (
+            range(len(cluster)) if candidate_decoded is None else candidate_decoded[:-1]
+        )
+        for city in cluster:
+            extended[city] = 0
+        for position, local in enumerate(order, start=1):
+            extended[cluster[local]] = position
+        return extended
+
+    def _build_tour(self, solution: Sequence[int]) -> list[int]:
+        """The patched round trip from ``start_city`` for a global solution vector."""
+        cycles = [
+            sorted(cluster, key=solution.__getitem__) for cluster in self._clusters
+        ]
+        tour = _patch_cycles_into_tour(cycles, self._cost_matrix)
+        start = tour.index(self._start_city)
+        return [*tour[start:], *tour[:start], self._start_city]
+
+    def evaluate_global_solution(self, solution: Sequence[int]) -> float:
+        return compute_tour_cost(self._build_tour(solution), self._cost_matrix)
+
+    def postprocess_candidates(
+        self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
+    ) -> list[tuple[Any, float]]:
+        """Distinct ``(tour, cost)`` pairs, cheapest first; ``strict`` has no effect."""
+        tours = {tuple(self._build_tour(solution)) for _, solution in candidates}
+        return sorted(
+            (
+                (list(tour), compute_tour_cost(tour, self._cost_matrix))
+                for tour in tours
+            ),
+            key=lambda result: result[1],
+        )
+
+
+class _PartitionTSPProblem(TSPProblem):
+    """Sub-problem of a partitioned TSP: a one-hot bitstring that is not a tour decodes to its Hungarian repair."""
+
+    @property
+    def decode_fn(self) -> Callable[[str], Any]:
+        if self._encoding == "binary":
+            return super().decode_fn
+        return self._decode_repaired_tour
+
+    def _decode_repaired_tour(self, bitstring: str) -> list[int]:
+        tour = self._decode_tour(bitstring)
+        if tour is not None:
+            return tour
+        return self.repair_infeasible_bitstring(bitstring)[1]
 
 
 # --- CVRPProblem ---
@@ -1636,27 +2105,51 @@ class TSPProblem(_RoutingProblemBase):
 class CVRPProblem(_RoutingProblemBase):
     """Capacitated Vehicle Routing Problem for QAOA.
 
-    Supports two encodings:
+    The Hamiltonians are built on first use. Supports two encodings:
 
-    * ``"one_hot"`` — block one-hot with W-state + XY mixer.
+    * ``"one_hot"`` — variable ``x_{i,v,t}`` (customer *i*, vehicle *v*, step
+      *t*) on qubit ``i*V*T + v*T + t``. QAOA starts from a W-state with an XY
+      mixer on each customer's block of ``V*T`` qubits. The phase operator
+      penalises two customers sharing a slot and a gap in a route; capacity is
+      enforced by :meth:`is_feasible` and the ``"filter"`` and ``"repair"``
+      rankings. Qubit count: ``V * n_customers²``.
     * ``"binary"`` — compact binary (HUBO) with Hadamard + X mixer,
       reducing qubit count from O(N) to O(log N) per slot.
 
+    The constructor copies ``cost_matrix`` and ``demands``.
+
     Args:
-        cost_matrix: Symmetric distance/cost matrix of shape ``(n, n)``.
-        demands: Customer demands (length = n_nodes, depot demand = 0).
-        capacity: Vehicle capacity.
-        n_vehicles: Number of vehicles.
-        depot: Index of the depot node. Defaults to 0.
+        cost_matrix: Finite distance/cost matrix of shape ``(n, n)`` with at
+            least one customer besides the depot.
+        demands: Finite, non-negative customer demands (length = n_nodes, depot
+            demand = 0), each at most ``capacity``.
+        capacity: Positive vehicle capacity.
+        n_vehicles: Number of vehicles, at least 1.
+        depot: Integer index of the depot node. Defaults to 0.
         encoding: ``"one_hot"`` or ``"binary"``. Defaults to ``"one_hot"``.
-        penalty_weight: Constraint penalty strength. Defaults to 4.0.
+        penalty_weight: Constraint penalty strength, finite and positive.
+            ``None`` (default) picks, for ``"one_hot"``, ``objective_weight``
+            times the sum of the nearest-neighbour tour cost from the depot and
+            ``max(n_customers - 2, 1)`` times the largest cost entry
+            (``objective_weight`` if that sum is zero), and for ``"binary"``
+            4.0. The one-hot default needs non-negative costs and a positive
+            ``objective_weight``.
         objective_weight: Objective weight. Defaults to 1.0.
-        capacity_penalty_weight: Capacity penalty strength. Defaults to 4.0.
+        capacity_penalty_weight: Capacity penalty strength (``"binary"``
+            encoding only; ``"one_hot"`` ignores it). Defaults to 4.0.
         max_steps: Maximum route length per vehicle (``"binary"`` encoding
             only). ``None`` (default) uses ``n_customers``. Qubit count and
             HUBO term count both scale with ``n_vehicles * max_steps``;
             lowering ``max_steps`` below a vehicle's actual stop count
             renders the instance infeasible.
+
+    Raises:
+        ValueError: If ``cost_matrix`` is not square or has a non-finite entry,
+            ``demands`` do not match it or violate the bounds above,
+            ``encoding``, ``depot``, ``n_vehicles``, ``capacity`` or
+            ``penalty_weight`` is out of range, or ``max_steps`` is given with
+            the ``"one_hot"`` encoding.
+        TypeError: If ``depot`` or ``n_vehicles`` is not an integer.
     """
 
     def __init__(
@@ -1668,18 +2161,31 @@ class CVRPProblem(_RoutingProblemBase):
         n_vehicles: int,
         depot: int = 0,
         encoding: Literal["one_hot", "binary"] = "one_hot",
-        penalty_weight: float = 4.0,
+        penalty_weight: float | None = None,
         objective_weight: float = 1.0,
         capacity_penalty_weight: float = 4.0,
         max_steps: int | None = None,
     ):
-        self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
+        cost_matrix = np.array(cost_matrix, dtype=np.float64)
+        demands = np.array(demands, dtype=np.float64)
+        _check_cvrp_inputs(cost_matrix, demands, capacity, n_vehicles, depot, encoding)
+        if penalty_weight is None:
+            penalty_weight = (
+                _compute_default_cvrp_penalty(cost_matrix, depot, objective_weight)
+                if encoding == "one_hot"
+                else 4.0
+            )
+        elif not (math.isfinite(penalty_weight) and penalty_weight > 0):
+            raise ValueError("penalty_weight must be finite and positive.")
+        n_vehicles, depot = int(n_vehicles), int(depot)
+        self._cost_matrix = cost_matrix
         self._demands = demands
         self._capacity = capacity
         self._n_vehicles = n_vehicles
         self._depot = depot
         self._encoding = encoding
-        self._n_cities = self._cost_matrix.shape[0]
+        self._penalty_weight = float(penalty_weight)
+        self._n_cities = cost_matrix.shape[0]
         self._binary_config: BinaryBlockConfig | None = None
 
         n_cust = self._n_cities - 1
@@ -1696,7 +2202,7 @@ class CVRPProblem(_RoutingProblemBase):
                 capacity_penalty_weight=capacity_penalty_weight,
                 max_steps=max_steps,
             )
-            self._init_ising(
+            self._set_hamiltonian_spec(
                 hubo,
                 block_size=self._binary_config.bits_per_slot,
                 n_blocks=self._binary_config.n_slots,
@@ -1708,16 +2214,13 @@ class CVRPProblem(_RoutingProblemBase):
                 raise ValueError("max_steps is only supported for encoding='binary'.")
             qubo = create_cvrp_qubo(
                 self._cost_matrix,
-                demands=demands,
-                capacity=capacity,
                 n_vehicles=n_vehicles,
                 depot=depot,
                 penalty_weight=penalty_weight,
                 objective_weight=objective_weight,
-                capacity_penalty_weight=capacity_penalty_weight,
             )
             bs, nb = build_cvrp_block_structure(n_cust, n_vehicles)
-            self._init_ising(qubo, block_size=bs, n_blocks=nb)
+            self._set_hamiltonian_spec(qubo, block_size=bs, n_blocks=nb)
 
     @property
     def recommended_initial_state(self) -> InitialState:
@@ -1746,6 +2249,11 @@ class CVRPProblem(_RoutingProblemBase):
     @property
     def binary_config(self) -> BinaryBlockConfig | None:
         return self._binary_config
+
+    @property
+    def penalty_weight(self) -> float:
+        """Penalty strength used in the Hamiltonian."""
+        return self._penalty_weight
 
     def is_feasible(self, bitstring: str) -> bool:
         if self._encoding == "binary" and self._binary_config is not None:
@@ -1780,6 +2288,12 @@ class CVRPProblem(_RoutingProblemBase):
             capacity=self._capacity,
             depot=self._depot,
         )
+
+    def _solution_key(self, bitstring: str) -> Hashable:
+        routes = self.decode_fn(bitstring)
+        if routes is None:
+            return bitstring
+        return tuple(tuple(route) for route in routes)
 
     def compute_energy(self, bitstring: str) -> float | None:
         if self._encoding == "binary" and self._binary_config is not None:

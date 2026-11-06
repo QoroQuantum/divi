@@ -308,12 +308,11 @@ _HALF_PI = float(np.pi / 2)
 def _spo_to_qiskit_basis_gates(
     qc, spo: SparsePauliOp, time, qubits: Sequence[int]
 ) -> None:
-    """Append first-order-Trotter ``exp(-i * time * spo)`` onto ``qc``.
+    """Append ``exp(-i * time * c_k * P_k)`` for each term of ``spo`` onto ``qc``, in term order.
 
     Dispatches on ``time`` — numeric → :func:`_spo_to_qiskit_basis_gates_numeric`;
     symbolic (``Parameter`` / ``ParameterExpression``) →
-    :func:`_spo_to_qiskit_basis_gates_symbolic`. Exact when the SPO terms
-    pairwise commute (QAOA cost/mixer layers).
+    :func:`_spo_to_qiskit_basis_gates_symbolic`.
     """
     if isinstance(time, numbers.Real):
         _spo_to_qiskit_basis_gates_numeric(qc, spo, float(time), qubits)

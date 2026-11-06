@@ -17,12 +17,18 @@ CE-QAOA Components
 CE-QAOA co-designs the encoding, initial state, and mixer:
 
 - **W-state initialisation**: starts each qubit block in a uniform
-  superposition over one-hot basis states (exactly one city per slot).
+  superposition over one-hot basis states (exactly one excitation per block).
 - **XY mixer**: all-to-all XY coupling within each block swaps
   excitations without creating or destroying them, preserving the
-  one-hot constraint.
-- **Reduced phase operator**: row constraints are enforced structurally,
-  so only column and capacity penalties appear in the cost Hamiltonian.
+  one-hot constraint of every block.
+- **Reduced phase operator**: the constraint a block enforces is not
+  penalised. For TSP a block is one city's qubits across all time steps, so the
+  per-step penalty remains. For CVRP a block is one customer's qubits across
+  all (vehicle, step) slots, so the penalties on two customers sharing a slot
+  and on an occupied step that follows an empty one remain. Capacity is not in
+  the phase operator. ``TSPProblem`` uses the reduced operator for QAOA only;
+  :class:`~divi.qprog.algorithms.PCE` and ``relaxed_energy`` use the full
+  constraint set.
 
 Travelling Salesman Problem (TSP)
 ---------------------------------
@@ -63,8 +69,76 @@ exactly once and returning to the start.
    print(qaoa.solution)  # decoded city sequence, returning to start_city
 
 The ``start_city`` is fixed and excluded from the encoding, reducing the
-problem from *n²* to *(n−1)²* qubits.  Penalty strengths ``penalty_weight``
-(constraints) and ``objective_weight`` (objective) can be tuned.
+problem from *n²* to *(n−1)²* qubits. ``penalty_weight`` and
+``objective_weight`` weight the constraints and the objective. The default
+``penalty_weight`` is ``objective_weight`` times the nearest-neighbour tour cost
+(twice that for ``encoding="binary"``).
+
+:class:`~divi.qprog.problems.TSPProblem` is a
+:class:`~divi.qprog.problems.BinaryOptimizationProblem` whose objective is the
+tour length:
+
+- One-hot: ``problem.constraints`` lists the visit and time-step constraints,
+  and :class:`~divi.qprog.algorithms.PCE` accepts the problem.
+  :func:`~divi.backends.characterization.characterize_and_validate` receives
+  all of them, including the per-city penalty that the QAOA cost omits.
+- Binary: ``problem.constraints`` is empty, and the Hamiltonian omits the
+  constant of each city's visit penalty.
+
+The Hamiltonians are built on first use. The constructor copies
+``cost_matrix`` and raises ``ValueError`` for a non-finite cost, fewer than
+three cities, an unknown ``encoding`` or an out-of-range ``start_city``, and
+``TypeError`` for a non-integer ``start_city``.
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.qprog.algorithms import PCE
+
+   pce = PCE(
+       TSPProblem(cost),
+       optimizer=optimizer,
+       backend=backend,
+   )
+
+Partitioned TSP
+^^^^^^^^^^^^^^^
+
+For instances too large for one register, set ``max_cities_per_partition``.
+:meth:`~divi.qprog.problems.TSPProblem.decompose` clusters the cities into
+groups of at most that many (at least 3). Each group of three or more becomes
+its own :class:`~divi.qprog.problems.TSPProblem`; smaller groups need no
+qubits. A :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` runs the
+groups and patches their closed tours into one tour, repeatedly merging the
+pair whose edge exchange adds the least cost.
+
+- One-hot: a sampled sub-solution that is not a valid tour is repaired
+  (Hungarian), for QAOA and PCE alike.
+- Binary: there is no repair; such a sub-solution is replaced by its cities in
+  index order.
+- ``quantum_routine="pce"`` runs :class:`~divi.qprog.algorithms.PCE` on the
+  groups instead of QAOA.
+- The cost matrix must be finite and symmetric, and at least one group needs
+  three cities.
+- Each group's default ``penalty_weight`` comes from its own costs; an explicit
+  value goes to every group.
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.qprog.ensembles import PartitioningProgramEnsemble
+
+   problem = TSPProblem(cost, max_cities_per_partition=4)
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=1,
+       optimizer=optimizer,
+       backend=backend,
+   )
+   ensemble.run()
+   tour, tour_cost = ensemble.aggregate_results()
 
 Capacitated Vehicle Routing (CVRP)
 ----------------------------------
@@ -104,6 +178,31 @@ Continuing with the imports and backend from the TSP example:
        backend=backend,
    )
    qaoa.run()
+
+With the one-hot encoding:
+
+- Variable ``x_{i,v,t}`` (customer *i*, vehicle *v*, step *t*) sits on qubit
+  ``i*V*T + v*T + t``, with *V* vehicles and *T* steps, where *T* equals the
+  number of customers. The W-state and XY mixer act on each customer's block of
+  *V·T* qubits.
+- A route fills steps ``0..len-1`` and its return edge is charged at the last
+  occupied step. ``penalty_weight`` weights the penalties for two customers
+  sharing a slot and for a gap in a route.
+- Capacity is enforced when solutions are checked (``is_feasible``), filtered
+  and repaired, not by the phase operator.
+
+The default ``penalty_weight`` is ``objective_weight`` times the sum of the
+nearest-neighbour tour cost from the depot and ``max(n_customers - 2, 1)`` times
+the largest cost entry for the one-hot encoding, and 4.0 for the binary
+encoding. ``capacity_penalty_weight`` applies to the binary encoding only.
+
+The constructor copies ``cost_matrix`` and ``demands`` and raises ``ValueError``
+for a non-finite cost or demand, a negative demand, a nonzero depot demand, a
+demand above ``capacity``, no customer, an unknown ``encoding``, an
+out-of-range ``depot``, fewer than one vehicle, or a non-positive ``capacity``
+or ``penalty_weight``, and ``TypeError`` for a non-integer ``depot`` or
+``n_vehicles``. As with :class:`~divi.qprog.problems.TSPProblem`, the
+Hamiltonians are built on first use.
 
 Binary Encoding
 ^^^^^^^^^^^^^^^
@@ -147,8 +246,13 @@ See ``compute_binary_block_config`` for qubit-count estimates.
 Feasibility, Repair, and Energy
 -------------------------------
 
-Both classes provide feasibility and energy checks. Hungarian repair is
-available for one-hot encoding; binary routing repair is unsupported.
+Both classes provide feasibility and energy checks; for CVRP they also enforce
+vehicle capacity. Hungarian repair covers the one-hot encoding; binary routing
+repair is unsupported. For CVRP, ``"filter"`` ranking merges bitstrings that
+decode to the same routes. CVRP repair moves overflowing customers greedily and,
+for at most ten customers, falls back to a search over capacity-feasible
+splits. The search keeps the compact assignment agreeing with the most input
+bits, then the lowest route cost.
 
 Relevant methods include:
 
