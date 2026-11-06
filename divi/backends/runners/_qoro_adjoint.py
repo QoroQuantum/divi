@@ -43,6 +43,8 @@ def run_adjoint_job(
     Raises:
         VJPUnavailableError: If a circuit cannot be differentiated, or the
             service fails the job or returns a gradient that does not fit.
+        ValueError: If one parameter set, with its cotangent, exceeds the
+            per-request payload cap.
     """
     raise_if_cancelled(
         cancellation_event, "Qoro job cancelled before any circuit was dispatched"
@@ -57,11 +59,8 @@ def run_adjoint_job(
     maestro_config, device_config = service._configs_for_target(job_config, None, None)
     envelope = service._fragment_envelope(ham_ops, None, None, job_config.shots)
     call_plan = service._build_parametric_call_plan(
-        payloads, ham_ops, None, None, envelope
+        payloads, ham_ops, None, None, envelope, cotangents
     )
-    for fragment in call_plan:
-        for row in fragment["parameter_sets"]:
-            row["cotangent"] = [float(w) for w in cotangents[row["label"]]]
     submitted = service._dispatch_job(
         call_plan,
         job_config=job_config,
