@@ -28,8 +28,9 @@ from tests.backends._circuit_runner_contracts import (
 )
 from tests.backends._helpers import (
     SHOT_GROUPS_WITH_HAM_OPS_MESSAGE,
+    VJP_COTANGENTS,
+    make_vjp_payload,
     padding_warning,
-    parametric_payload,
 )
 from tests.backends._qrmi_fakes import (
     SESSION_NOT_FOUND,
@@ -46,8 +47,6 @@ from tests.backends._qrmi_fakes import (
 
 _BELL_QASM = QASM_DEPTH_3
 
-_VJP_COTANGENTS = {"row_0": np.array([1.0, 0.5]), "row_1": np.array([-0.3, 2.0])}
-
 # Long enough for a second caller to arrive, were nothing holding it back.
 _OVERLAP_WAIT = 0.2
 
@@ -55,15 +54,6 @@ _OVERLAP_WAIT = 0.2
 _REAL_IMPORT_QRMI = qrmi_module._import_qrmi
 
 _IBM = FakeResourceType.IBMQuantumSystem
-
-
-def _vjp_payload(body="ry(w_0) q[0];\nrz(w_1) q[1];\n"):
-    return parametric_payload(
-        body,
-        rows=((0.3, -0.7), (-1.2, 0.4)),
-        parameters=("w_0", "w_1"),
-        n_qubits=2,
-    )
 
 
 def _depolarizing(*, readout: bool = False):
@@ -586,7 +576,7 @@ class TestNoise:
         assert backend.supports_vjp is False
         with pytest.raises(VJPUnavailableError, match="noiseless"):
             backend.submit_vjp(
-                [_vjp_payload()], ham_ops="ZZ", cotangents=_VJP_COTANGENTS
+                [make_vjp_payload()], ham_ops="ZZ", cotangents=VJP_COTANGENTS
             )
 
 
@@ -973,7 +963,7 @@ class TestVectorJacobianProducts:
 
     def _submit(self, backend):
         return backend.submit_vjp(
-            [_vjp_payload()], ham_ops="ZZ;XI", cotangents=_VJP_COTANGENTS
+            [make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS
         )
 
     def test_supports_vjp_on_maestro_local(self, backend):
@@ -1002,9 +992,9 @@ class TestVectorJacobianProducts:
     def test_maps_gradients_back_through_scaled_angles(self, resource, backend):
         """The server differentiates gate angles; ry(2*w_0) doubles w_0's share."""
         results = backend.submit_vjp(
-            [_vjp_payload("ry(2*w_0) q[0];\nrz(w_1) q[1];\n")],
+            [make_vjp_payload("ry(2*w_0) q[0];\nrz(w_1) q[1];\n")],
             ham_ops="ZZ;XI",
-            cotangents=_VJP_COTANGENTS,
+            cotangents=VJP_COTANGENTS,
         ).results
 
         np.testing.assert_allclose(
@@ -1055,9 +1045,9 @@ class TestVectorJacobianProducts:
 
         with pytest.raises(ExecutionCancelledError):
             backend.submit_vjp(
-                [_vjp_payload()],
+                [make_vjp_payload()],
                 ham_ops="ZZ;XI",
-                cotangents=_VJP_COTANGENTS,
+                cotangents=VJP_COTANGENTS,
                 cancellation_event=event,
             )
 
@@ -1295,7 +1285,7 @@ class TestIBM:
             match=exact_match(TestVectorJacobianProducts._UNAVAILABLE),
         ):
             ibm_backend.submit_vjp(
-                [_vjp_payload()], ham_ops="ZZ", cotangents=_VJP_COTANGENTS
+                [make_vjp_payload()], ham_ops="ZZ", cotangents=VJP_COTANGENTS
             )
 
     def test_takes_no_maestro_config_at_construction(
