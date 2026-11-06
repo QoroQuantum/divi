@@ -8,7 +8,7 @@ Divi is an open-source Python library designed for distributed quantum program e
 
 ## What You Can Contribute
 
-- Examples written in the Divi framework ([divi-examples](https://github.com/QoroQuantum/divi-examples))
+- Examples written in the Divi framework (see [`demos/`](demos) and [`tutorials/`](tutorials))
 - Bug fixes
 - New features or enhancements
 - Benchmarking and testing improvements

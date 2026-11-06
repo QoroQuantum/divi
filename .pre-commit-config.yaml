@@ -62,8 +62,8 @@ repos:
         language: system
         pass_filenames: false
       - id: tutorials-ci-dry-run
-        name: tutorials ci runner dry-run
-        entry: python -m tutorials._ci_runner --dry-run
+        name: examples ci runner dry-run
+        entry: python .github/scripts/run_examples.py --dry-run
         language: system
-        files: '^tutorials/'
+        files: '^(tutorials|demos|\.github/scripts)/'
         pass_filenames: false

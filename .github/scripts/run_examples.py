@@ -8,7 +8,7 @@ Replaces the old sed + GNU parallel approach with validated patching,
 line-buffered output, and budget-aware timeouts.
 
 Usage:
-    uv run python -m tutorials._ci_runner [--dry-run] [--max-workers N]
+    uv run python .github/scripts/run_examples.py [--dry-run] [--max-workers N]
 
 Environment variables:
     DIVI_CI_MAX_SHOTS   Cap shots for get_backend() (read by _backend.py).
@@ -26,8 +26,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-TUTORIALS_DIR = Path(__file__).parent
-REPO_ROOT = TUTORIALS_DIR.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TUTORIALS_DIR = REPO_ROOT / "tutorials"
+DEMOS_DIR = REPO_ROOT / "demos"
+DEMOS_PREFIX = "demos/"
 
 JOB_START_TIME = time.monotonic()
 JOB_TIMEOUT_SECONDS = int(os.environ.get("DIVI_CI_JOB_TIMEOUT", 540))
@@ -42,14 +44,24 @@ DEFAULT_TIMEOUT = 120
 #
 # Every non-underscore .py file in tutorials/ MUST appear in exactly one of
 # these three lists.  The runner validates this at startup.
+#
+# Demos are the .py files under demos/ that have a __main__ guard, keyed as
+# "demos/<path>".  They run from their own directory, and an entry in
+# TUTORIALS may set "invocations": a list of argument lists, each one a
+# separate run of the script.
 # ---------------------------------------------------------------------------
 
 SKIP = [
     "backends/qasm_thru_service.py",  # requires API key
     "backends/characterize_maxcut_qubo.py",  # requires API key + costs credits
+    "demos/minimum_birkhoff_decomposition/main.py",  # needs cplex, which no extra provides
 ]
 
 NO_PATCHES = [
+    "demos/economic_load_dispatch/economic_load_dispatch.py",
+    "demos/quantum_guided_cluster/main.py",
+    "demos/spin_dynamics/spin_dynamics.py",
+    "demos/travelling_salesman/travelling_salesman.py",
     "backends/backend_properties_conversion.py",
     "advanced/custom_vqa.py",
     "advanced/qnn_classifier.py",
@@ -185,6 +197,12 @@ TUTORIALS: dict[str, dict] = {
             ("max_iterations=10", "max_iterations=3"),
         ],
     },
+    "demos/spin_dynamics/neel_dynamics.py": {
+        "invocations": [
+            ["export", "--n-qubits", "6", "--n-points", "4"],
+            ["run", "--n-qubits", "6", "--n-points", "4", "--shots", "500"],
+        ],
+    },
     "chemistry/lassqd_h4.py": {
         # Two linear-method fragment preparations per round plus SQD recovery
         # and orbital re-optimization each round, so the budget is generous
@@ -204,16 +222,24 @@ TUTORIALS: dict[str, dict] = {
 
 
 def discover_tutorials() -> set[str]:
-    """Find all runnable tutorial .py files (exclude _ prefixed) recursively.
+    """Find all runnable tutorial and demo scripts.
 
-    Returns paths relative to ``tutorials/`` in posix form, e.g.
-    ``"optimization/qaoa_hubo.py"``.
+    Tutorials are the non-underscore ``.py`` files under ``tutorials/``, keyed
+    relative to it (``"optimization/qaoa_hubo.py"``). Demos are the ``.py``
+    files under ``demos/`` with a ``__main__`` guard, keyed as
+    ``"demos/<path>"``; the rest are helper modules.
     """
-    return {
+    tutorials = {
         p.relative_to(TUTORIALS_DIR).as_posix()
         for p in TUTORIALS_DIR.rglob("*.py")
         if not p.name.startswith("_")
     }
+    demos = {
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in DEMOS_DIR.rglob("*.py")
+        if "__main__" in p.read_text()
+    }
+    return tutorials | demos
 
 
 def validate_config(discovered: set[str]) -> list[str]:
@@ -225,13 +251,13 @@ def validate_config(discovered: set[str]) -> list[str]:
     errors: list[str] = []
     if missing:
         errors.append(
-            f"Tutorial(s) not in _ci_runner.py config: {sorted(missing)}\n"
+            f"Tutorial(s) not in run_examples.py config: {sorted(missing)}\n"
             "   Add to SKIP, NO_PATCHES, or TUTORIALS."
         )
     if extra:
         errors.append(
             f"Configured but not found on disk: {sorted(extra)}\n"
-            "   Remove stale entries from _ci_runner.py."
+            "   Remove stale entries from run_examples.py."
         )
     return errors
 
@@ -255,6 +281,13 @@ def apply_patches(file_path: Path, patches: list[tuple[str, str]]) -> list[str]:
     return errors
 
 
+def resolve_script(tmp_dir: Path, name: str) -> Path:
+    """Map a configured script name to its copy under ``tmp_dir``."""
+    if name.startswith(DEMOS_PREFIX):
+        return tmp_dir / name
+    return tmp_dir / "tutorials" / name
+
+
 def _stream_output(pipe, prefix: str) -> None:
     """Read from a pipe line by line, printing with a [prefix]."""
     for line in iter(pipe.readline, ""):
@@ -266,8 +299,10 @@ def run_tutorial(
     file_path: Path,
     name: str,
     timeout: int,
+    cwd: Path,
+    invocations: list[list[str]],
 ) -> tuple[str, bool, float, str]:
-    """Run a single tutorial with timeout and streamed output."""
+    """Run a script once per argument list with a shared timeout and streamed output."""
     remaining = JOB_TIMEOUT_SECONDS - (time.monotonic() - JOB_START_TIME)
     effective_timeout = min(timeout, remaining - 30)
     if effective_timeout <= 0:
@@ -275,6 +310,7 @@ def run_tutorial(
 
     print(f"[{name}] Starting (timeout {effective_timeout:.0f}s)", flush=True)
     start = time.monotonic()
+    deadline = start + effective_timeout
 
     # Force matplotlib's non-interactive Agg backend so ``plt.show()`` is a
     # no-op (no GUI windows) when CI runs on a desktop with ``DISPLAY`` set.
@@ -284,33 +320,34 @@ def run_tutorial(
     env["MPLBACKEND"] = "Agg"
     env["PYTHONWARNINGS"] = "ignore:FigureCanvasAgg is non-interactive:UserWarning"
 
-    proc = subprocess.Popen(
-        [sys.executable, str(file_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=env,
-        cwd=str(REPO_ROOT),
-    )
-    try:
-        reader = threading.Thread(
-            target=_stream_output, args=(proc.stdout, name), daemon=True
+    for args in invocations:
+        proc = subprocess.Popen(
+            [sys.executable, str(file_path), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+            cwd=str(cwd),
         )
-        reader.start()
-        proc.wait(timeout=effective_timeout)
-        reader.join(timeout=5)
+        try:
+            reader = threading.Thread(
+                target=_stream_output, args=(proc.stdout, name), daemon=True
+            )
+            reader.start()
+            proc.wait(timeout=max(deadline - time.monotonic(), 1))
+            reader.join(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            elapsed = time.monotonic() - start
+            return (name, False, elapsed, f"TIMEOUT after {effective_timeout:.0f}s")
 
-        elapsed = time.monotonic() - start
-        if proc.returncode == 0:
-            return (name, True, elapsed, "")
-        return (name, False, elapsed, f"exit code {proc.returncode}")
+        if proc.returncode != 0:
+            elapsed = time.monotonic() - start
+            return (name, False, elapsed, f"exit code {proc.returncode}")
 
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        elapsed = time.monotonic() - start
-        return (name, False, elapsed, f"TIMEOUT after {effective_timeout:.0f}s")
+    return (name, True, time.monotonic() - start, "")
 
 
 def main() -> None:
@@ -347,21 +384,29 @@ def main() -> None:
             continue
         patches = TUTORIALS.get(name, {}).get("patches", [])
         timeout = TUTORIALS.get(name, {}).get("timeout_seconds", DEFAULT_TIMEOUT)
-        to_run.append({"name": name, "patches": patches, "timeout": timeout})
+        invocations = TUTORIALS.get(name, {}).get("invocations", [[]])
+        to_run.append(
+            {
+                "name": name,
+                "patches": patches,
+                "timeout": timeout,
+                "invocations": invocations,
+            }
+        )
 
     print(f"\n{len(to_run)} tutorial(s) to run, {len(skip_set)} skipped.\n")
 
     # --- Copy to temp dir & apply patches ---
     tmp_dir = Path(tempfile.mkdtemp())
-    tutorials_tmp = tmp_dir / "tutorials"
 
     try:
-        shutil.copytree(TUTORIALS_DIR, tutorials_tmp)
+        shutil.copytree(TUTORIALS_DIR, tmp_dir / "tutorials")
+        shutil.copytree(DEMOS_DIR, tmp_dir / "demos")
 
         patch_errors: list[str] = []
         for t in to_run:
             if t["patches"]:
-                errs = apply_patches(tutorials_tmp / t["name"], t["patches"])
+                errs = apply_patches(resolve_script(tmp_dir, t["name"]), t["patches"])
                 patch_errors.extend(errs)
 
         if patch_errors:
@@ -383,15 +428,19 @@ def main() -> None:
         results: list[tuple[str, bool, float, str]] = []
 
         with ThreadPoolExecutor(max_workers=args.max_workers) as pool:
-            futures = {
-                pool.submit(
+            futures = {}
+            for t in to_run:
+                script = resolve_script(tmp_dir, t["name"])
+                cwd = script.parent if t["name"].startswith(DEMOS_PREFIX) else REPO_ROOT
+                future = pool.submit(
                     run_tutorial,
-                    tutorials_tmp / t["name"],
+                    script,
                     t["name"],
                     t["timeout"],
-                ): t["name"]
-                for t in to_run
-            }
+                    cwd,
+                    t["invocations"],
+                )
+                futures[future] = t["name"]
             for future in as_completed(futures):
                 result = future.result()
                 name, ok, elapsed, err = result

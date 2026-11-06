@@ -48,7 +48,7 @@ from divi.qprog.initial_states import SuperpositionState
 # Docs show realistic, instructive parameter values (max_iterations=25, shots=
 # 10000, 5 bond modifiers, etc.).  Running all of that at full cost in CI
 # makes the snippet suite take many minutes with per-test pauses that look
-# like hangs.  Mirror the tutorials/_ci_runner.py approach: rewrite the
+# like hangs.  Mirror the .github/scripts/run_examples.py approach: rewrite the
 # snippet source text at exec time to reduce iteration / shot / population
 # budgets before running.  The rendered HTML still shows the original values.
 SNIPPET_PATCHES: list[tuple[str, str]] = [

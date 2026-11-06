@@ -99,6 +99,10 @@ All examples require Divi to be installed:
 pip install qoro-divi
 ```
 
+## Demos
+
+Longer multi-file programs with notebooks and data live in [`demos/`](../demos).
+
 ## Documentation
 
 For comprehensive documentation and detailed explanations, see the
@@ -115,7 +119,7 @@ When adding new examples:
 3. Add clear docstrings explaining the example's purpose.
 4. Include expected output in comments.
 5. Update this README with a brief description under the right folder section.
-6. **Register in `_ci_runner.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
+6. **Register in `.github/scripts/run_examples.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
 
    Every non-underscore `.py` file must appear in exactly one of these three lists (validated at startup), keyed by its **path relative to `tutorials/`** (e.g. `"optimization/qaoa_hubo.py"`):
    - `SKIP` — tutorials that cannot run in CI (e.g. need API keys)
