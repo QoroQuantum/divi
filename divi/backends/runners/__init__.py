@@ -8,7 +8,7 @@ from typing import Any
 
 from divi._optional import import_optional
 
-from .._job_status import JobStatus
+from divi.backends._job_status import JobStatus
 from ._maestro import MaestroConfig, MaestroSimulator
 from ._qoro import JobType, QoroService
 

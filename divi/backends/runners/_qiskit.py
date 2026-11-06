@@ -26,18 +26,17 @@ from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
 from divi._optional import import_optional
-from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
-
-from .._base import CircuitRunner, ExecutionResult
-from .._cancellation import raise_if_cancelled
-from .._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
-from .._shot_allocation import (
+from divi.backends._base import CircuitRunner, ExecutionResult
+from divi.backends._cancellation import raise_if_cancelled
+from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
+from divi.backends._shot_allocation import (
     ShotRange,
     bucket_by_shots,
     from_wire,
     per_circuit,
     validate,
 )
+from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 logger = logging.getLogger(__name__)
 

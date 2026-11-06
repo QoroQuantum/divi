@@ -30,13 +30,12 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from divi.backends._job_status import InsufficientCreditsError, JobTimedOutError
+from divi.backends.runners._qoro import QoroService
 from divi.exceptions import (
     CharacterizationFailedError,
     ExecutionCancelledError,
 )
-
-from .._job_status import InsufficientCreditsError, JobTimedOutError
-from ..runners._qoro import QoroService
 
 if TYPE_CHECKING:
     from divi.qprog.problems import BinaryOptimizationProblem

@@ -21,6 +21,11 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, model_validator
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.backends._base import CircuitRunner, ExecutionResult
+from divi.backends._cancellation import raise_if_cancelled
+from divi.backends._config import describe_unknown, reject_unknown_reset
+from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
+from divi.backends._shot_allocation import per_circuit_or_none
 from divi.circuits._conversions import (
     _format_bound_param,
     _sparse_pauli_op_to_ham_string,
@@ -31,12 +36,6 @@ from divi.circuits._qasm_template import build_template, render_template
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
 from divi.qasm import count_clbits, count_qubits
-
-from .._base import CircuitRunner, ExecutionResult
-from .._cancellation import raise_if_cancelled
-from .._config import describe_unknown, reject_unknown_reset
-from .._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
-from .._shot_allocation import per_circuit_or_none
 
 
 def _run_with_cancellation(
