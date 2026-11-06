@@ -9,7 +9,7 @@ import pytest
 
 from divi.qprog.algorithms import QAOA
 from divi.qprog.problems import MaxCutProblem
-from divi.viz import Scan2DResult, fourier_analysis_2d, scan_2d
+from divi.viz import Scan2DResult, compute_fourier_analysis_2d, scan_2d
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ class TestFourierAnalysis2D:
     def test_shapes_match_input_grid(self, qaoa_program):
         center = np.zeros(qaoa_program.get_expected_param_shape()[1])
         scan = scan_2d(qaoa_program, center=center, grid_shape=(8, 6), rng=0)
-        result = fourier_analysis_2d(scan)
+        result = compute_fourier_analysis_2d(scan)
 
         assert result.frequencies_x.shape == (8,)
         assert result.frequencies_y.shape == (6,)
@@ -36,7 +36,7 @@ class TestFourierAnalysis2D:
     def test_power_spectrum_non_negative(self, qaoa_program):
         center = np.zeros(qaoa_program.get_expected_param_shape()[1])
         scan = scan_2d(qaoa_program, center=center, grid_shape=(5, 5), rng=0)
-        result = fourier_analysis_2d(scan)
+        result = compute_fourier_analysis_2d(scan)
 
         assert np.all(result.power_spectrum >= 0.0)
 
@@ -46,7 +46,7 @@ class TestFourierAnalysis2D:
         scan = scan_2d(qaoa_program, center=center, grid_shape=(8, 8), rng=0)
         # Override values with a constant to test DC dominance.
         scan.values[:] = 5.0
-        result = fourier_analysis_2d(scan)
+        result = compute_fourier_analysis_2d(scan)
 
         # DC component is at the center of the shifted spectrum.
         cy, cx = (
@@ -61,7 +61,7 @@ class TestFourierAnalysis2D:
     def test_plot_returns_figure_and_axes(self, qaoa_program):
         center = np.zeros(qaoa_program.get_expected_param_shape()[1])
         scan = scan_2d(qaoa_program, center=center, grid_shape=(5, 5), rng=0)
-        result = fourier_analysis_2d(scan)
+        result = compute_fourier_analysis_2d(scan)
         fig, ax = result.plot(show=False)
 
         try:
@@ -88,7 +88,7 @@ def _grid_scan(x_offsets, y_offsets) -> Scan2DResult:
 def test_frequencies_follow_grid_spacing():
     scan = _grid_scan(np.linspace(0.0, 1.5, 4), [0.0, 0.25])
 
-    result = fourier_analysis_2d(scan)
+    result = compute_fourier_analysis_2d(scan)
 
     np.testing.assert_allclose(
         result.frequencies_x, np.fft.fftshift(np.fft.fftfreq(4, d=0.5))
@@ -99,7 +99,7 @@ def test_frequencies_follow_grid_spacing():
 
 
 def test_single_point_axis_has_zero_frequency():
-    result = fourier_analysis_2d(_grid_scan([0.0, 0.5, 1.0], [0.0]))
+    result = compute_fourier_analysis_2d(_grid_scan([0.0, 0.5, 1.0], [0.0]))
 
     np.testing.assert_array_equal(result.frequencies_y, [0.0])
     assert result.power_spectrum.shape == (1, 3)
@@ -108,7 +108,7 @@ def test_single_point_axis_has_zero_frequency():
 def test_power_spectrum_satisfies_parseval():
     scan = _grid_scan(np.linspace(0.0, 1.0, 5), np.linspace(0.0, 2.0, 3))
 
-    result = fourier_analysis_2d(scan)
+    result = compute_fourier_analysis_2d(scan)
 
     np.testing.assert_allclose(
         np.sum(result.power_spectrum), 5 * 3 * np.sum(scan.values**2), rtol=1e-12

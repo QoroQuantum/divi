@@ -16,7 +16,7 @@ Attribution for orqviz-aligned geometry is recorded in
 from ._api import (
     ProgramViz,
     compute_hessian,
-    fourier_analysis_2d,
+    compute_fourier_analysis_2d,
     run_neb,
     scan_1d,
     scan_2d,
@@ -45,7 +45,7 @@ __all__ = [
     "Scan1DResult",
     "Scan2DResult",
     "compute_hessian",
-    "fourier_analysis_2d",
+    "compute_fourier_analysis_2d",
     "periodic_trajectory_wrap",
     "periodic_wrap",
     "run_neb",

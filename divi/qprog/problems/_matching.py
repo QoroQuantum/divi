@@ -330,7 +330,7 @@ def _integer_weights(weights: Sequence[float]) -> list[int]:
     return [round(math.ldexp(w, shift)) if w > 0 else 0 for w in weights]
 
 
-def _classical_cleanup(
+def _fill_unmatched_nodes(
     solution: list[int],
     edges: Sequence[_Edge],
     integer_weights: Sequence[int],
@@ -620,7 +620,9 @@ class MaxWeightMatchingProblem(QAOAProblem):
                 solution[i] = 1
 
         if self._use_classical_cleanup:
-            solution = _classical_cleanup(solution, self._edges, self._matching_weights)
+            solution = _fill_unmatched_nodes(
+                solution, self._edges, self._matching_weights
+            )
             selected = [i for i, bit in enumerate(solution) if bit]
 
         return self._matching_and_weight(selected)

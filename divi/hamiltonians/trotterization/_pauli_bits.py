@@ -110,7 +110,7 @@ def commutators(
         yield a, b, *_commutator(left.x[a], left.z[a], right.x[b], right.z[b])
 
 
-def shift_sums(
+def compute_shift_sums(
     left: PackedPaulis, right: PackedPaulis, weights: npt.NDArray
 ) -> npt.NDArray[np.complexfloating]:
     """``Σ_b weights[b] · (-2 if S_a anticommutes with S_b else 0)`` per
@@ -274,7 +274,7 @@ class ExpectationTable:
         """Evaluate the distinct strings ``rows`` (``x`` words, then ``z``
         words) in one batch."""
         n_words = rows.shape[1] // 2
-        known = initial_state.pauli_expectations(
+        known = initial_state.compute_pauli_expectations(
             to_paulis(rows[:, :n_words], rows[:, n_words:], n_qubits), n_qubits
         )
         return cls(_RowIndex.of(rows), np.asarray(known, dtype=float))
@@ -311,7 +311,7 @@ def evaluate(
     return compute(ExpectationTable.of(recorder.seen.rows(), initial_state, n_qubits))
 
 
-def commutator_values(
+def compute_commutator_values(
     left: PackedPaulis, right: PackedPaulis, source: Values
 ) -> Iterator[
     tuple[npt.NDArray[np.intp], npt.NDArray[np.intp], npt.NDArray[np.complexfloating]]
@@ -334,7 +334,7 @@ def commutator_values(
         yield a[keep], b[keep], factor * source.signs(x, z)
 
 
-def double_commutator_sums(
+def compute_double_commutator_sums(
     left: PackedPaulis, right: PackedPaulis, source: Values
 ) -> tuple[npt.NDArray[np.complexfloating], npt.NDArray[np.complexfloating]]:
     """With ``v = <[S_a, [S_a', S_b]]>`` over ``a``, ``a'`` of ``left`` and
@@ -359,7 +359,7 @@ def double_commutator_sums(
         rows[:, :n_words], rows[:, n_words:], np.ones(len(rows), dtype=complex)
     )
     with_left = np.zeros(middle.size, dtype=complex)
-    for a, m, values in commutator_values(left, middle, source):
+    for a, m, values in compute_commutator_values(left, middle, source):
         with_left += accumulate(m, left.coeffs[a] * values, middle.size)
 
     index = _RowIndex.of(rows)

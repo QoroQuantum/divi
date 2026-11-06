@@ -111,7 +111,7 @@ def test_commutator_values_cover_every_non_zero_pair(initial_state):
         initial_state,
         4,
         lambda source: list(
-            bits.commutator_values(bits.pack(_LEFT), bits.pack(_RIGHT), source)
+            bits.compute_commutator_values(bits.pack(_LEFT), bits.pack(_RIGHT), source)
         ),
     )
     for a, b, values in blocks:
@@ -141,7 +141,7 @@ def test_double_commutator_sums_match_dense_matrices(initial_state):
     per_inner, per_right = bits.evaluate(
         initial_state,
         4,
-        lambda source: bits.double_commutator_sums(
+        lambda source: bits.compute_double_commutator_sums(
             bits.pack(_LEFT), bits.pack(_RIGHT), source
         ),
     )
@@ -164,7 +164,7 @@ def test_shift_sums_count_minus_two_per_anticommuting_weight():
     for a, b in _anticommuting(_LEFT, _RIGHT):
         expected[a] -= 2 * weights[b]
     np.testing.assert_allclose(
-        bits.shift_sums(bits.pack(_LEFT), bits.pack(_RIGHT), weights).real,
+        bits.compute_shift_sums(bits.pack(_LEFT), bits.pack(_RIGHT), weights).real,
         expected,
         atol=1e-12,
     )

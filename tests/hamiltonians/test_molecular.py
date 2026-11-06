@@ -9,7 +9,7 @@ import pytest
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import molecular_hamiltonian, molecular_hamiltonian_from_pyscf
-from divi.hamiltonians._molecular import molecule_integrals
+from divi.hamiltonians._molecular import compute_molecule_integrals
 from tests._helpers import exact_match
 
 
@@ -88,7 +88,7 @@ def test_molecule_integrals_keep_a_customised_pennylane_basis(qp):
         coeff=[c * np.linspace(1.1, 0.8, len(c)) for c in base.coeff],
     )
 
-    one_body, _, constant = molecule_integrals(molecule)
+    one_body, _, constant = compute_molecule_integrals(molecule)
     expected_constant, expected_one_body, _ = qp.qchem.electron_integrals(molecule)()
 
     np.testing.assert_allclose(one_body, expected_one_body, atol=1e-12)

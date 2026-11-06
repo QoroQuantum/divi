@@ -18,8 +18,8 @@ from divi.qprog.ensembles.lassqd._integrals import (
     _total_energy,
     assemble_active_rdms,
     build_active_permutation,
+    build_fragment_effective_integrals,
     cached_h_ao,
-    fragment_effective_integrals,
     transform_integrals,
 )
 from divi.qprog.ensembles.lassqd._state import (
@@ -141,7 +141,7 @@ def test_single_fragment_effective_integrals_are_the_bare_block(h2_mean_field):
         AOIntegrals.of(h2_mean_field.mol), h2_mean_field.mo_coeff, n_core=0, n_act=2
     )
 
-    h_eff, _, g_frag = fragment_effective_integrals(
+    h_eff, _, g_frag = build_fragment_effective_integrals(
         integrals, [_idle_fragment((0, 1))], 0
     )
 
@@ -177,7 +177,7 @@ def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential(
         _idle_fragment((2, 3)),
     ]
 
-    h_eff, h_beta, _ = fragment_effective_integrals(integrals, states, 1)
+    h_eff, h_beta, _ = build_fragment_effective_integrals(integrals, states, 1)
 
     # No spin density in the neighbour, so the spin-resolved path reduces to
     # the spin-traced one.
@@ -254,7 +254,7 @@ def test_polarized_neighbour_splits_the_embedding_by_spin(h4_chain_mean_field):
         ),
     ]
 
-    h_alpha, h_beta, _ = fragment_effective_integrals(integrals, states, 0)
+    h_alpha, h_beta, _ = build_fragment_effective_integrals(integrals, states, 0)
 
     target = mo_coeff[:, :2]
     other = mo_coeff[:, 2:4]
@@ -442,7 +442,9 @@ def test_fragment_effective_integrals_matches_casci_h1eff_with_frozen_core(
         AOIntegrals.of(mean_field.mol), mo_coeff, n_core=1, n_act=2
     )
 
-    h_eff, _, _ = fragment_effective_integrals(integrals, [_idle_fragment((1, 2))], 0)
+    h_eff, _, _ = build_fragment_effective_integrals(
+        integrals, [_idle_fragment((1, 2))], 0
+    )
 
     np.testing.assert_allclose(h_eff, h1eff, atol=1e-10)
 
@@ -490,7 +492,7 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation(
         FragmentState(spec=specs[1], rdm1=rdm_other, rdm2=np.zeros((2,) * 4)),
     ]
 
-    h_eff, _, g_frag = fragment_effective_integrals(integrals, states, 0)
+    h_eff, _, g_frag = build_fragment_effective_integrals(integrals, states, 0)
 
     # Oracle built directly from the unpermuted MO integrals, indexed at the
     # caller's requested orbitals (0, 3) and (1, 2), not at positions 0..3.
@@ -531,7 +533,7 @@ def test_fragment_effective_integrals_rejects_mismatched_active_space():
             "`integrals` and `fragments` were built from different fragment specs."
         ),
     ):
-        fragment_effective_integrals(integrals, states, 0)
+        build_fragment_effective_integrals(integrals, states, 0)
 
 
 def test_transform_integrals_reuses_a_supplied_ao_eri(mocker, h4_chain_mean_field):

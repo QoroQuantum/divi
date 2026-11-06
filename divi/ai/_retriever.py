@@ -188,7 +188,7 @@ def _bm25_topn(query: str, stack: SearchStack, n: int) -> dict[int, float]:
     return {int(i): float(s) for i, s in zip(results[0], scores[0])}
 
 
-def _cosine_for_indices(
+def _compute_cosine_for_indices(
     query_vec: np.ndarray, stack: SearchStack, indices: list[int]
 ) -> dict[int, float]:
     """Compute cosine for arbitrary chunk indices (e.g. BM25-only hits)."""
@@ -476,7 +476,7 @@ def retrieve(
     if missing:
         qv = np.array(list(stack.embedder.embed([query])), dtype=np.float32)
         faiss.normalize_L2(qv)
-        extra_cosines = _cosine_for_indices(qv, stack, missing)
+        extra_cosines = _compute_cosine_for_indices(qv, stack, missing)
 
     results = [
         RetrievedChunk(

@@ -12,7 +12,7 @@ import numpy as np
 from qiskit import QuantumCircuit
 
 from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.exceptions import ExecutionCancelledError
 from divi.qprog.initial_states import (
     CustomPerQubitState,
@@ -51,7 +51,7 @@ class FakeAsyncBackend(AsyncJobBackend):
 
     def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
         job = ExecutionResult(job_id=f"job-{next(self._job_ids)}")
-        self._circuits[job.job_id] = bound_circuits(payloads)
+        self._circuits[job.job_id] = flatten_bound_payloads(payloads)
         self.jobs.append(job)
         return job
 

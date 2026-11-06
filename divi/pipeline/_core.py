@@ -28,7 +28,7 @@ from divi.circuits._conversions import (
     _format_bound_param,
     _sparse_pauli_op_to_ham_string,
 )
-from divi.circuits._payloads import CircuitPayload, bound_circuits, is_bound
+from divi.circuits._payloads import CircuitPayload, flatten_bound_payloads, is_bound
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.hamiltonians.trotterization import ExactTrotterization
 from divi.reporting._events import ProgressEvent
@@ -40,11 +40,11 @@ from ._compilation import (
     reject_colliding_body_tags,
 )
 from ._postprocessing import (
-    _big_endian_histogram,
     _counts_to_cost_variance,
     _counts_to_expvals,
     _counts_to_probs,
     _expval_dicts_to_indexed,
+    _to_big_endian_histogram,
 )
 from ._result_keys_operations import (
     FOREIGN_KEY_ATTR,
@@ -181,7 +181,7 @@ def _wait_for_async_result(
     return backend.get_job_results(execution_result)
 
 
-def _shot_count_for_branch(
+def _resolve_branch_shot_count(
     branch_key: tuple,
     spec_keys: Sequence[tuple],
     per_group_shots: Mapping[tuple, dict[int, int]],
@@ -221,7 +221,7 @@ def _build_shot_groups(
     per_param_group_shots = per_param_group_shots or {}
     spec_keys = list(dict.fromkeys((*per_param_group_shots, *per_group_shots)))
     per_circuit_shots = [
-        _shot_count_for_branch(
+        _resolve_branch_shot_count(
             lineage_by_label[label],
             spec_keys,
             per_group_shots,
@@ -319,7 +319,7 @@ def _default_execute_fn(
     result = backend.submit_circuits(
         payloads, cancellation_event=env.cancellation_event, **submit_kwargs
     )
-    entries = _completed_entries(result, env)
+    entries = _await_completed_entries(result, env)
     return _collapse_to_parent_results(
         {entry["label"]: entry["results"] for entry in entries}, lineage_by_label
     )
@@ -358,7 +358,7 @@ def _lower_batch(
                 "circuit is bound before its group's shots are applied."
             )
         shot_groups = _build_shot_groups(
-            bound_circuits(payloads),
+            flatten_bound_payloads(payloads),
             lineage_by_label,
             per_group_shots,
             per_param_group_shots,
@@ -377,7 +377,7 @@ def _lower_batch(
     return payloads, lineage_by_label, submit_kwargs
 
 
-def _completed_entries(result: ExecutionResult, env: PipelineEnv) -> list[dict]:
+def _await_completed_entries(result: ExecutionResult, env: PipelineEnv) -> list[dict]:
     """Wait for ``result``, record its jobs and run time, and return its entries."""
     env.artifacts["backend_jobs"] = result.backend_jobs
 
@@ -601,7 +601,7 @@ class CircuitPipeline:
                     raw = _counts_to_probs(raw, env.backend.shots)
                 elif result_format is ResultFormat.COUNTS:
                     raw = {
-                        key: _big_endian_histogram(key, counts)
+                        key: _to_big_endian_histogram(key, counts)
                         for key, counts in raw.items()
                     }
                 elif result_format is ResultFormat.EXPVALS:
@@ -747,7 +747,7 @@ class CircuitPipeline:
                 },
                 cancellation_event=env.cancellation_event,
             )
-            entries = _completed_entries(result, env)
+            entries = _await_completed_entries(result, env)
             for entry in entries:
                 vjps[param_set_of[entry["label"]]] = np.asarray(
                     entry["metadata"]["vjp"]

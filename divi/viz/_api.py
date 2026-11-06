@@ -227,7 +227,7 @@ def _resolve_viz_rng(rng: VizRng) -> np.random.Generator:
     return np.random.default_rng(rng)
 
 
-def _random_gaussian_direction(
+def _sample_gaussian_direction(
     n_params: int, rng: np.random.Generator
 ) -> npt.NDArray[np.float64]:
     """Sample a random direction from a standard Gaussian."""
@@ -246,7 +246,7 @@ def _resolve_1d_direction(
 ) -> npt.NDArray[np.float64]:
     """Validate or generate a 1D scan direction, optionally unit-normalising."""
     if direction is None:
-        direction_arr = _random_gaussian_direction(n_params, rng)
+        direction_arr = _sample_gaussian_direction(n_params, rng)
     else:
         direction_arr = np.asarray(direction, dtype=np.float64).reshape(-1)
 
@@ -274,11 +274,11 @@ def _gram_schmidt_remove_component(
     return v - (float(np.dot(v, ref)) / ref_sq) * ref
 
 
-def _random_orthogonal_direction(
+def _sample_orthogonal_direction(
     ref: npt.NDArray[np.float64], rng: np.random.Generator
 ) -> npt.NDArray[np.float64]:
     """Sample a random Gaussian direction with its component along *ref* removed."""
-    v = _gram_schmidt_remove_component(_random_gaussian_direction(ref.size, rng), ref)
+    v = _gram_schmidt_remove_component(_sample_gaussian_direction(ref.size, rng), ref)
     if float(np.linalg.norm(v)) < 1e-15:  # practically impossible for >= 2 params
         raise RuntimeError(
             "Sampled a direction parallel to the reference; try a different rng seed."
@@ -325,7 +325,7 @@ def _resolve_2d_directions(
         nx = float(np.linalg.norm(dx))
         if nx == 0.0:
             raise ValueError("direction_x must be non-zero.")
-        dy = _random_orthogonal_direction(dx, rng)
+        dy = _sample_orthogonal_direction(dx, rng)
         ny = float(np.linalg.norm(dy))
         if normalize_directions:
             dx = dx / nx
@@ -341,7 +341,7 @@ def _resolve_2d_directions(
         ny = float(np.linalg.norm(dy))
         if ny == 0.0:
             raise ValueError("direction_y must be non-zero.")
-        dx = _random_orthogonal_direction(dy, rng)
+        dx = _sample_orthogonal_direction(dy, rng)
         nx = float(np.linalg.norm(dx))
         if normalize_directions:
             dx = dx / nx
@@ -349,9 +349,9 @@ def _resolve_2d_directions(
         else:
             dx = (dx / nx) * ny
     else:
-        dx = _random_gaussian_direction(n_params, rng)
+        dx = _sample_gaussian_direction(n_params, rng)
         nx = float(np.linalg.norm(dx))
-        dy = _random_orthogonal_direction(dx, rng)
+        dy = _sample_orthogonal_direction(dx, rng)
         ny = float(np.linalg.norm(dy))
         if normalize_directions:
             dx = dx / nx
@@ -928,12 +928,12 @@ def scan_interp_2d(
         if dy_norm < 1e-15:
             raise ValueError("direction_y must be non-zero.")
     else:
-        dy_raw = _random_gaussian_direction(n_params, rng_gen)
+        dy_raw = _sample_gaussian_direction(n_params, rng_gen)
         dy = _gram_schmidt_remove_component(dy_raw, interp_dir)
         dy_norm = float(np.linalg.norm(dy))
         if dy_norm < 1e-15:
             # Extremely unlikely with random vectors; retry once.
-            dy_raw = _random_gaussian_direction(n_params, rng_gen)
+            dy_raw = _sample_gaussian_direction(n_params, rng_gen)
             dy = _gram_schmidt_remove_component(dy_raw, interp_dir)
             dy_norm = float(np.linalg.norm(dy))
         # Match orqviz: random y-direction has same norm as the interpolation vector.
@@ -1201,7 +1201,7 @@ def run_neb(
     )
 
 
-def fourier_analysis_2d(
+def compute_fourier_analysis_2d(
     scan_result: Scan2DResult | PCAScanResult,
 ) -> Fourier2DResult:
     """Compute the 2D Fourier power spectrum of a scan grid.

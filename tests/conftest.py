@@ -47,7 +47,7 @@ from divi.backends import (
     ExecutionResult,
     MaestroSimulator,
 )
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
@@ -142,7 +142,7 @@ class DummySimulator(CircuitRunner):
 
     def submit_circuits(self, payloads, **kwargs):
         res = []
-        for label, qasm in bound_circuits(payloads).items():
+        for label, qasm in flatten_bound_payloads(payloads).items():
             match = re.search(r"qreg q\[(\d+)\]", qasm)
             if not match:
                 raise RuntimeError("QASM missing qreg for some reason")

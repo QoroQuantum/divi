@@ -278,7 +278,7 @@ class LUCJFragmentProgram(QuantumProgram):
         return self._terminal_result
 
 
-def paper_lucj_interaction_pairs(
+def build_paper_lucj_interaction_pairs(
     n_orbitals: int,
 ) -> tuple[
     list[tuple[int, int]],
@@ -488,7 +488,7 @@ def _unrank_combination(items, size: int, rank: int) -> tuple[int, ...]:
     return tuple(selected)
 
 
-def fragment_mean_field(
+def run_fragment_mean_field(
     method: Callable,
     one_body: np.ndarray,
     two_body: np.ndarray,
@@ -517,7 +517,7 @@ def fragment_mean_field(
     return mean_field
 
 
-def _fragment_rohf(
+def _solve_fragment_rohf(
     one_body: np.ndarray,
     two_body: np.ndarray,
     spec: FragmentSpec,
@@ -533,7 +533,7 @@ def _fragment_rohf(
 
     best = None
     for start in _rohf_starts(one_body, spec):
-        mean_field = fragment_mean_field(scf.ROHF, one_body, two_body, spec)
+        mean_field = run_fragment_mean_field(scf.ROHF, one_body, two_body, spec)
         mean_field.kernel(dm0=start)
         if not mean_field.converged:
             mean_field = mean_field.newton()
@@ -563,7 +563,7 @@ def _fragment_rohf(
     return best
 
 
-def fragment_coupled_cluster(
+def run_fragment_coupled_cluster(
     solver: Callable, name: str, mean_field: Any, spec: FragmentSpec
 ):
     """``solver`` (``cc.CCSD`` or ``cc.UCCSD``) run on a fragment's mean field.
@@ -607,7 +607,7 @@ def prepare_lucj_fragment(
     report_iteration = on_iteration if on_iteration is not None else (lambda _: None)
 
     announce("Fragment ROHF")
-    mean_field = _fragment_rohf(problem.one_body, problem.two_body, spec)
+    mean_field = _solve_fragment_rohf(problem.one_body, problem.two_body, spec)
     orbital_rotation = np.asarray(mean_field.mo_coeff)
     h_alpha_mo, two_body_mo = _rotate_integrals(
         problem.one_body, problem.two_body, orbital_rotation
@@ -615,14 +615,14 @@ def prepare_lucj_fragment(
     h_beta_mo = _rotate_one_body(problem.one_body_beta, orbital_rotation)
 
     announce("CCSD seed")
-    coupled_cluster = fragment_coupled_cluster(cc.UCCSD, "UCCSD", mean_field, spec)
+    coupled_cluster = run_fragment_coupled_cluster(cc.UCCSD, "UCCSD", mean_field, spec)
     t1, t2 = _physical_spin_amplitudes(coupled_cluster, spec)
     _require_finite_fragment_values((*t1, *t2), label="CCSD amplitudes", spec=spec)
 
     n_orbitals = spec.n_orbitals
     n_electrons = (spec.n_alpha, spec.n_beta)
     n_repetitions = 1
-    interaction_pairs = paper_lucj_interaction_pairs(n_orbitals)
+    interaction_pairs = build_paper_lucj_interaction_pairs(n_orbitals)
     seed_operator = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
         t2,
         t1=t1,

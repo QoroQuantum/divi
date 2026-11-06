@@ -170,7 +170,7 @@ def decode_tsp_solution(
     return tour
 
 
-def tour_cost(
+def compute_tour_cost(
     tour: Sequence[int],
     cost_matrix: npt.NDArray[np.floating],
 ) -> float:
@@ -237,7 +237,7 @@ def repair_tsp_solution(
         tour.append(cities[city_idx])
     tour.append(start_city)
 
-    cost = tour_cost(tour, cost_matrix)
+    cost = compute_tour_cost(tour, cost_matrix)
 
     return repaired_bitstring, tour, cost
 
@@ -396,7 +396,7 @@ def create_cvrp_qubo(
     return np.triu(Q + Q.T - np.diag(np.diag(Q)))
 
 
-def cvrp_block_structure(
+def build_cvrp_block_structure(
     n_customers: int,
     n_vehicles: int,
 ) -> tuple[int, int]:
@@ -639,7 +639,7 @@ class BinaryBlockConfig:
     n_qubits: int
 
 
-def binary_block_config(
+def compute_binary_block_config(
     n_customers: int,
     n_vehicles: int,
     max_steps: int | None = None,
@@ -724,7 +724,7 @@ def create_cvrp_hubo_binary(
     customers = [c for c in range(n_nodes) if c != depot]
     n_cust = len(customers)
 
-    config = binary_block_config(n_cust, n_vehicles, max_steps)
+    config = compute_binary_block_config(n_cust, n_vehicles, max_steps)
     B = config.bits_per_slot
 
     def slot_bits(slot_idx: int) -> list[int]:
@@ -732,7 +732,7 @@ def create_cvrp_hubo_binary(
         start = slot_idx * B
         return list(range(start, start + B))
 
-    def vehicle_slot(v: int, t: int) -> int:
+    def compute_vehicle_slot(v: int, t: int) -> int:
         """Map (vehicle, timestep) to slot index."""
         return v * config.max_steps + t
 
@@ -751,7 +751,7 @@ def create_cvrp_hubo_binary(
     # We expand it into a dict of {frozen_set_of_variables: coefficient}.
 
     @cache
-    def indicator_terms(
+    def expand_indicator_terms(
         slot_idx: int, customer_val: int
     ) -> dict[frozenset[int], float]:
         """Expand the indicator I(slot == customer_val) into polynomial terms.
@@ -789,7 +789,9 @@ def create_cvrp_hubo_binary(
     for cust_idx in range(n_cust):
         cust_val = cust_idx + 1  # binary value (0 is "empty")
 
-        slot_indicators = [indicator_terms(s, cust_val) for s in range(config.n_slots)]
+        slot_indicators = [
+            expand_indicator_terms(s, cust_val) for s in range(config.n_slots)
+        ]
 
         # -2 * sum_s I(s==j)  (linear part of (sum-1)^2)
         for ind in slot_indicators:
@@ -824,12 +826,12 @@ def create_cvrp_hubo_binary(
         ms = config.max_steps
 
         for t in range(ms):
-            s = vehicle_slot(v, t)
+            s = compute_vehicle_slot(v, t)
 
             for cust_idx in range(n_cust):
                 cust_val = cust_idx + 1
                 cust_node = customers[cust_idx]
-                ind = indicator_terms(s, cust_val)
+                ind = expand_indicator_terms(s, cust_val)
 
                 if t == 0:
                     # Depot to first customer
@@ -851,18 +853,18 @@ def create_cvrp_hubo_binary(
 
             # Consecutive: slot(v,t) -> slot(v,t+1)
             if t < ms - 1:
-                s_next = vehicle_slot(v, t + 1)
+                s_next = compute_vehicle_slot(v, t + 1)
                 for ci in range(n_cust):
                     ci_val = ci + 1
                     ci_node = customers[ci]
-                    ind_i = indicator_terms(s, ci_val)
+                    ind_i = expand_indicator_terms(s, ci_val)
                     for cj in range(n_cust):
                         cj_val = cj + 1
                         cj_node = customers[cj]
                         weight = cost_matrix[ci_node, cj_node]
                         if abs(weight) < 1e-15:
                             continue
-                        ind_j = indicator_terms(s_next, cj_val)
+                        ind_j = expand_indicator_terms(s_next, cj_val)
                         for (vars_i, coeff_i), (vars_j, coeff_j) in product(
                             ind_i.items(), ind_j.items()
                         ):
@@ -880,13 +882,13 @@ def create_cvrp_hubo_binary(
         # Collect all demand-weighted indicator terms for this vehicle
         demand_terms: list[tuple[dict[frozenset[int], float], float]] = []
         for t in range(config.max_steps):
-            s = vehicle_slot(v, t)
+            s = compute_vehicle_slot(v, t)
             for ci in range(n_cust):
                 ci_val = ci + 1
                 d = demands[customers[ci]]
                 if abs(d) < 1e-15:
                     continue
-                ind = indicator_terms(s, ci_val)
+                ind = expand_indicator_terms(s, ci_val)
                 demand_terms.append((ind, d))
 
         # -2C * sum of demand_j * I(slot==j)
@@ -1625,7 +1627,7 @@ class TSPProblem(_RoutingProblemBase):
             )
         else:
             tour = decode_tsp_solution(bitstring, self._n_cities, self._start_city)
-        return tour_cost(tour, self._cost_matrix) if tour is not None else None
+        return compute_tour_cost(tour, self._cost_matrix) if tour is not None else None
 
 
 # --- CVRPProblem ---
@@ -1714,7 +1716,7 @@ class CVRPProblem(_RoutingProblemBase):
                 objective_weight=objective_weight,
                 capacity_penalty_weight=capacity_penalty_weight,
             )
-            bs, nb = cvrp_block_structure(n_cust, n_vehicles)
+            bs, nb = build_cvrp_block_structure(n_cust, n_vehicles)
             self._init_ising(qubo, block_size=bs, n_blocks=nb)
 
     @property
@@ -1794,4 +1796,4 @@ class CVRPProblem(_RoutingProblemBase):
             )
         if routes is None:
             return None
-        return sum(tour_cost(route, self._cost_matrix) for route in routes)
+        return sum(compute_tour_cost(route, self._cost_matrix) for route in routes)

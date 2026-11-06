@@ -20,9 +20,9 @@ from divi.qprog.problems._qubo_partitioning_utils import (
     _partition,
     _view_features,
     bqm_to_sparse,
-    louvain_partition,
     partition_by_method,
-    signed_multiview_partition,
+    partition_louvain,
+    partition_spectral,
 )
 from tests._helpers import exact_match
 
@@ -88,7 +88,7 @@ def test_component_presplit_separates_disconnected_blocks():
     # No budget pressure: only the connected-component pre-split should act.
     config = GraphPartitioningConfig(max_n_nodes_per_cluster=100)
 
-    clusters = signed_multiview_partition(sigma, config, seed=0)
+    clusters = partition_spectral(sigma, config, seed=0)
 
     got = sorted(sorted(int(i) for i in cl) for cl in clusters)
     assert got == [[0, 1, 2], [3, 4, 5]]
@@ -97,10 +97,10 @@ def test_component_presplit_separates_disconnected_blocks():
 @pytest.mark.parametrize(
     ("partition", "rng_seed", "n", "budget"),
     [
-        (signed_multiview_partition, 0, 20, 5),
+        (partition_spectral, 0, 20, 5),
         # Deep recursive bisection must not hit the recursion limit.
-        (signed_multiview_partition, 3, 200, 6),
-        (louvain_partition, 1, 20, 5),
+        (partition_spectral, 3, 200, 6),
+        (partition_louvain, 1, 20, 5),
     ],
     ids=["multiview", "multiview-large", "louvain"],
 )
@@ -124,7 +124,7 @@ def test_minimum_n_clusters_splits_complete_block(n, minimum_n_clusters):
     sigma = _block_matrix([list(range(n))], intra=1.0)
     config = GraphPartitioningConfig(minimum_n_clusters=minimum_n_clusters)
 
-    clusters = signed_multiview_partition(sigma, config, seed=0)
+    clusters = partition_spectral(sigma, config, seed=0)
 
     assert len(clusters) == minimum_n_clusters
     assert sorted(i for cl in _id_groups(clusters) for i in cl) == list(range(n))
@@ -142,7 +142,7 @@ def test_single_sign_block_recovers_communities(intra, bridge_w):
     )
     config = GraphPartitioningConfig(max_n_nodes_per_cluster=4)
 
-    clusters = signed_multiview_partition(sigma, config, seed=0)
+    clusters = partition_spectral(sigma, config, seed=0)
 
     _assert_recovers_blocks(clusters, block_a, block_b)
 
@@ -151,8 +151,8 @@ def test_all_positive_partition_is_seed_deterministic():
     sigma, _a, _b = _planted_two_block_sigma(intra_a=5.0, intra_b=5.0)
     config = GraphPartitioningConfig(max_n_nodes_per_cluster=4)
 
-    first = signed_multiview_partition(sigma, config, seed=0)
-    second = signed_multiview_partition(sigma, config, seed=0)
+    first = partition_spectral(sigma, config, seed=0)
+    second = partition_spectral(sigma, config, seed=0)
 
     assert [sorted(map(int, c)) for c in first] == [sorted(map(int, c)) for c in second]
 
@@ -165,7 +165,7 @@ def test_min_clusters_exceeding_n_raises():
         ValueError,
         match=exact_match("minimum_n_clusters is larger than the number of variables."),
     ):
-        signed_multiview_partition(sigma, config, seed=0)
+        partition_spectral(sigma, config, seed=0)
 
 
 def test_bqm_to_sparse_handles_string_labels():
@@ -195,7 +195,7 @@ def test_louvain_recovers_planted_communities(planted_kwargs):
     sigma, block_a, block_b = _planted_two_block_sigma(**planted_kwargs)
     config = GraphPartitioningConfig(max_n_nodes_per_cluster=4)
 
-    clusters = louvain_partition(sigma, config, seed=0)
+    clusters = partition_louvain(sigma, config, seed=0)
 
     _assert_recovers_blocks(clusters, block_a, block_b)
 
@@ -212,7 +212,7 @@ def test_louvain_uniform_complete_block_does_not_fragment():
     sigma = sps.csr_matrix(np.triu(q, 1) + np.triu(q, 1).T)
     config = GraphPartitioningConfig(max_n_nodes_per_cluster=6)
 
-    clusters = louvain_partition(sigma, config, seed=0)
+    clusters = partition_louvain(sigma, config, seed=0)
 
     assert all(len(c) <= 6 for c in clusters)
     assert sum(1 for c in clusters if len(c) == 1) <= 1
@@ -361,9 +361,7 @@ def test_ensure_min_clusters_keeps_louvain_split():
 def test_minimum_n_clusters_alone_recovers_planted_blocks():
     sigma, block_a, block_b = _planted_two_block_sigma()
 
-    clusters = signed_multiview_partition(
-        sigma, GraphPartitioningConfig(minimum_n_clusters=2)
-    )
+    clusters = partition_spectral(sigma, GraphPartitioningConfig(minimum_n_clusters=2))
 
     _assert_recovers_blocks(clusters, block_a, block_b)
 
@@ -372,7 +370,7 @@ def test_louvain_minimum_n_clusters_keeps_natural_communities():
     blocks = [[0, 3, 6], [1, 4, 7], [2, 5, 8]]
     sigma = _block_matrix(blocks, intra=5.0, bridges=[(6, 7, 0.05), (7, 8, 0.05)])
 
-    clusters = louvain_partition(sigma, GraphPartitioningConfig(minimum_n_clusters=2))
+    clusters = partition_louvain(sigma, GraphPartitioningConfig(minimum_n_clusters=2))
 
     assert sorted(sorted(cl) for cl in _id_groups(clusters)) == blocks
 
@@ -393,8 +391,8 @@ def test_partition_forwards_seed_to_every_labeler_call(mocker):
 @pytest.mark.parametrize(
     ("method", "chosen", "other"),
     [
-        ("spectral", "signed_multiview_partition", "louvain_partition"),
-        ("modularity", "louvain_partition", "signed_multiview_partition"),
+        ("spectral", "partition_spectral", "partition_louvain"),
+        ("modularity", "partition_louvain", "partition_spectral"),
     ],
 )
 def test_partition_by_method_dispatch(method, chosen, other, mocker):
@@ -415,8 +413,8 @@ def test_partition_by_method_dispatch(method, chosen, other, mocker):
 @pytest.mark.parametrize(
     ("wrapper", "labeler"),
     [
-        (signed_multiview_partition, _multiview_labels),
-        (louvain_partition, _louvain_labels),
+        (partition_spectral, _multiview_labels),
+        (partition_louvain, _louvain_labels),
     ],
     ids=["multiview", "louvain"],
 )

@@ -31,7 +31,7 @@ _BIT_CHARS = frozenset("01")
 _PAULI_CHARS = frozenset("IXYZ")
 
 
-def _bitstring_eigenvalues(
+def _compute_bitstring_eigenvalues(
     bitstrings: Sequence[str], pauli_labels: Sequence[str], n_qubits: int
 ) -> npt.NDArray[np.float64]:
     """Return Pauli eigenvalues for each measured bitstring."""
@@ -92,7 +92,9 @@ def _batched_expectation(
     unique_bitstrings = sorted(set(chain.from_iterable(shots_dicts)))
     n_unique_states = len(unique_bitstrings)
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
-    eigenvalues = _bitstring_eigenvalues(unique_bitstrings, pauli_labels, n_qubits)
+    eigenvalues = _compute_bitstring_eigenvalues(
+        unique_bitstrings, pauli_labels, n_qubits
+    )
 
     totals = np.ones(n_histograms)
     dense_size = n_histograms * n_unique_states
@@ -136,7 +138,7 @@ def _batched_expectation(
     return (count_matrix @ eigenvalues.T / totals[:, None]).T
 
 
-def _big_endian_histogram(branch_key: tuple, counts: Any) -> dict[str, int]:
+def _to_big_endian_histogram(branch_key: tuple, counts: Any) -> dict[str, int]:
     """Validate a backend histogram and flip its little-endian bitstrings.
 
     Raises:
@@ -203,7 +205,7 @@ def _counts_to_expvals(
         )
         group = (tuple(map(str, group_labels)), n_qubits)
         members_by_group[group].append(
-            (branch_key, _big_endian_histogram(branch_key, counts))
+            (branch_key, _to_big_endian_histogram(branch_key, counts))
         )
 
     values: ChildResults = {}
@@ -289,7 +291,7 @@ def _counts_to_cost_variance(
             invalid_keys.add(base_key)
             continue
 
-        counts = _big_endian_histogram(branch_key, counts)
+        counts = _to_big_endian_histogram(branch_key, counts)
         shots = sum(counts.values())
         if shots <= 0:
             # A group with no shots invalidates the whole cost variance rather
@@ -299,7 +301,7 @@ def _counts_to_cost_variance(
 
         labels = [str(p) for p in group_labels]
         bitstrings = sorted(counts)
-        eigenvalues = _bitstring_eigenvalues(bitstrings, labels, n_qubits)
+        eigenvalues = _compute_bitstring_eigenvalues(bitstrings, labels, n_qubits)
         frequencies = np.asarray([counts[b] for b in bitstrings], dtype=np.float64)
         factors = np.ones(len(labels))
         if factor_keys:
@@ -382,7 +384,7 @@ def _counts_to_wrs_cost_variance(
             invalid_keys.add(base_key)
             continue
 
-        counts = _big_endian_histogram(branch_key, counts)
+        counts = _to_big_endian_histogram(branch_key, counts)
         if sum(counts.values()) <= 0:
             invalid_keys.add(base_key)
             continue
@@ -394,7 +396,7 @@ def _counts_to_wrs_cost_variance(
             [coeff_map.get(label, 0.0) for label in labels], dtype=np.float64
         )
         bitstrings = sorted(counts)
-        weighted_values = coefficients @ _bitstring_eigenvalues(
+        weighted_values = coefficients @ _compute_bitstring_eigenvalues(
             bitstrings, labels, n_qubits
         )
         state = moments.get(base_key, (0, 0.0, 0.0))

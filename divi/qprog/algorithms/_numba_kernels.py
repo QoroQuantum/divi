@@ -14,7 +14,7 @@ import numpy.typing as npt
 
 
 @numba.njit(cache=True)
-def _popcount_parity_jit(arr: npt.NDArray[np.uint64]) -> npt.NDArray[np.uint8]:
+def _compute_popcount_parity_jit(arr: npt.NDArray[np.uint64]) -> npt.NDArray[np.uint8]:
     """Compute ``popcount(x) % 2`` for each element via XOR-fold.
 
     Six bitwise operations per element with no intermediate arrays or

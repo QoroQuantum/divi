@@ -22,8 +22,8 @@ from divi.circuits.zne import (
     LocalFoldPass,
     RichardsonExtrapolator,
     _warn_on_collapsed_scales,
-    global_fold,
-    local_fold,
+    fold_global,
+    fold_local,
 )
 from divi.pipeline.abc import ResultFormat
 from tests._helpers import exact_match, same_unitary
@@ -405,7 +405,7 @@ def test_single_gate_triples_at_scale_3(fold_pass):
 
 @pytest.mark.parametrize("exclude", [{"cx"}, {"double"}])
 def test_local_fold_exclude_sets_the_effective_scale(h_rz_cx_dag, exclude):
-    folded, effective = local_fold(
+    folded, effective = fold_local(
         h_rz_cx_dag, 2.0, selection="from_left", exclude=exclude
     )
     assert _op_names(folded) == ["h", "h", "h", "rz", "cx"]
@@ -414,7 +414,7 @@ def test_local_fold_exclude_sets_the_effective_scale(h_rz_cx_dag, exclude):
 
 def test_local_fold_from_left_ignores_rng(h_rz_cx_dag, stub_rng):
     stub_rng.sample.return_value = [0, 2]
-    folded, effective = local_fold(
+    folded, effective = fold_local(
         h_rz_cx_dag, 2.0, selection="from_left", rng=stub_rng
     )
     assert _op_names(folded) == ["h", "h", "h", "rz", "rz", "rz", "cx"]
@@ -424,10 +424,10 @@ def test_local_fold_from_left_ignores_rng(h_rz_cx_dag, stub_rng):
 
 @pytest.mark.parametrize("seed", range(4))
 def test_local_fold_defaults_to_random_selection_from_rng(h_rz_cx_dag, seed):
-    default, default_scale = local_fold(
+    default, default_scale = fold_local(
         copy.deepcopy(h_rz_cx_dag), 2.0, rng=random.Random(seed)
     )
-    explicit, explicit_scale = local_fold(
+    explicit, explicit_scale = fold_local(
         h_rz_cx_dag, 2.0, selection="random", rng=random.Random(seed)
     )
     assert _op_names(default) == _op_names(explicit)
@@ -521,7 +521,7 @@ class TestZNE:
         return circuit_to_dag(qc)
 
     def _local_folds(self, dag, rng_seed):
-        dags, _ = ZNE([1.0, 1.25], folding_fn=local_fold).expand(
+        dags, _ = ZNE([1.0, 1.25], folding_fn=fold_local).expand(
             dag, rng=np.random.default_rng(rng_seed)
         )
         return tuple(tuple(_op_names(d)) for d in dags)
@@ -535,9 +535,9 @@ class TestZNE:
     @pytest.mark.parametrize(
         "folding_fn",
         [
-            pytest.param(global_fold, id="global_fold"),
+            pytest.param(fold_global, id="global_fold"),
             pytest.param(
-                functools.partial(local_fold, rng=random.Random(0)), id="own_rng"
+                functools.partial(fold_local, rng=random.Random(0)), id="own_rng"
             ),
         ],
     )
@@ -727,9 +727,9 @@ class TestZNEDryExpand:
     @pytest.mark.parametrize(
         "folding_fn",
         [
-            global_fold,
-            local_fold,
-            functools.partial(local_fold, selection="from_left", exclude={"cx"}),
+            fold_global,
+            fold_local,
+            functools.partial(fold_local, selection="from_left", exclude={"cx"}),
             _fold_to_requested_scale,
             functools.partial(_fold_to_requested_scale),
         ],

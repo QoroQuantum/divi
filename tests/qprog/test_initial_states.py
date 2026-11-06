@@ -258,7 +258,7 @@ class TestPauliExpectations:
     )
     def test_match_the_state_definition(self, state):
         np.testing.assert_allclose(
-            state.pauli_expectations(_PAULIS, 4),
+            state.compute_pauli_expectations(_PAULIS, 4),
             _expectations_in(initial_state_amplitudes(state, 4)),
             atol=1e-10,
         )
@@ -278,14 +278,14 @@ class TestPauliExpectations:
             for pauli in _PAULIS
         ]
         np.testing.assert_allclose(
-            state.pauli_expectations(_PAULIS, 4), simulated, atol=1e-10
+            state.compute_pauli_expectations(_PAULIS, 4), simulated, atol=1e-10
         )
 
     def test_simulate_a_user_defined_state(self):
         psi = np.zeros(16)
         psi[[0, 15]] = 1 / np.sqrt(2)
         np.testing.assert_allclose(
-            _GhzState().pauli_expectations(_PAULIS, 4),
+            _GhzState().compute_pauli_expectations(_PAULIS, 4),
             _expectations_in(psi),
             atol=1e-10,
         )
@@ -297,7 +297,7 @@ class TestPauliExpectations:
     )
     def test_wide_registers(self, state, expected):
         np.testing.assert_allclose(
-            state.pauli_expectations(_WIDE_PAULIS, 70), expected, atol=1e-10
+            state.compute_pauli_expectations(_WIDE_PAULIS, 70), expected, atol=1e-10
         )
 
 

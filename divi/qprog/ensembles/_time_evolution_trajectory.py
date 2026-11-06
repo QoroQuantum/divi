@@ -29,7 +29,7 @@ from ._base import ProgramEnsemble, ReportingLevel, _child_seed
 logger = logging.getLogger(__name__)
 
 # Below this many time points the cost of building the parametric template
-# (one symbolic ``_meta_circuit_factory`` call) outweighs the savings from
+# (one symbolic ``_build_meta_circuit`` call) outweighs the savings from
 # sharing it across programs.
 _CACHE_MIN_TIME_POINTS = 4
 
@@ -195,7 +195,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             result = probe.trotterization_strategy.process_hamiltonian(
                 probe._initial_spec()
             )
-            template = probe._meta_circuit_factory(result, ham_id=0)
+            template = probe._build_meta_circuit(result, ham_id=0)
         except Exception:
             logger.warning(
                 "TimeEvolutionTrajectory: parametric template build failed; "

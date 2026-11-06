@@ -120,7 +120,7 @@ def transform_integrals(
     )
 
 
-def fragment_effective_integrals(
+def build_fragment_effective_integrals(
     integrals: MOIntegrals, fragments: Sequence[FragmentState], index: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build one fragment's effective one- and two-body integrals.

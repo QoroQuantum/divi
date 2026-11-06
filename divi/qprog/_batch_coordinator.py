@@ -32,7 +32,7 @@ from divi.backends._cancellation import (
     _require_async_backend,
     raise_if_cancelled,
 )
-from divi.circuits import CircuitPayload, bound_circuits
+from divi.circuits import CircuitPayload, flatten_bound_payloads
 from divi.exceptions import ExecutionCancelledError
 from divi.reporting._events import (
     ProgressEmitter,
@@ -862,6 +862,6 @@ class _ProxyBackend(CircuitRunner):
     ) -> ExecutionResult:
         """Submit bound circuits to the coordinator and return sync results."""
         results, run_time = self._coordinator.submit(
-            self._program_key, bound_circuits(payloads), **kwargs
+            self._program_key, flatten_bound_payloads(payloads), **kwargs
         )
         return ExecutionResult(results=results, run_time=run_time)

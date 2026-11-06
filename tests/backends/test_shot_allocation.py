@@ -12,9 +12,9 @@ import pytest
 from divi.backends._shot_allocation import (
     ShotRange,
     bucket_by_shots,
-    from_per_circuit,
+    expand_ranges,
     from_wire,
-    per_circuit,
+    group_shots_into_ranges,
     restrict_to_chunk,
     to_wire,
     validate,
@@ -36,10 +36,10 @@ from tests.backends._helpers import uncovered_circuits_message
     ids=["one-circuit", "runs", "no-circuits"],
 )
 def test_from_per_circuit_groups_runs_of_equal_shots(shots, expected):
-    ranges = from_per_circuit(shots)
+    ranges = group_shots_into_ranges(shots)
 
     assert ranges == expected
-    assert per_circuit(ranges, len(shots)) == shots
+    assert expand_ranges(ranges, len(shots)) == shots
 
 
 class TestShotRange:
@@ -115,7 +115,7 @@ class TestValidate:
     ids=["uniform", "heterogeneous", "uncovered_get_zero"],
 )
 def test_per_circuit_expands_ranges(ranges, n_circuits, expected):
-    assert per_circuit(ranges, n_circuits) == expected
+    assert expand_ranges(ranges, n_circuits) == expected
 
 
 class TestBucketByShots:

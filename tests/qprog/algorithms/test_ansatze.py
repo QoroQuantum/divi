@@ -52,9 +52,9 @@ from divi.qprog.algorithms._ansatze import (
     _rotation_one_particle,
     _rotation_schedule,
     _spin_conserving_excitations,
+    fit_rotation_angles,
     lucj_jastrow_pairs,
     n_rotation_params,
-    rotation_angles,
     uccsd_excitations,
 )
 from divi.qprog.problems import HamiltonianProblem
@@ -1792,7 +1792,7 @@ class TestLUCJAnsatz:
 
     def test_an_unrealisable_rotation_is_rejected(self, mocker):
         mocker.patch(
-            "divi.qprog.algorithms._ansatze.rotation_angles", return_value=None
+            "divi.qprog.algorithms._ansatze.fit_rotation_angles", return_value=None
         )
         message = (
             "a spin sector's orbital rotation cannot be realised by the rotation "
@@ -2224,7 +2224,7 @@ class TestLUCJAnsatz:
         """
         target = unitary_group.rvs(n_orb, random_state=11)
 
-        params = rotation_angles(target)
+        params = fit_rotation_angles(target)
         assert params is not None
         assert len(params) == n_rotation_params(n_orb, orbital_phases=True)
 
@@ -2244,7 +2244,7 @@ class TestLUCJAnsatz:
     def test_rotation_angles_handles_a_single_orbital(self, target):
         """One orbital has no rotation to make, only a global phase, so the
         parameter vector is empty."""
-        angles = rotation_angles(target)
+        angles = fit_rotation_angles(target)
         assert angles is not None
         assert len(angles) == 0
 
@@ -2261,12 +2261,12 @@ class TestLUCJAnsatz:
         """``-I`` and near-identity targets are realised, and the fit is
         reproducible."""
         n_orb = target.shape[0]
-        angles = rotation_angles(target)
+        angles = fit_rotation_angles(target)
         assert angles is not None
         np.testing.assert_allclose(
             _rotation_one_particle(angles, n_orb), target, atol=1e-6
         )
-        np.testing.assert_array_equal(rotation_angles(target), angles)
+        np.testing.assert_array_equal(fit_rotation_angles(target), angles)
 
     def test_rotation_angles_honour_a_truncated_depth(self):
         """A shallower network takes fewer parameters, and the fit must solve
@@ -2277,7 +2277,7 @@ class TestLUCJAnsatz:
         )
         target = _rotation_one_particle(seeded, n_orb, depth)
 
-        angles = rotation_angles(target, depth=depth)
+        angles = fit_rotation_angles(target, depth=depth)
 
         assert angles is not None
         assert len(angles) == len(seeded)

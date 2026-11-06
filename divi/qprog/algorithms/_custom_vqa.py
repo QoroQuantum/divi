@@ -20,7 +20,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi._optional import module_if_imported
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2, lower_to_basis_gates
-from divi.hamiltonians._mixers import single_pauli_label
+from divi.hamiltonians._mixers import build_single_pauli_label
 
 if TYPE_CHECKING:
     from pennylane.tape import QuantumScript
@@ -58,7 +58,10 @@ def _strip_measurements(qc: QuantumCircuit) -> QuantumCircuit:
 def _z_sum_observable(n_qubits: int, measured_wires: Sequence[int]) -> SparsePauliOp:
     """Sum of ``Z_i`` over the given wires, lifted to an ``n_qubits``-wire SPO."""
     return SparsePauliOp.from_list(
-        [(single_pauli_label(n_qubits, wire, "Z"), 1.0) for wire in measured_wires]
+        [
+            (build_single_pauli_label(n_qubits, wire, "Z"), 1.0)
+            for wire in measured_wires
+        ]
     )
 
 

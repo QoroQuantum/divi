@@ -8,21 +8,21 @@ from types import ModuleType
 
 import pytest
 
-from divi._optional import import_optional, module_if_imported, optional_module
+from divi._optional import import_if_available, import_optional, module_if_imported
 
 
 def test_optional_module_returns_imported_module(mocker):
     expected = ModuleType("available")
     mocker.patch.object(importlib, "import_module", return_value=expected)
 
-    assert optional_module("available") is expected
+    assert import_if_available("available") is expected
 
 
 def test_optional_module_returns_none_when_requested_package_is_absent(mocker):
     missing = ModuleNotFoundError("missing", name="missing")
     mocker.patch.object(importlib, "import_module", side_effect=missing)
 
-    assert optional_module("missing.submodule") is None
+    assert import_if_available("missing.submodule") is None
 
 
 def test_optional_module_preserves_transitive_import_failure(mocker):
@@ -30,7 +30,7 @@ def test_optional_module_preserves_transitive_import_failure(mocker):
     mocker.patch.object(importlib, "import_module", side_effect=transitive)
 
     with pytest.raises(ModuleNotFoundError, match="broken dependency"):
-        optional_module("available")
+        import_if_available("available")
 
 
 def test_import_optional_names_capability_and_extra(mocker):

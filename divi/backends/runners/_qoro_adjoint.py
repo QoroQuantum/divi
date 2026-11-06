@@ -56,7 +56,9 @@ def run_adjoint_job(
     job_config = service.job_config
     maestro_config, device_config = service._configs_for_target(job_config, None, None)
     envelope = service._fragment_envelope(ham_ops, None, None, job_config.shots)
-    call_plan = service._parametric_call_plan(payloads, ham_ops, None, None, envelope)
+    call_plan = service._build_parametric_call_plan(
+        payloads, ham_ops, None, None, envelope
+    )
     for fragment in call_plan:
         for row in fragment["parameter_sets"]:
             row["cotangent"] = [float(w) for w in cotangents[row["label"]]]

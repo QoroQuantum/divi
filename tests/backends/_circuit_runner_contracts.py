@@ -24,7 +24,7 @@ import pytest
 from qiskit import QuantumCircuit
 
 from divi.backends import CircuitRunner
-from divi.circuits._payloads import CircuitPayload, bound_payloads
+from divi.circuits._payloads import CircuitPayload, wrap_bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from tests._helpers import exact_match
 
@@ -61,7 +61,7 @@ _QASM_BY_DEPTH = {2: QASM_DEPTH_2, 3: QASM_DEPTH_3}
 
 def qasm_payloads(*depths: int) -> list[CircuitPayload]:
     """Bound QASM payloads with the given circuit depths."""
-    return bound_payloads(
+    return wrap_bound_circuits(
         {f"c{index}": _QASM_BY_DEPTH[depth] for index, depth in enumerate(depths)}
     )
 

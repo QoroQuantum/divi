@@ -554,26 +554,26 @@ def _get_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 def _annotated_arg(arg: ast.arg) -> str:
     """Return ``name: Type`` if the argument has an annotation, else just ``name``."""
     if arg.annotation is not None:
-        return f"{arg.arg}: {_annotation_str(arg.annotation)}"
+        return f"{arg.arg}: {_format_annotation(arg.annotation)}"
     return arg.arg
 
 
-def _annotation_str(node: ast.expr) -> str:
+def _format_annotation(node: ast.expr) -> str:
     """Convert an annotation AST node to a readable string."""
     if isinstance(node, ast.Constant):
         return repr(node.value)
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
-        return f"{_annotation_str(node.value)}.{node.attr}"
+        return f"{_format_annotation(node.value)}.{node.attr}"
     if isinstance(node, ast.Subscript):
-        return f"{_annotation_str(node.value)}[{_annotation_str(node.slice)}]"
+        return f"{_format_annotation(node.value)}[{_format_annotation(node.slice)}]"
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return f"{_annotation_str(node.left)} | {_annotation_str(node.right)}"
+        return f"{_format_annotation(node.left)} | {_format_annotation(node.right)}"
     if isinstance(node, ast.Tuple):
-        return ", ".join(_annotation_str(e) for e in node.elts)
+        return ", ".join(_format_annotation(e) for e in node.elts)
     if isinstance(node, ast.List):
-        return "[" + ", ".join(_annotation_str(e) for e in node.elts) + "]"
+        return "[" + ", ".join(_format_annotation(e) for e in node.elts) + "]"
     # Fallback: try ast.unparse (Python 3.9+), else dump
     try:
         return ast.unparse(node)

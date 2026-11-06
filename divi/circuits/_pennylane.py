@@ -137,7 +137,7 @@ def _qscript_to_qiskit_circuit(
     return circuit
 
 
-def _fresh_symbols(n_symbols: int, existing_values: list) -> list[sp.Symbol]:
+def _create_fresh_symbols(n_symbols: int, existing_values: list) -> list[sp.Symbol]:
     """Create symbols whose names cannot alias existing parameters."""
     taken: set[str] = set()
     for value in existing_values:
@@ -175,7 +175,7 @@ def _symbolize_trainable_subset(qscript: QuantumScript) -> QuantumScript:
     if not concrete:
         return qscript
 
-    symbols = _fresh_symbols(len(concrete), all_values)
+    symbols = _create_fresh_symbols(len(concrete), all_values)
     return qscript.bind_new_parameters(cast(list, symbols), concrete)
 
 
@@ -549,7 +549,7 @@ def _gate_parameter_arg_names(
     arguments as :func:`_qnode_to_qscript_with_shapes` does. Returns ``None``
     when the QNode does not trace under ``arg_shapes``.
     """
-    call_args, _ = _symbolic_call_args(qnode, arg_shapes)
+    call_args, _ = _build_symbolic_call_args(qnode, arg_shapes)
     try:
         params = qp.tape.make_qscript(qnode.func)(*call_args).get_parameters(
             trainable_only=False
@@ -569,7 +569,7 @@ def _gate_parameter_arg_names(
     return names
 
 
-def _symbolic_call_args(
+def _build_symbolic_call_args(
     qnode: QNode, arg_shapes: Mapping[str, tuple[int, ...]]
 ) -> tuple[list, bool]:
     """Seed each no-default argument with ``<arg>__<i>`` symbols of its declared shape.
@@ -609,7 +609,7 @@ def _qnode_to_qscript_with_shapes(
     The ``<arg>__<i>`` naming lets callers map parameters back to arguments via
     :func:`_symbol_arg_name`.
     """
-    call_args, has_defaults = _symbolic_call_args(qnode, arg_shapes)
+    call_args, has_defaults = _build_symbolic_call_args(qnode, arg_shapes)
     try:
         return _decompose_and_mark(
             qp.tape.make_qscript(qnode.func)(*call_args),

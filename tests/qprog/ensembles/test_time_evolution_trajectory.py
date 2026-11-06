@@ -274,7 +274,7 @@ def _seeded_qdrift_trajectory_draws(
     time_points=_QDRIFT_TIME_POINTS,
 ):
     """Run a QDrift trajectory and return its results and each time point's
-    draws, read from ``factory``, a spy on ``TimeEvolution._meta_circuit_factory``."""
+    draws, read from ``factory``, a spy on ``TimeEvolution._build_meta_circuit``."""
     factory.reset_mock()
     traj = TimeEvolutionTrajectory(
         hamiltonian=SparsePauliOp(["XX", "ZI", "IY", "YZ"], [0.7, -0.4, 0.2, 0.5]),
@@ -301,7 +301,7 @@ def _seeded_qdrift_trajectory_draws(
 def test_seeded_qdrift_trajectory_draws_independently_and_reproducibly(
     mocker, default_test_simulator, strategy_seed, trajectory_seed
 ):
-    factory = mocker.spy(TimeEvolution, "_meta_circuit_factory")
+    factory = mocker.spy(TimeEvolution, "_build_meta_circuit")
     results, draws = _seeded_qdrift_trajectory_draws(
         factory, default_test_simulator, strategy_seed, trajectory_seed
     )
@@ -320,7 +320,7 @@ def test_seeded_qdrift_trajectory_draws_independently_and_reproducibly(
 def test_seeded_time_point_draws_do_not_depend_on_the_grid(
     mocker, default_test_simulator, strategy_seed, trajectory_seed
 ):
-    factory = mocker.spy(TimeEvolution, "_meta_circuit_factory")
+    factory = mocker.spy(TimeEvolution, "_build_meta_circuit")
     _, full_grid = _seeded_qdrift_trajectory_draws(
         factory, default_test_simulator, strategy_seed, trajectory_seed
     )
@@ -578,7 +578,7 @@ def _build_meta_at(H, observable, time, backend, **program_kwargs):
         **program_kwargs,
     )
     result = prog.trotterization_strategy.process_hamiltonian(prog._initial_spec())
-    return prog._meta_circuit_factory(result, ham_id=0)
+    return prog._build_meta_circuit(result, ham_id=0)
 
 
 def _assert_template_binds_to(template, t_param, fresh, t_value, atol):
@@ -830,7 +830,7 @@ class TestCacheGating:
         """If the symbolic-time probe raises, the trajectory must log a
         warning and degrade to per-program construction (every program's
         ``_template_meta`` is ``None``)."""
-        original = TimeEvolution._meta_circuit_factory
+        original = TimeEvolution._build_meta_circuit
 
         # Raise only during the trajectory's symbolic probe (when
         # ``self.time`` is the qnp tensor); let the per-program numeric
@@ -840,7 +840,7 @@ class TestCacheGating:
                 raise RuntimeError("simulated probe failure")
             return original(self, hamiltonian, ham_id)
 
-        monkeypatch.setattr(TimeEvolution, "_meta_circuit_factory", maybe_boom)
+        monkeypatch.setattr(TimeEvolution, "_build_meta_circuit", maybe_boom)
         traj = TimeEvolutionTrajectory(
             hamiltonian=cache_test_hamiltonian,
             time_points=[0.0, 0.25, 0.5, 0.75, 1.0],

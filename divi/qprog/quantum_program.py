@@ -54,7 +54,7 @@ from divi.reporting._session import ProgressSession, _environment_disables_progr
 from divi.reporting._state import ProgressState
 
 
-def _terminal_progress_for_exception(
+def _map_exception_to_terminal_progress(
     exc: BaseException,
 ) -> tuple[TerminalStatus, JobStatus | None]:
     """Map an execution exception to its terminal reporting outcome."""
@@ -250,8 +250,8 @@ class QuantumProgram(ABC):
                     yield
                 except BaseException as exc:
                     if session.state.get(self._progress_key).terminal_status is None:
-                        terminal_status, job_status = _terminal_progress_for_exception(
-                            exc
+                        terminal_status, job_status = (
+                            _map_exception_to_terminal_progress(exc)
                         )
                         session.emit(
                             ProgressEvent.finish(
@@ -406,7 +406,7 @@ class QuantumProgram(ABC):
         Returns:
             The assembled pipeline.
         """
-        mitigation_stages = self._mitigation_stages(result_format)
+        mitigation_stages = self._build_mitigation_stages(result_format)
         bind_early = (
             self._binds_parameters
             and bool(mitigation_stages)
@@ -425,7 +425,9 @@ class QuantumProgram(ABC):
             suppress_performance_warnings=self._suppress_performance_warnings,
         )
 
-    def _mitigation_stages(self, result_format: ResultFormat) -> tuple[Stage, ...]:
+    def _build_mitigation_stages(
+        self, result_format: ResultFormat
+    ) -> tuple[Stage, ...]:
         """Build the QEM and optional Pauli-twirling stages for a result format."""
         if isinstance(self._qem_protocol, _NoMitigation):
             return ()
@@ -809,7 +811,7 @@ class QuantumProgram(ABC):
         if not return_variance:
             return values
 
-        return values, self._cost_shot_variances(values)
+        return values, self._map_cost_shot_variances(values)
 
     def evaluate_estimates(
         self,
@@ -843,7 +845,7 @@ class QuantumProgram(ABC):
             for param_idx, value in values.items()
         }
 
-    def _cost_shot_variances(self, values: Mapping[int, float]) -> dict[int, float]:
+    def _map_cost_shot_variances(self, values: Mapping[int, float]) -> dict[int, float]:
         """Map the last pipeline run's shot-noise variance to each param-set index.
 
         The variance is computed at the counts stage with only the obs_group axis

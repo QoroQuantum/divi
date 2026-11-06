@@ -16,12 +16,12 @@ from divi.qprog.problems import (
     CVRPProblem,
     RoutingInstance,
     TSPProblem,
-    binary_block_config,
-    cvrp_block_structure,
+    build_cvrp_block_structure,
+    compute_binary_block_config,
+    compute_tour_cost,
     is_valid_tsp_tour,
     parse_tsplib_file,
     parse_vrp_solution,
-    tour_cost,
 )
 from divi.qprog.problems import parse_tsplib_file as parse_tsplib_file_public
 from divi.qprog.problems._routing import (
@@ -144,7 +144,9 @@ class TestCreateTspQubo:
         x = _tsp_assignment_bits(order)
         Q = create_tsp_qubo(four_city_cost, reduced=reduced)
         tour = decode_tsp_solution("".join(map(str, x)), 4)
-        assert x @ Q @ x == tour_cost(tour, four_city_cost) - n_penalties * 4.0 * 3
+        assert (
+            x @ Q @ x == compute_tour_cost(tour, four_city_cost) - n_penalties * 4.0 * 3
+        )
 
     @pytest.mark.parametrize("start_city", [3, 5])
     def test_out_of_range_start_city_raises(self, three_city_cost, start_city):
@@ -176,8 +178,8 @@ class TestDecodeTspSolution:
 
 
 def test_undirected_matrix_same_cost_both_directions(three_city_cost):
-    assert tour_cost([0, 1, 2, 0], three_city_cost) == 45.0
-    assert tour_cost([0, 2, 1, 0], three_city_cost) == 45.0
+    assert compute_tour_cost([0, 1, 2, 0], three_city_cost) == 45.0
+    assert compute_tour_cost([0, 2, 1, 0], three_city_cost) == 45.0
 
 
 class TestRepairTspSolution:
@@ -634,7 +636,7 @@ class TestParseVrpSolution:
 def test_binary_block_config(
     n_customers, n_vehicles, max_steps, bits_per_slot, n_slots, n_qubits
 ):
-    config = binary_block_config(n_customers, n_vehicles, max_steps=max_steps)
+    config = compute_binary_block_config(n_customers, n_vehicles, max_steps=max_steps)
     assert (config.bits_per_slot, config.n_slots, config.n_qubits) == (
         bits_per_slot,
         n_slots,
@@ -645,25 +647,30 @@ def test_binary_block_config(
 class TestDecodeBinaryCvrp:
     def test_default_depot_and_node_count(self):
         bitstring = "10" + "01" + "00" + "11" + "00" + "00"
-        assert decode_binary_cvrp_solution(bitstring, binary_block_config(3, 2)) == [
+        assert decode_binary_cvrp_solution(
+            bitstring, compute_binary_block_config(3, 2)
+        ) == [
             [0, 1, 2, 0],
             [0, 3, 0],
         ]
 
     def test_wrong_length(self):
-        assert decode_binary_cvrp_solution("010", binary_block_config(3, 2)) is None
+        assert (
+            decode_binary_cvrp_solution("010", compute_binary_block_config(3, 2))
+            is None
+        )
 
 
 class TestIsValidBinaryCvrp:
     def test_valid_solution(self):
-        config = binary_block_config(3, 2)
+        config = compute_binary_block_config(3, 2)
         demands = np.array([0, 3, 4, 2], dtype=float)
         assert is_valid_binary_cvrp(
             "01" + "10" + "00" + "11" + "00" + "00", config, demands, 10.0, depot=0
         )
 
     def test_rejects_invalid_solutions(self):
-        config = binary_block_config(3, 2)
+        config = compute_binary_block_config(3, 2)
         demands = np.array([0, 3, 4, 2], dtype=float)
         assert not is_valid_binary_cvrp(
             "01" + "10" + "00" + "00" + "00" + "00", config, demands, 10.0, depot=0
@@ -675,7 +682,7 @@ class TestIsValidBinaryCvrp:
             "01" + "10" + "11" + "00" + "00" + "00", config, demands, 5.0, depot=0
         )
 
-        small_config = binary_block_config(2, 1)
+        small_config = compute_binary_block_config(2, 1)
         small_demands = np.array([0, 3, 4], dtype=float)
         assert not is_valid_binary_cvrp(
             "01" + "11", small_config, small_demands, 10.0, depot=0
@@ -692,7 +699,7 @@ class TestIsValidBinaryCvrp:
     )
     def test_boundaries(self, bitstring, capacity, kwargs, expected):
         demands = np.array([0, 3, 4, 2], dtype=float)
-        config = binary_block_config(3, 2)
+        config = compute_binary_block_config(3, 2)
         assert (
             is_valid_binary_cvrp(bitstring, config, demands, capacity, **kwargs)
             is expected
@@ -700,7 +707,7 @@ class TestIsValidBinaryCvrp:
 
 
 def test_decode_binary_tsp_solution():
-    cfg = binary_block_config(3, 1)
+    cfg = compute_binary_block_config(3, 1)
     assert decode_binary_tsp_solution("100111", cfg, 4) == [0, 1, 2, 3, 0]
     assert decode_binary_tsp_solution("0", cfg, 4) is None
 
@@ -933,7 +940,7 @@ class TestCreateCvrpQubo:
             x[np.arange(3), order] = 1
             x = x.ravel()
             route = [0, *(c + 1 for c in order), 0]
-            offsets.add(round(float(x @ Q @ x) - tour_cost(route, cost), 9))
+            offsets.add(round(float(x @ Q @ x) - compute_tour_cost(route, cost), 9))
         assert len(offsets) == 1
 
 
@@ -981,7 +988,7 @@ def test_cvrp_builders_reject_demand_length_mismatch(builder, n_demands):
 
 
 def test_basic():
-    bs, nb = cvrp_block_structure(3, 2)
+    bs, nb = build_cvrp_block_structure(3, 2)
     assert bs == 3
     assert nb == 6  # 2 vehicles * 3 steps
 
@@ -991,7 +998,7 @@ def test_basic():
     [
         lambda demands, cap: is_valid_cvrp_solution("1", 1, 1, demands, cap),
         lambda demands, cap: is_valid_binary_cvrp(
-            "1", binary_block_config(1, 1), demands, cap
+            "1", compute_binary_block_config(1, 1), demands, cap
         ),
     ],
     ids=["one-hot", "binary"],
@@ -1188,7 +1195,7 @@ class TestCVRPProblem:
         )
         assert problem.cost_hamiltonian.num_qubits == 18
         state = problem.recommended_initial_state
-        assert (state.block_size, state.n_blocks) == cvrp_block_structure(3, 2)
+        assert (state.block_size, state.n_blocks) == build_cvrp_block_structure(3, 2)
 
     def test_is_feasible(self):
         problem = CVRPProblem(
@@ -1360,7 +1367,9 @@ def test_problem_mixer(kind, encoding):
     if encoding == "binary":
         expected = x_mixer(n)
     else:
-        block_size, n_blocks = (3, 3) if kind == "tsp" else cvrp_block_structure(3, 2)
+        block_size, n_blocks = (
+            (3, 3) if kind == "tsp" else build_cvrp_block_structure(3, 2)
+        )
         graph = build_block_xy_mixer_graph(block_size, n_blocks, range(n))
         expected = xy_mixer(graph, n_qubits=n)
     assert problem.mixer_hamiltonian == expected

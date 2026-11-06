@@ -38,7 +38,7 @@ Scan Types
      - :func:`~divi.viz.compute_hessian`
      - :class:`~divi.viz.HessianResult`
    * - 2D FFT power spectrum of a scan
-     - :func:`~divi.viz.fourier_analysis_2d`
+     - :func:`~divi.viz.compute_fourier_analysis_2d`
      - :class:`~divi.viz.Fourier2DResult`
    * - Minimum-energy path between two parameter vectors
      - :func:`~divi.viz.run_neb`
@@ -129,7 +129,7 @@ convenience wrapper:
 The wrapper exposes ``scan_1d``, ``scan_2d``, ``scan_pca``, ``scan_interp_1d``,
 ``scan_interp_2d``, ``compute_hessian``, and ``run_neb``. Utility functions
 like :func:`~divi.viz.periodic_trajectory_wrap` and
-:func:`~divi.viz.fourier_analysis_2d` operate on results or arrays and should be
+:func:`~divi.viz.compute_fourier_analysis_2d` operate on results or arrays and should be
 imported directly from :mod:`divi.viz`.
 
 PCA Scans
@@ -269,15 +269,15 @@ parameters. For a 2-layer QAOA with 4 parameters per layer (*n* = 8), that is
 Fourier Analysis
 ----------------
 
-:func:`~divi.viz.fourier_analysis_2d` applies a 2D FFT to any
+:func:`~divi.viz.compute_fourier_analysis_2d` applies a 2D FFT to any
 :class:`~divi.viz.Scan2DResult` or :class:`~divi.viz.PCAScanResult` and
 returns the power spectrum:
 
 .. code-block:: python
 
-   from divi.viz import fourier_analysis_2d
+   from divi.viz import compute_fourier_analysis_2d
 
-   spectrum = fourier_analysis_2d(plane)
+   spectrum = compute_fourier_analysis_2d(plane)
    spectrum.plot(show=True)   # heatmap of the power spectrum
 
 Nudged Elastic Band (NEB)

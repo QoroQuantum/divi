@@ -17,14 +17,14 @@ from qiskit.quantum_info import SparsePauliOp
 # ---------------------------------------------------------------------------
 
 
-def single_pauli_label(n_qubits: int, qubit: int, pauli: str) -> str:
+def build_single_pauli_label(n_qubits: int, qubit: int, pauli: str) -> str:
     """Big-endian label with ``pauli`` at ``qubit`` and ``I`` elsewhere."""
     label = ["I"] * n_qubits
     label[n_qubits - 1 - qubit] = pauli
     return "".join(label)
 
 
-def two_pauli_label(n_qubits: int, left: int, right: int, pauli: str) -> str:
+def build_two_pauli_label(n_qubits: int, left: int, right: int, pauli: str) -> str:
     """Big-endian label with ``pauli`` at both ``left`` and ``right`` qubits."""
     label = ["I"] * n_qubits
     label[n_qubits - 1 - left] = pauli
@@ -32,7 +32,9 @@ def two_pauli_label(n_qubits: int, left: int, right: int, pauli: str) -> str:
     return "".join(label)
 
 
-def multi_pauli_label(n_qubits: int, qubit_paulis: Sequence[tuple[int, str]]) -> str:
+def build_multi_pauli_label(
+    n_qubits: int, qubit_paulis: Sequence[tuple[int, str]]
+) -> str:
     """Big-endian label with the given ``(qubit, pauli)`` assignments."""
     label = ["I"] * n_qubits
     for qubit, pauli in qubit_paulis:
@@ -49,7 +51,7 @@ def _validate_int_nodes(nodes: Iterable[int], builder: str) -> None:
             raise ValueError(f"{builder} requires non-negative qubit nodes.")
 
 
-def _edges_nodes_and_width(
+def _resolve_edges_nodes_and_width(
     graph: nx.Graph | Iterable[tuple[int, int]],
     n_qubits: int | None,
     builder: str,
@@ -80,7 +82,10 @@ def x_mixer(n_qubits: int) -> SparsePauliOp:
     if n_qubits == 0:
         return SparsePauliOp.from_list([("", 0.0)])
     return SparsePauliOp.from_list(
-        [(single_pauli_label(n_qubits, qubit, "X"), 1.0) for qubit in range(n_qubits)]
+        [
+            (build_single_pauli_label(n_qubits, qubit, "X"), 1.0)
+            for qubit in range(n_qubits)
+        ]
     )
 
 
@@ -92,12 +97,12 @@ def xy_mixer(
     The graph nodes must be integer qubit indices. ``n_qubits`` may be
     provided to preserve isolated trailing qubits.
     """
-    edges, _, n_qubits = _edges_nodes_and_width(graph, n_qubits, "xy_mixer")
+    edges, _, n_qubits = _resolve_edges_nodes_and_width(graph, n_qubits, "xy_mixer")
     if n_qubits == 0:
         return SparsePauliOp.from_list([("", 0.0)])
 
     terms: list[tuple[str, float]] = [
-        (two_pauli_label(n_qubits, left, right, pauli), 0.5)
+        (build_two_pauli_label(n_qubits, left, right, pauli), 0.5)
         for (left, right), pauli in itertools.product(edges, "XY")
     ]
     if not terms:
@@ -119,7 +124,10 @@ def bit_driver(n_qubits: int, b: int) -> SparsePauliOp:
         return SparsePauliOp.from_list([("", 0.0)])
     coeff = 1.0 if b == 1 else -1.0
     return SparsePauliOp.from_list(
-        [(single_pauli_label(n_qubits, qubit, "Z"), coeff) for qubit in range(n_qubits)]
+        [
+            (build_single_pauli_label(n_qubits, qubit, "Z"), coeff)
+            for qubit in range(n_qubits)
+        ]
     )
 
 
@@ -157,14 +165,16 @@ def edge_driver(
             "neither or both."
         )
 
-    edges, nodes, n_qubits = _edges_nodes_and_width(graph, n_qubits, "edge_driver")
+    edges, nodes, n_qubits = _resolve_edges_nodes_and_width(
+        graph, n_qubits, "edge_driver"
+    )
     if n_qubits == 0:
         return SparsePauliOp.from_list([("", 0.0)])
 
     # Constant Hamiltonian (no preference).
     if len(reward) == 0 or len(reward) == 4:
         return SparsePauliOp.from_list(
-            [(single_pauli_label(n_qubits, qubit, "I"), 1.0) for qubit in nodes]
+            [(build_single_pauli_label(n_qubits, qubit, "I"), 1.0) for qubit in nodes]
             or [("I" * n_qubits, 0.0)]
         )
 
@@ -178,9 +188,9 @@ def edge_driver(
 
     terms: list[tuple[str, float]] = []
     for left, right in edges:
-        zz = two_pauli_label(n_qubits, left, right, "Z")
-        zl = single_pauli_label(n_qubits, left, "Z")
-        zr = single_pauli_label(n_qubits, right, "Z")
+        zz = build_two_pauli_label(n_qubits, left, right, "Z")
+        zl = build_single_pauli_label(n_qubits, left, "Z")
+        zr = build_single_pauli_label(n_qubits, right, "Z")
         if selector == "00":
             terms.extend([(zz, 0.25 * sign), (zl, 0.25 * sign), (zr, 0.25 * sign)])
         elif selector == "10":
@@ -230,6 +240,6 @@ def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
                 coeff *= sgn
                 if op is not None:
                     qubit_paulis.append((int(neighbour), op))
-            terms.append((multi_pauli_label(n_qubits, qubit_paulis), coeff))
+            terms.append((build_multi_pauli_label(n_qubits, qubit_paulis), coeff))
 
     return SparsePauliOp.from_list(terms)

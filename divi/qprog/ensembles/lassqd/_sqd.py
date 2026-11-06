@@ -28,7 +28,7 @@ from pyscf.fci import selected_ci
 
 from ._types import exact_ints
 
-#: Determinant rows per pass in :func:`projected_matrices`, bounding the pair
+#: Determinant rows per pass in :func:`project_onto_determinants`, bounding the pair
 #: arrays' memory.
 _PAIR_BLOCK_ROWS = 512
 
@@ -94,7 +94,7 @@ def probs_to_sqd_bitstrings(probs: Mapping[str, float], n_orb: int) -> dict[str,
     }
 
 
-def spin_orbital_integrals(
+def spatial_to_spin_integrals(
     one_body: np.ndarray,
     two_body: np.ndarray,
     n_orb: int,
@@ -138,7 +138,7 @@ def spatial_to_spin_occupations(
     return tuple(sorted(list(alpha_occ) + [p + n_orb for p in beta_occ]))
 
 
-def projected_matrices(
+def project_onto_determinants(
     dets: Sequence[tuple[tuple[int, ...], tuple[int, ...]]],
     dets_spin: Sequence[tuple[int, ...]],
     h_spin: np.ndarray,
@@ -347,7 +347,7 @@ _BLOCK_MAX_ITERATIONS = 2_000
 _DENSE_MAX_DIM = 16_384
 
 
-def lowest_roots(
+def solve_lowest_roots(
     h_proj: scipy.sparse.csr_array,
     deviation: scipy.sparse.csr_array,
     lambda_penalty: float,
@@ -478,7 +478,7 @@ def _nearest_spin(
 
 def resolves_spin(multiplicity: int, spin_square: float) -> bool:
     """Whether ``<S^2>`` lies nearer ``multiplicity``'s ``S(S+1)`` than the
-    spins one step either side, as :func:`lowest_roots` judges a root."""
+    spins one step either side, as :func:`solve_lowest_roots` judges a root."""
     return round(float(_spin_of(spin_square)) - 0.5 * (multiplicity - 1)) == 0
 
 
@@ -567,7 +567,7 @@ def subspace_determinants(
     return dets, dets_spin
 
 
-def string_hops(string: str, rank: int) -> list[str]:
+def enumerate_string_hops(string: str, rank: int) -> list[str]:
     """Strings reached from ``string`` by moving one to ``rank`` electrons to
     empty orbitals, in a fixed order."""
     occupied = [index for index, bit in enumerate(string) if bit == "1"]
@@ -900,7 +900,7 @@ def _validate_states(
         )
 
 
-def carryover_weights(
+def compute_carryover_weights(
     strings_alpha: Sequence[str],
     strings_beta: Sequence[str],
     amplitudes: np.ndarray,
@@ -1037,7 +1037,7 @@ def _correct_spin_part(
     return part
 
 
-def bit_flip_correction(
+def apply_bit_flip_correction(
     bitstring: str,
     n_orb: int,
     n_alpha: int,
@@ -1250,7 +1250,7 @@ class SQDSolver:
                 brought into agreement with the target particle symmetry, or a
                 batch's subspace cannot hold the requested roots.
         """
-        h_spin, g_spin = spin_orbital_integrals(
+        h_spin, g_spin = spatial_to_spin_integrals(
             one_body, two_body, self.n_orb, one_body_beta
         )
 
@@ -1314,7 +1314,7 @@ class SQDSolver:
         a hard cap.
         """
         rank = 1 if self.extension == "singles" else 2
-        alpha_weights, beta_weights = carryover_weights(
+        alpha_weights, beta_weights = compute_carryover_weights(
             result.strings_alpha,
             result.strings_beta,
             np.stack([state.amplitudes for state in result.states]),
@@ -1331,7 +1331,9 @@ class SQDSolver:
 
         def sector(weights, existing, reference, target, max_dim):
             parents = _heaviest_strings(weights, None)
-            hops = [hop for parent in parents for hop in string_hops(parent, rank)]
+            hops = [
+                hop for parent in parents for hop in enumerate_string_hops(parent, rank)
+            ]
             return self._sector_strings(
                 {}, [*parents, *existing, *hops], reference, target, max_dim
             )
@@ -1362,7 +1364,7 @@ class SQDSolver:
         first; none when carryover is off."""
         if self.carryover_cutoff is None:
             return (), ()
-        alpha_weights, beta_weights = carryover_weights(
+        alpha_weights, beta_weights = compute_carryover_weights(
             result.strings_alpha,
             result.strings_beta,
             np.stack([state.amplitudes for state in result.states]),
@@ -1398,7 +1400,7 @@ class SQDSolver:
         else:
             weights = defaultdict(float)
             for bits in ordered:
-                corrected = bit_flip_correction(
+                corrected = apply_bit_flip_correction(
                     bits,
                     self.n_orb,
                     self.n_alpha,
@@ -1521,7 +1523,7 @@ class SQDSolver:
         beta_bits = _bit_matrix(strings_beta, self.n_orb)
         dets, dets_spin = subspace_determinants(strings_alpha, strings_beta, self.n_orb)
 
-        h_proj, s2_proj = projected_matrices(
+        h_proj, s2_proj = project_onto_determinants(
             dets, dets_spin, h_spin, g_spin, self.n_orb
         )
         identity = scipy.sparse.eye_array(len(dets), format="csr")
@@ -1530,7 +1532,7 @@ class SQDSolver:
             # A subspace too small for every root reports the roots it holds.
             n_roots = min(n_roots, len(strings_alpha) * len(strings_beta))
             deviation = s2_proj - spin_square_of(multiplicity) * identity
-            values, vectors = lowest_roots(
+            values, vectors = solve_lowest_roots(
                 h_proj,
                 deviation,
                 self.lambda_penalty,
@@ -1576,7 +1578,7 @@ class SQDSolver:
 _MAX_PYSCF_ORBITALS = 63
 
 
-def sci_vector(
+def to_sci_vector(
     strings_alpha: Sequence[str], strings_beta: Sequence[str], amplitudes: np.ndarray
 ) -> np.ndarray:
     """``amplitudes`` as a PySCF selected-CI vector over the two string lists."""
@@ -1616,7 +1618,7 @@ def compute_spatial_rdms(
         return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)
 
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    civec = sci_vector(strings_alpha, strings_beta, amplitudes)
+    civec = to_sci_vector(strings_alpha, strings_beta, amplitudes)
     (rdm1_alpha, rdm1_beta), (rdm2_aa, rdm2_ab, rdm2_bb) = (
         selected_ci.SelectedCI().make_rdm12s(civec, n_orb, nelec)
     )
@@ -1635,7 +1637,7 @@ def compute_spatial_rdm1(
     if n_orb > _MAX_PYSCF_ORBITALS:
         return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)[0]
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    civec = sci_vector(strings_alpha, strings_beta, amplitudes)
+    civec = to_sci_vector(strings_alpha, strings_beta, amplitudes)
     return selected_ci.make_rdm1(civec, n_orb, nelec)
 
 

@@ -39,7 +39,7 @@ from divi.backends import (
     MaestroSimulator,
     SimulatorCluster,
 )
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.qprog.initial_states import SuperpositionState
 
 # ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ class DocStubQoroService(AsyncJobBackend):
         job_config=None,
         **kwargs,
     ) -> ExecutionResult:
-        self._pending_circuits = bound_circuits(payloads)
+        self._pending_circuits = flatten_bound_payloads(payloads)
         self._last_ham_ops = ham_ops
         return ExecutionResult(job_id="doc-sybil-qoro-job")
 

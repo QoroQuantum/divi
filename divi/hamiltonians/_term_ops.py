@@ -321,7 +321,7 @@ def _spo_to_qiskit_basis_gates(
         _spo_to_qiskit_basis_gates_symbolic(qc, spo, time, qubits)
 
 
-def _active_pauli_chars(x_row, z_row) -> tuple[np.ndarray, list[str]]:
+def _extract_active_pauli_chars(x_row, z_row) -> tuple[np.ndarray, list[str]]:
     """Return ``(active_qubit_indices, pauli_chars)`` for one SPO row.
 
     Symplectic ``(x, z)`` decoding: ``(0,0) → I`` (skipped), ``(1,0) → X``,
@@ -370,7 +370,7 @@ def _spo_to_qiskit_basis_gates_symbolic(
     coeffs_real = spo.coeffs.real  # zero-copy view
 
     for i in range(x_arr.shape[0]):
-        active_idx, chars = _active_pauli_chars(x_arr[i], z_arr[i])
+        active_idx, chars = _extract_active_pauli_chars(x_arr[i], z_arr[i])
         if active_idx.size == 0:
             continue
 

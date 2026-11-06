@@ -10,8 +10,8 @@ import pytest
 from divi.backends import _results_processing as results_processing
 from divi.backends import convert_counts_to_probs, reverse_dict_endianness
 from divi.backends._numba_kernels import (
+    _decode_uleb128_limbs_jit,
     _decompress_histogram_jit,
-    _uleb128_decode_limbs_jit,
 )
 from divi.backends._results_processing import (
     _MAX_HISTOGRAM_WIDTH,
@@ -168,15 +168,15 @@ class TestQoroServiceUtilities:
         out = np.zeros(1, dtype=np.uint64)
 
         # Single-byte value
-        pos = _uleb128_decode_limbs_jit(np.array([0x05], dtype=np.uint8), 0, out)
+        pos = _decode_uleb128_limbs_jit(np.array([0x05], dtype=np.uint8), 0, out)
         assert out[0] == 5 and pos == 1
 
         # Multi-byte value (128)
-        pos = _uleb128_decode_limbs_jit(np.array([0x80, 0x01], dtype=np.uint8), 0, out)
+        pos = _decode_uleb128_limbs_jit(np.array([0x80, 0x01], dtype=np.uint8), 0, out)
         assert out[0] == 128 and pos == 2
 
         # Decoding with an offset
-        pos = _uleb128_decode_limbs_jit(np.array([0x00, 0x05], dtype=np.uint8), 1, out)
+        pos = _decode_uleb128_limbs_jit(np.array([0x00, 0x05], dtype=np.uint8), 1, out)
         assert out[0] == 5 and pos == 2
 
     def test_uleb128_decode_limbs_jit_buffer_overflow_raises(self):
@@ -186,11 +186,11 @@ class TestQoroServiceUtilities:
         data = np.frombuffer(encode_uleb128(1 << 64), dtype=np.uint8)
         out = np.zeros(1, dtype=np.uint64)
         with pytest.raises(ValueError, match="exceeds destination width"):
-            _uleb128_decode_limbs_jit(data, 0, out)
+            _decode_uleb128_limbs_jit(data, 0, out)
 
         # Same varint decodes cleanly into a 2-limb buffer.
         out2 = np.zeros(2, dtype=np.uint64)
-        pos = _uleb128_decode_limbs_jit(data, 0, out2)
+        pos = _decode_uleb128_limbs_jit(data, 0, out2)
         assert pos == len(data)
         assert (int(out2[1]) << 64) | int(out2[0]) == 1 << 64
 
@@ -438,12 +438,12 @@ class TestQoroServiceUtilities:
         data = np.array([0x80], dtype=np.uint8)
         out = np.zeros(1, dtype=np.uint64)
         with pytest.raises(ValueError, match="truncated"):
-            _uleb128_decode_limbs_jit(data, 0, out)
+            _decode_uleb128_limbs_jit(data, 0, out)
 
         # Multi-byte varint truncated mid-stream (all continuation bytes).
         data = np.array([0x80, 0x80, 0x80], dtype=np.uint8)
         with pytest.raises(ValueError, match="truncated"):
-            _uleb128_decode_limbs_jit(data, 0, out)
+            _decode_uleb128_limbs_jit(data, 0, out)
 
 
 @pytest.mark.parametrize(

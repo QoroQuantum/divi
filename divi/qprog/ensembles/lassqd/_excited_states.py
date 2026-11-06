@@ -33,10 +33,10 @@ from ._state import (
     _SampledSubspace,
 )
 from ._subspace import (
-    state_transitions,
-    subspace_nevpt2,
+    compute_state_transitions,
+    compute_subspace_nevpt2,
+    solve_subspace_wavefunctions,
     subspace_states_at,
-    subspace_wavefunctions,
     track_states,
 )
 from ._warnings import _outside_divi_stacklevel
@@ -412,7 +412,7 @@ class _ExcitedStates:
                 (transition.initial.multiplicity, transition.initial.index),
                 (transition.final.multiplicity, transition.final.index),
             ): transition
-            for transition in state_transitions(
+            for transition in compute_state_transitions(
                 self._mol,
                 list(self.wavefunctions_in_energy_order("transition_properties")),
             )
@@ -422,7 +422,9 @@ class _ExcitedStates:
         """Each requested state's NEVPT2 correction, keyed ``(multiplicity,
         index)`` in uncorrected energy order."""
         subspace, n_core = self._final_subspace_and_core("nevpt2")
-        corrections = dict(subspace_nevpt2(self._ao_integrals(), subspace, n_core))
+        corrections = dict(
+            compute_subspace_nevpt2(self._ao_integrals(), subspace, n_core)
+        )
         return {
             (state.multiplicity, state.index): corrections[state]
             for state in _in_energy_order(list(corrections))
@@ -459,4 +461,4 @@ class _ExcitedStates:
         """The last completed round's requested states at its final orbitals,
         for the method ``name``."""
         subspace, n_core = self._final_subspace_and_core(name)
-        return subspace_wavefunctions(self._ao_integrals(), subspace, n_core)
+        return solve_subspace_wavefunctions(self._ao_integrals(), subspace, n_core)

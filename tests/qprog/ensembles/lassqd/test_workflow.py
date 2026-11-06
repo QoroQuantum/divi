@@ -251,7 +251,7 @@ def test_rejects_invalid_automatic_fragmentation_arguments(
     """Every automatic-fragmentation argument is validated in the constructor,
     like the sizing arguments above. Deferring to ``initial_state()`` meant a
     bad index surfaced only after an SCF had already run, and an argument
-    consumed twice (once by ``auto_fragment_specs``, once by the workflow) would
+    consumed twice (once by ``build_auto_fragment_specs``, once by the workflow) would
     arrive empty the second time if given as a generator."""
     with pytest.raises(ValueError, match=match):
         _lassqd(dummy_expval_backend, active_spaces=None, **override)
@@ -445,7 +445,7 @@ def test_initial_state_forwards_the_mean_field_core_hamiltonian_to_auto_fragment
         n_active_orbitals=4,
         max_orbitals_per_fragment=2,
     )
-    spy = mocker.spy(_workflow, "auto_fragment_specs")
+    spy = mocker.spy(_workflow, "build_auto_fragment_specs")
 
     ensemble.initial_state()
 
@@ -465,7 +465,7 @@ def test_initial_state_forwards_the_fragmentation_settings_to_auto_fragment_spec
         max_orbitals_per_fragment=2,
         coupling_threshold=0.05,
     )
-    spy = mocker.spy(_workflow, "auto_fragment_specs")
+    spy = mocker.spy(_workflow, "build_auto_fragment_specs")
 
     state = ensemble.initial_state()
 
@@ -1689,7 +1689,7 @@ def test_create_programs_ccsd_seeding_is_deterministic_across_ensembles(
 def test_create_programs_warm_starts_without_calling_ccsd(dummy_expval_backend, mocker):
     ensemble = _lassqd(dummy_expval_backend)
     state = ensemble.initial_state()
-    spy = mocker.spy(_vqe_preparation, "_ccsd_seed_params")
+    spy = mocker.spy(_vqe_preparation, "_compute_ccsd_seed_params")
 
     spec = state.fragments[0].spec
     warm_params = np.full(
@@ -2012,7 +2012,7 @@ def test_repeated_runs_start_from_a_clean_state(dummy_expval_backend, mocker):
     ``exact_sampler_lassqd`` cannot detect a regression here: it uses
     explicit ``active_spaces``, so it never reaches the automatic
     fragmentation's localization draw, which pulls its restarts straight
-    from the workflow's RNG (see ``auto_fragment_specs``). This test uses
+    from the workflow's RNG (see ``build_auto_fragment_specs``). This test uses
     automatic fragmentation instead, so an unreset RNG on the second run
     would localize into a different orbital basis (and very likely a
     different energy) rather than reproducing the first run.

@@ -24,7 +24,7 @@ from divi.qprog.algorithms import (
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import MolecularProblem
 
-from ._preparation import fragment_coupled_cluster, fragment_mean_field
+from ._preparation import run_fragment_coupled_cluster, run_fragment_mean_field
 from ._state import FragmentSpec, FragmentState
 
 # Below this the embedding potential's spin channels are the same to seeding precision.
@@ -112,7 +112,7 @@ def _coupled_cluster(
     """``solver`` run on ``mean_field``, or ``None`` (with a ``UserWarning``) if
     PySCF raises a numerical or runtime error; non-convergence only warns."""
     try:
-        return fragment_coupled_cluster(solver, name, mean_field, spec)
+        return run_fragment_coupled_cluster(solver, name, mean_field, spec)
     except _CC_FAILURES as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
@@ -138,7 +138,7 @@ def _embedded_mean_field(
     set, since coupled cluster builds its Fock matrix from ``mo_coeff`` and
     ``mo_occ``.
     """
-    mean_field = fragment_mean_field(
+    mean_field = run_fragment_mean_field(
         scf.UHF if unrestricted else scf.RHF, h_eff, g_frag, spec
     )
     mean_field.mo_coeff = mo_coeff
@@ -186,7 +186,7 @@ def _seed_energy_gain(
     return reference - seeded
 
 
-def _ccsd_seed_params(
+def _compute_ccsd_seed_params(
     h_eff: np.ndarray,
     g_frag: np.ndarray,
     spec: FragmentSpec,
@@ -293,7 +293,7 @@ def build_fragment_vqe(
     """Build one fragment's VQE from its embedded problem.
 
     A fresh fragment (``fragment.params is None``) is seeded from its own CCSD
-    amplitudes via :func:`_ccsd_seed_params`; a warm-started fragment uses
+    amplitudes via :func:`_compute_ccsd_seed_params`; a warm-started fragment uses
     ``fragment.params`` and never calls CCSD.
 
     Seeding uses the spin-averaged embedding potential, which affects only the
@@ -323,7 +323,7 @@ def build_fragment_vqe(
                 UserWarning,
                 stacklevel=2,
             )
-        seed_params = _ccsd_seed_params(
+        seed_params = _compute_ccsd_seed_params(
             0.5 * (h_alpha + h_beta),
             problem.two_body,
             fragment.spec,

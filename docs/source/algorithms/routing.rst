@@ -142,7 +142,7 @@ vehicles. Binary encoding reduces the register size:
    )
 
 This produces a HUBO that Divi maps natively to higher-order Z interactions.
-See ``binary_block_config`` for qubit-count estimates.
+See ``compute_binary_block_config`` for qubit-count estimates.
 
 Feasibility, Repair, and Energy
 -------------------------------

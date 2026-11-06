@@ -94,14 +94,14 @@ def test_noisy_optimizer_contract(noisy_optimizer_contract):
 def test_natural_gradient_identity_metric_is_gradient_descent():
     opt = QNGOptimizer(regularization=0.0, scale_regularization=False)
     grad = np.array([1.0, -2.0, 0.5])
-    delta = opt._natural_gradient(grad, np.eye(3))
+    delta = opt._compute_natural_gradient(grad, np.eye(3))
     np.testing.assert_allclose(delta, grad)
 
 
 def test_natural_gradient_diagonal_metric_scales_gradient():
     opt = QNGOptimizer(regularization=0.0, scale_regularization=False)
     grad = np.array([2.0, 3.0])
-    delta = opt._natural_gradient(grad, np.diag([4.0, 9.0]))
+    delta = opt._compute_natural_gradient(grad, np.diag([4.0, 9.0]))
     np.testing.assert_allclose(delta, [0.5, 1.0 / 3.0])
 
 
@@ -115,14 +115,14 @@ def test_natural_gradient_tikhonov_singular_metric_raises_actionably():
         "below it. Raise `regularization` or use solver='pinv'."
     )
     with pytest.raises(np.linalg.LinAlgError, match=exact_match(message)):
-        opt._natural_gradient(np.array([1.0, 1.0]), singular)
+        opt._compute_natural_gradient(np.array([1.0, 1.0]), singular)
 
 
 def test_max_step_norm_clips_update():
     opt = QNGOptimizer(
         step_size=1.0, regularization=0.0, scale_regularization=False, max_step_norm=1.0
     )
-    delta = opt._natural_gradient(np.array([3.0, 4.0]), np.eye(2))
+    delta = opt._compute_natural_gradient(np.array([3.0, 4.0]), np.eye(2))
     update = opt.step_size * delta
     assert np.linalg.norm(update) == pytest.approx(1.0)
     # Direction is preserved.
@@ -256,7 +256,7 @@ def test_overshooting_step_warns_once_at_the_optimize_caller():
 )
 def test_pinv_solver_applies_rcond_cutoff(kwargs, metric, expected):
     opt = QNGOptimizer(solver="pinv", **kwargs)
-    delta = opt._natural_gradient(np.array([1.0, 1.0]), metric)
+    delta = opt._compute_natural_gradient(np.array([1.0, 1.0]), metric)
     np.testing.assert_allclose(delta, expected)
 
 
@@ -271,7 +271,7 @@ def test_pinv_solver_applies_rcond_cutoff(kwargs, metric, expected):
 )
 def test_tikhonov_damping_scales_with_metric_diagonal(kwargs, scale, expected):
     opt = QNGOptimizer(regularization=1.0, **kwargs)
-    delta = opt._natural_gradient(np.ones(2), scale * np.eye(2))
+    delta = opt._compute_natural_gradient(np.ones(2), scale * np.eye(2))
     np.testing.assert_allclose(delta, [expected, expected])
 
 
@@ -301,7 +301,7 @@ def test_non_finite_natural_gradient_raises(grad, step_size, message):
         step_size=step_size, regularization=0.0, scale_regularization=False
     )
     with pytest.raises(FloatingPointError, match=exact_match(message)):
-        opt._natural_gradient(grad, np.eye(2))
+        opt._compute_natural_gradient(grad, np.eye(2))
 
 
 _NO_CHECKPOINTING = (

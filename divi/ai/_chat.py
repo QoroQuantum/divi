@@ -114,7 +114,7 @@ HISTORY_BUDGET_FRACTION = 0.25
 MIN_HISTORY_TOKENS = 512
 
 
-def _history_budget(llm: Llama) -> int:
+def _compute_history_budget(llm: Llama) -> int:
     """Compute the token budget for conversation history based on model context size."""
     return max(MIN_HISTORY_TOKENS, int(llm.n_ctx() * HISTORY_BUDGET_FRACTION))
 
@@ -134,7 +134,7 @@ def _trim_history(
         return []
 
     if max_tokens is None:
-        max_tokens = _history_budget(llm)
+        max_tokens = _compute_history_budget(llm)
 
     # Pre-compute token counts for every message (cheap, no inference).
     counts = [len(llm.tokenize(m["content"].encode(), add_bos=False)) for m in history]

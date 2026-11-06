@@ -25,9 +25,9 @@ from divi.qprog.problems import MolecularProblem
 from ._integrals import _total_energy
 from ._orbital_solvers import (
     OrbitalSolution,
-    ciah_orbital_solve,
     optimize_orbitals,
-    state_averaged_orbital_solve,
+    solve_orbitals_ciah,
+    solve_state_averaged_orbitals,
 )
 from ._preparation import LUCJFragmentProgram
 from ._state import ElectronicState, FragmentSpec, FragmentState, _OrbitalRound
@@ -315,7 +315,7 @@ class SecondOrderOrbitalUpdate(_LowestStateOrbitalUpdate):
     """
 
     max_iterations: int = Field(default=50, ge=1)
-    _solver = staticmethod(ciah_orbital_solve)
+    _solver = staticmethod(solve_orbitals_ciah)
 
 
 @config_dataclass(frozen=True)
@@ -399,7 +399,7 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
         subspace = round_.subspace
         if subspace is None:
             raise RuntimeError("StateAveragedOrbitalUpdate needs SQDConfig.states.")
-        return state_averaged_orbital_solve(
+        return solve_state_averaged_orbitals(
             round_.ao,
             subspace.mo_coeff,
             round_.n_core,

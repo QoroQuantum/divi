@@ -36,10 +36,10 @@ Zero Noise Extrapolation (ZNE)
 Divi's ZNE runs the target circuit at several amplified noise levels and
 extrapolates the per-scale expectation values back to the zero-noise limit.
 Folding and extrapolation are both built-in — :class:`~divi.circuits.zne.ZNE`
-ships with global-unitary folding (:func:`~divi.circuits.zne.global_fold`)
+ships with global-unitary folding (:func:`~divi.circuits.zne.fold_global`)
 by default and uses :class:`~divi.circuits.zne.RichardsonExtrapolator`
 unless a custom extrapolator is provided.  Both integer and fractional
-scale factors are supported. :func:`~divi.circuits.zne.local_fold` folds
+scale factors are supported. :func:`~divi.circuits.zne.fold_local` folds
 per gate.
 
 **Basic Usage:**
@@ -95,19 +95,19 @@ per gate.
    vqe.run()
    print(f"Mitigated energy: {vqe.best_loss:.6f}")
 
-The default :func:`~divi.circuits.zne.global_fold` is deterministic.
-:func:`~divi.circuits.zne.local_fold` folds per gate:
+The default :func:`~divi.circuits.zne.fold_global` is deterministic.
+:func:`~divi.circuits.zne.fold_local` folds per gate:
 
 .. skip: next
 
 .. code-block:: python
 
-   from divi.circuits.zne import ZNE, local_fold
+   from divi.circuits.zne import ZNE, fold_local
 
    # Per-gate folding with fractional scale factors
    zne_local = ZNE(
        scale_factors=[1.0, 1.25, 1.5, 1.75, 2.0],
-       folding_fn=local_fold,
+       folding_fn=fold_local,
    )
 
 Pass ``selection="from_left"`` or ``"from_right"`` through

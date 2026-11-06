@@ -26,10 +26,10 @@ from divi.qprog.ensembles.lassqd._integrals import (
     build_active_permutation,
 )
 from divi.qprog.ensembles.lassqd._orbital_solvers import (
-    ciah_orbital_solve,
+    build_rotation_energy_gradient_fn,
     escape_orbital_saddle,
     optimize_orbitals,
-    rotation_energy_gradient_fn,
+    solve_orbitals_ciah,
 )
 from divi.qprog.ensembles.lassqd._state import (
     FragmentSpec,
@@ -92,7 +92,7 @@ def _unconverged_warnings(record, solve, reason, gradient_tol):
 def _energy_and_gradient_at(case, mo_coeff):
     """Energy and orbital gradient of ``case``'s functional at ``mo_coeff``."""
     ao, _, *rest = case
-    pairs, energy_and_gradient = rotation_energy_gradient_fn(ao, mo_coeff, *rest)
+    pairs, energy_and_gradient = build_rotation_energy_gradient_fn(ao, mo_coeff, *rest)
     return energy_and_gradient(np.zeros(len(pairs)))
 
 
@@ -135,7 +135,7 @@ def _round_solve(update):
     "capped_solve",
     [
         partial(optimize_orbitals, max_iterations=1),
-        partial(ciah_orbital_solve, max_iterations=1),
+        partial(solve_orbitals_ciah, max_iterations=1),
         _round_solve(LBFGSOrbitalUpdate(max_iterations=1)),
         _round_solve(SecondOrderOrbitalUpdate(max_iterations=1)),
     ],
@@ -183,7 +183,7 @@ def test_the_second_order_solve_never_ends_above_its_start(orbital_rotation_case
     start_energy, _ = _energy_and_gradient_at(case, case[1])
 
     with pytest.warns(UserWarning, match="stopped after"):
-        solve = ciah_orbital_solve(*case, gradient_tol=1e-12, max_iterations=1)
+        solve = solve_orbitals_ciah(*case, gradient_tol=1e-12, max_iterations=1)
 
     assert solve.energy < start_energy
 
@@ -224,7 +224,9 @@ def test_a_capped_second_order_solve_builds_no_step_it_discards(
     hessian_builds = mocker.spy(_orbital_solvers_module._LASOrbitalHessian, "gen_g_hop")
 
     with pytest.warns(UserWarning, match="stopped after"):
-        ciah_orbital_solve(*orbital_rotation_case, gradient_tol=1e-12, max_iterations=1)
+        solve_orbitals_ciah(
+            *orbital_rotation_case, gradient_tol=1e-12, max_iterations=1
+        )
 
     assert hessian_builds.call_count == 1
 
@@ -274,7 +276,7 @@ def test_a_zero_step_restarts_the_second_order_solve(orbital_rotation_case, mock
     steps = _scripted_steps(mocker, [step, np.eye(n_orbitals)], [step])
 
     with pytest.warns(UserWarning, match="stopped after"):
-        solve = ciah_orbital_solve(
+        solve = solve_orbitals_ciah(
             *orbital_rotation_case, gradient_tol=1e-12, max_iterations=2
         )
 
@@ -308,7 +310,7 @@ def test_the_second_order_solve_prefers_a_converged_point_level_with_its_best(
     """A converged point that rounding leaves a hair above an earlier,
     unconverged one is the better answer."""
     n_orbitals = orbital_rotation_case[1].shape[1]
-    n_pairs = len(rotation_energy_gradient_fn(*orbital_rotation_case)[0])
+    n_pairs = len(build_rotation_energy_gradient_fn(*orbital_rotation_case)[0])
     _scripted_steps(mocker, [_random_rotation(n_orbitals, 1e-3, 3)] * 2)
     mocker.patch.object(
         _orbital_solvers_module._LASOrbitalHessian,
@@ -332,7 +334,7 @@ def test_the_second_order_solve_keeps_the_lower_of_two_unconverged_points(
     orbital_rotation_case, mocker
 ):
     n_orbitals = orbital_rotation_case[1].shape[1]
-    n_pairs = len(rotation_energy_gradient_fn(*orbital_rotation_case)[0])
+    n_pairs = len(build_rotation_energy_gradient_fn(*orbital_rotation_case)[0])
     _scripted_steps(mocker, [_random_rotation(n_orbitals, 1e-3, 3)] * 2)
     mocker.patch.object(
         _orbital_solvers_module._LASOrbitalHessian,
@@ -345,7 +347,7 @@ def test_the_second_order_solve_keeps_the_lower_of_two_unconverged_points(
     )
 
     with pytest.warns(UserWarning, match="stopped after"):
-        solve = ciah_orbital_solve(
+        solve = solve_orbitals_ciah(
             *orbital_rotation_case, gradient_tol=_GRADIENT_TOL, max_iterations=2
         )
 
@@ -477,7 +479,7 @@ def test_optimize_orbitals_keeps_scipy_result_only_when_strictly_lower(
         FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
     ]
 
-    rotation_pairs, energy_and_gradient = rotation_energy_gradient_fn(
+    rotation_pairs, energy_and_gradient = build_rotation_energy_gradient_fn(
         ao, mo_coeff, 0, specs, rdm1_active, rdm2_active
     )
     baseline_energy, baseline_gradient = energy_and_gradient(
@@ -550,7 +552,7 @@ def test_rotation_gradient_matches_central_differences(
     pullback, and the naive commutator form it is easily confused with agrees
     with it only at the origin."""
     ao, mo_coeff, n_core, _, rdm1_active, rdm2_active = orbital_rotation_case
-    rotation_pairs, energy_and_gradient = rotation_energy_gradient_fn(
+    rotation_pairs, energy_and_gradient = build_rotation_energy_gradient_fn(
         *orbital_rotation_case
     )
     n_rot = len(rotation_pairs)

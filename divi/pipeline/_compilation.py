@@ -16,7 +16,7 @@ from divi.pipeline._result_keys_operations import OBS_GROUP_AXIS, PARAM_SET_AXIS
 from divi.pipeline.abc import BranchKey, ContractViolation
 
 
-def _preamble(n_qubits: int) -> str:
+def _build_preamble(n_qubits: int) -> str:
     """Build the OpenQASM 2.0 header + register declarations."""
     return (
         "OPENQASM 2.0;\n"
@@ -26,7 +26,7 @@ def _preamble(n_qubits: int) -> str:
     )
 
 
-def _branch_label(branch_key: BranchKey) -> str:
+def _format_branch_label(branch_key: BranchKey) -> str:
     """Flatten a branch key into the label backends and lineage maps key on."""
     return "/".join(f"{ax}:{val}" for ax, val in branch_key)
 
@@ -119,7 +119,7 @@ def batch_lineage(batch: Mapping[Any, MetaCircuit]) -> dict[str, BranchKey]:
     pipeline's structure.
     """
     return {
-        _branch_label(branch_key): branch_key
+        _format_branch_label(branch_key): branch_key
         for batch_key, node in batch.items()
         for body_tag, _ in _effective_bodies(node)
         for meas_tag, _ in node.measurement_qasms
@@ -177,14 +177,14 @@ def _compile_batch(
             for branch_key, i in _row_keys(
                 batch_key, body_tag, meas_tag, node, len(param_array)
             ):
-                label = _branch_label(branch_key)
+                label = _format_branch_label(branch_key)
                 values = () if i is None else tuple(param_array[i].tolist())
                 param_set_rows.append((label, values))
                 lineage_by_label[label] = branch_key
 
             payloads.append(
                 CircuitPayload(
-                    circuit=_preamble(node.n_qubits) + body + meas_qasm,
+                    circuit=_build_preamble(node.n_qubits) + body + meas_qasm,
                     parameters=node.parameters,
                     parameter_sets=tuple(param_set_rows),
                 )

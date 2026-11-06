@@ -28,7 +28,7 @@ from ._types import (
 )
 
 
-def _real_qubo_matrix(matrix):
+def _coerce_real_qubo_matrix(matrix):
     """Return ``matrix`` as a real matrix, rejecting a non-zero imaginary part."""
     if not np.iscomplexobj(matrix):
         return matrix
@@ -81,7 +81,7 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix | sps.sp
                 f" Got array of shape {qubo.shape}."
                 " Must be a square matrix."
             )
-        return _real_qubo_matrix(qubo)
+        return _coerce_real_qubo_matrix(qubo)
 
     if sps.issparse(qubo):
         shape = qubo.shape  # type: ignore[missing-attribute]
@@ -91,12 +91,14 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix | sps.sp
                 f" Got sparse matrix of shape {shape}."
                 " Must be a square matrix."
             )
-        return _real_qubo_matrix(qubo)
+        return _coerce_real_qubo_matrix(qubo)
 
     raise ValueError(f"Unsupported QUBO type: {type(qubo)}")
 
 
-def _default_variable_order(variables: AbstractSet[Hashable]) -> tuple[Hashable, ...]:
+def _build_default_variable_order(
+    variables: AbstractSet[Hashable],
+) -> tuple[Hashable, ...]:
     """Build deterministic variable order for mixed, potentially incomparable labels.
 
     Sorts integers, including NumPy integers, numerically (0, 1, 2, ..., 10,
@@ -197,7 +199,7 @@ def normalize_binary_polynomial_problem(
 
     variables = set(polynomial.variables)
     if variable_order is None:
-        resolved_order = _default_variable_order(variables)
+        resolved_order = _build_default_variable_order(variables)
     else:
         resolved_order = tuple(variable_order)
         if len(set(resolved_order)) != len(resolved_order):

@@ -32,8 +32,8 @@ __all__ = [
     "GlobalFoldPass",
     "LocalFoldPass",
     "FoldingFn",
-    "global_fold",
-    "local_fold",
+    "fold_global",
+    "fold_local",
 ]
 
 
@@ -355,7 +355,7 @@ class RichardsonExtrapolator:
 FoldingFn = Callable[[DAGCircuit, float], tuple[DAGCircuit, float]]
 
 
-def global_fold(dag: DAGCircuit, scale: float) -> tuple[DAGCircuit, float]:
+def fold_global(dag: DAGCircuit, scale: float) -> tuple[DAGCircuit, float]:
     """Apply :class:`GlobalFoldPass` and return ``(folded_dag, effective_scale)``.
 
     Mutates ``dag`` in place (deepcopy first if the original is needed).
@@ -365,7 +365,7 @@ def global_fold(dag: DAGCircuit, scale: float) -> tuple[DAGCircuit, float]:
     return pass_.run(dag), effective
 
 
-def local_fold(
+def fold_local(
     dag: DAGCircuit,
     scale: float,
     *,
@@ -381,7 +381,7 @@ def local_fold(
         from functools import partial
         zne = ZNE(
             scale_factors=[1.0, 1.5, 2.0],
-            folding_fn=partial(local_fold, selection="from_left"),
+            folding_fn=partial(fold_local, selection="from_left"),
         )
 
     Mutates ``dag`` in place (deepcopy first if the original is needed).
@@ -400,14 +400,14 @@ class ZNE(QEMProtocol):
 
     **Choosing a folding strategy**
 
-    * :func:`global_fold` (default) — applies ``(U†·U)^k`` + partial tail
+    * :func:`fold_global` (default) — applies ``(U†·U)^k`` + partial tail
       fold at the *circuit* level.  Deterministic, good first choice for
       widely-spaced scales (e.g. ``[1, 3, 5]``).
-    * :func:`local_fold` — per-gate folding with fractional-scale
+    * :func:`fold_local` — per-gate folding with fractional-scale
       support.  Use when you need scales close to 1 (``[1.0, 1.25, 1.5]``)
       on deep circuits where global folding would explode the gate count,
       or when you want to skip specific gates during folding
-      (``exclude={"cx"}``).  ``global_fold`` has no equivalent exclude
+      (``exclude={"cx"}``).  ``fold_global`` has no equivalent exclude
       mechanism — it folds the whole unitary.
 
     **Effective vs requested scales**
@@ -425,8 +425,8 @@ class ZNE(QEMProtocol):
             ``[1.0, 1.5, 2.0]``).  Arbitrary real values ≥ 1 are
             supported by both default folds.
         folding_fn: ``(DAGCircuit, scale) → (DAGCircuit, effective_scale)``.
-            Defaults to :func:`global_fold`.  Pass :func:`local_fold` (or
-            ``functools.partial(local_fold, selection=...)``) for local
+            Defaults to :func:`fold_global`.  Pass :func:`fold_local` (or
+            ``functools.partial(fold_local, selection=...)``) for local
             folding, or any custom callable.  See :data:`FoldingFn` for
             the input-mutation contract and the ``scale=1.0`` pass-through
             convention.
@@ -476,7 +476,7 @@ class ZNE(QEMProtocol):
             )
 
         self._scale_factors = scale_factors
-        self._folding_fn = folding_fn or global_fold
+        self._folding_fn = folding_fn or fold_global
         self._extrapolator = extrapolator or RichardsonExtrapolator()
 
     @property
@@ -500,13 +500,13 @@ class ZNE(QEMProtocol):
         return self._folding_fn
 
     def _folding_fn_for(self, rng: np.random.Generator | None) -> FoldingFn:
-        """``folding_fn``, with :func:`local_fold` given a generator drawn from
+        """``folding_fn``, with :func:`fold_local` given a generator drawn from
         ``rng`` when it was not given one of its own."""
         fn = self._folding_fn
         is_partial = isinstance(fn, functools.partial)
         func = fn.func if is_partial else fn
         keywords = fn.keywords if is_partial else {}
-        if rng is None or func is not local_fold or "rng" in keywords:
+        if rng is None or func is not fold_local or "rng" in keywords:
             return fn
         return functools.partial(fn, rng=random.Random(int(rng.integers(2**63))))
 
@@ -534,11 +534,11 @@ class ZNE(QEMProtocol):
     def _dry_effective_scale(self, dag: DAGCircuit, scale: float) -> float:
         """Scale ``folding_fn`` would realise on ``dag``, without folding a built-in."""
         fn = self._folding_fn
-        if fn is global_fold:
+        if fn is fold_global:
             return GlobalFoldPass(scale).effective_scale(dag)
-        if fn is local_fold:
+        if fn is fold_local:
             return LocalFoldPass(scale).effective_scale(dag)
-        if isinstance(fn, functools.partial) and fn.func is local_fold:
+        if isinstance(fn, functools.partial) and fn.func is fold_local:
             exclude = fn.keywords.get("exclude")
             return LocalFoldPass(scale, exclude=exclude).effective_scale(dag)
         return fn(copy.deepcopy(dag), scale)[1]

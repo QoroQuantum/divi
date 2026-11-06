@@ -15,7 +15,7 @@ def _missing_requested_package(exc: ModuleNotFoundError, module_name: str) -> bo
     return exc.name == root
 
 
-def optional_module(module_name: str) -> ModuleType | None:
+def import_if_available(module_name: str) -> ModuleType | None:
     """Import *module_name*, returning ``None`` only when its package is absent."""
     try:
         return importlib.import_module(module_name)
@@ -42,7 +42,7 @@ def import_optional(
     ``hint`` is appended to the error message, e.g. to point at an alternative
     that needs no extra.
     """
-    module = optional_module(module_name)
+    module = import_if_available(module_name)
     if module is None:
         message = (
             f"{capability} requires the '{extra}' extra; install it with "

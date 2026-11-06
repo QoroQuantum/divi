@@ -40,7 +40,7 @@ from divi.backends import (
 )
 from divi.backends._pauli_serde import compress_ham_ops
 from divi.backends._saved_defaults import save_defaults
-from divi.backends._shot_allocation import from_wire, per_circuit
+from divi.backends._shot_allocation import expand_ranges, from_wire
 from divi.backends._systems import (
     get_available_qpu_systems,
     get_available_simulator_clusters,
@@ -2641,7 +2641,7 @@ def test_shot_groups_are_reindexed_for_each_chunk(mocker, qoro_service_factory):
     assert not any("shots" in body for body in bodies)
     sent = []
     for body in bodies:
-        sent += per_circuit(from_wire(body["shot_groups"]), len(body["circuits"]))
+        sent += expand_ranges(from_wire(body["shot_groups"]), len(body["circuits"]))
     assert sent == [100, 100, 100, 200, 200]
 
 

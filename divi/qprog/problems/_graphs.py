@@ -36,7 +36,7 @@ from ._graph_hamiltonians import (
 )
 from ._graph_partitioning_utils import (
     _drawable,
-    _node_partition_graph,
+    _partition_graph_by_nodes,
 )
 from ._partitioning_config import GraphPartitioningConfig
 from ._types import GraphProblemTypes
@@ -168,7 +168,7 @@ class GraphProblemBase(QAOAProblem):
                 stacklevel=2,
             )
 
-        subgraphs = _node_partition_graph(
+        subgraphs = _partition_graph_by_nodes(
             self.graph,
             partitioning_config=self._config,
         )

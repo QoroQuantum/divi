@@ -27,11 +27,11 @@ from divi.qprog.ensembles.lassqd import (
 from divi.qprog.ensembles.lassqd._integrals import AOIntegrals
 from divi.qprog.ensembles.lassqd._orbital_solvers import (
     orbital_irreps,
-    state_averaged_orbital_solve,
+    solve_state_averaged_orbitals,
 )
 from divi.qprog.ensembles.lassqd._sqd import SQDResult, SQDState
 from divi.qprog.ensembles.lassqd._state import FragmentSpec
-from divi.qprog.ensembles.lassqd._subspace import state_transitions
+from divi.qprog.ensembles.lassqd._subspace import compute_state_transitions
 from divi.qprog.problems import MolecularProblem
 from tests._helpers import exact_match
 from tests.qprog.ensembles.lassqd._helpers import (  # noqa: F401
@@ -450,7 +450,7 @@ def test_state_averaging_over_half_a_degenerate_pair_warns():
         "every component of the degenerate set."
     )
     with pytest.warns(UserWarning, match=exact_match(message)):
-        solve, _ = state_averaged_orbital_solve(
+        solve, _ = solve_state_averaged_orbitals(
             AOIntegrals.of(mean_field.mol),
             mean_field.mo_coeff,
             4,
@@ -474,7 +474,7 @@ def _h2o_state_averaged_solve(symmetry, report=None):
     strings = tuple(
         format(string, "04b")[::-1] for string in cistring.make_strings(range(4), 2)
     )
-    solve, _ = state_averaged_orbital_solve(
+    solve, _ = solve_state_averaged_orbitals(
         AOIntegrals.of(mol),
         mean_field.mo_coeff,
         3,
@@ -530,7 +530,7 @@ def test_a_linear_molecule_keeps_its_symmetry_through_a_nudged_solve():
         format(string, "06b")[::-1] for string in cistring.make_strings(range(6), 3)
     )
 
-    solve, _ = state_averaged_orbital_solve(
+    solve, _ = solve_state_averaged_orbitals(
         AOIntegrals.of(mol),
         nudged,
         4,
@@ -706,7 +706,7 @@ def test_the_hole_is_the_orbital_the_electron_leaves():
     ground = wavefunction(0, [[1.0, 0.0], [0.0, 0.0]])
     excited = wavefunction(1, np.array([[0.0, 1.0], [1.0, 0.0]]) / np.sqrt(2))
 
-    (transition,) = state_transitions(mol, [ground, excited])
+    (transition,) = compute_state_transitions(mol, [ground, excited])
 
     np.testing.assert_allclose(abs(transition.hole_orbitals[:, 0]), [1.0, 0.0])
     np.testing.assert_allclose(abs(transition.particle_orbitals[:, 0]), [0.0, 1.0])

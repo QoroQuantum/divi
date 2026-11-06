@@ -28,7 +28,7 @@ _TERM_STEPS, _TERM_RATE = 600, 0.05
 _TAUS = np.linspace(_LEAST_VANILLA_SHARE, 1.0, 81)
 
 
-def state_drift_distribution(
+def fit_state_drift_distribution(
     expansion: StateDriftExpansion,
     *,
     time: float,

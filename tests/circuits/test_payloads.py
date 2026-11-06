@@ -11,10 +11,10 @@ from qiskit.circuit.library import XXPlusYYGate
 
 from divi.circuits import CircuitPayload
 from divi.circuits._payloads import (
-    as_payloads,
-    bound_circuits,
-    bound_payloads,
+    flatten_bound_payloads,
     is_bound,
+    normalise_to_payloads,
+    wrap_bound_circuits,
 )
 from tests._helpers import exact_match, same_unitary
 
@@ -29,7 +29,7 @@ QASM_H = (
 
 
 def test_bound_payloads_makes_one_single_row_payload_per_circuit():
-    payloads = bound_payloads({"a": QASM_H, "b": QASM_BELL})
+    payloads = wrap_bound_circuits({"a": QASM_H, "b": QASM_BELL})
 
     assert [payload.circuit for payload in payloads] == [QASM_H, QASM_BELL]
     assert [payload.parameter_sets for payload in payloads] == [
@@ -46,7 +46,7 @@ def test_gates_export_without_decomposition(default_test_simulator):
     circuit.rxx(0.7, 1, 2)
     circuit.append(XXPlusYYGate(0.4), [0, 2])
 
-    (qasm,) = bound_circuits([circuit]).values()
+    (qasm,) = flatten_bound_payloads([circuit]).values()
     exported = QuantumCircuit.from_qasm_str(qasm)
 
     assert {"rzz", "rxx", "xx_plus_yy"} <= set(exported.count_ops())
@@ -56,7 +56,7 @@ def test_gates_export_without_decomposition(default_test_simulator):
 def test_bound_circuits_inverts_bound_payloads():
     circuits = {"a": QASM_H, "b": QASM_BELL}
 
-    assert bound_circuits(bound_payloads(circuits)) == circuits
+    assert flatten_bound_payloads(wrap_bound_circuits(circuits)) == circuits
 
 
 def test_is_bound_distinguishes_resolved_from_parametric():
@@ -66,7 +66,7 @@ def test_is_bound_distinguishes_resolved_from_parametric():
         parameter_sets=(("row", (0.5,)),),
     )
 
-    assert is_bound(bound_payloads({"a": QASM_H})) is True
+    assert is_bound(wrap_bound_circuits({"a": QASM_H})) is True
     assert is_bound([parametric]) is False
 
 
@@ -80,12 +80,12 @@ def test_bound_circuits_rejects_a_parametric_payload():
     )
 
     expected = (
-        "bound_circuits needs resolved payloads, but one still carries free "
+        "flatten_bound_payloads needs resolved payloads, but one still carries free "
         "parameters. Its rows share a single unresolved template, so the "
         "mapping would submit the same circuit under every label."
     )
     with pytest.raises(ValueError, match=exact_match(expected)):
-        bound_circuits([parametric])
+        flatten_bound_payloads([parametric])
 
 
 def test_bound_circuits_accepts_the_mapping_shorthand():
@@ -93,19 +93,19 @@ def test_bound_circuits_accepts_the_mapping_shorthand():
     be skipped by forgetting one."""
     circuits = {"a": QASM_H, "b": QASM_BELL}
 
-    assert bound_circuits(circuits) == circuits
+    assert flatten_bound_payloads(circuits) == circuits
 
 
 def test_as_payloads_converts_the_mapping_shorthand():
-    payloads = as_payloads({"a": QASM_H})
+    payloads = normalise_to_payloads({"a": QASM_H})
 
-    assert bound_circuits(payloads) == {"a": QASM_H}
+    assert flatten_bound_payloads(payloads) == {"a": QASM_H}
 
 
 def test_as_payloads_passes_a_payload_sequence_through_untouched():
-    payloads = bound_payloads({"a": QASM_H})
+    payloads = wrap_bound_circuits({"a": QASM_H})
 
-    assert as_payloads(payloads) is payloads
+    assert normalise_to_payloads(payloads) is payloads
 
 
 @pytest.mark.parametrize("payload", [QASM_H, QASM_H.encode()], ids=["str", "bytes"])
@@ -118,7 +118,7 @@ def test_as_payloads_rejects_a_bare_circuit(payload):
         "would otherwise be iterated character by character."
     )
     with pytest.raises(TypeError, match=exact_match(expected)):
-        as_payloads(payload)
+        normalise_to_payloads(payload)
 
 
 @pytest.mark.parametrize(
@@ -142,13 +142,15 @@ def test_as_payloads_rejects_a_bare_circuit(payload):
             id="row-width-mismatch",
         ),
         pytest.param(
-            lambda: as_payloads([*bound_payloads({"a": QASM_H}), QASM_BELL]),
+            lambda: normalise_to_payloads(
+                [*wrap_bound_circuits({"a": QASM_H}), QASM_BELL]
+            ),
             TypeError,
             "A sequence must hold either CircuitPayloads or circuits, not both.",
             id="mixed-sequence",
         ),
         pytest.param(
-            lambda: as_payloads([42]),
+            lambda: normalise_to_payloads([42]),
             TypeError,
             "Circuit '0' must be an OpenQASM string or a QuantumCircuit, got int.",
             id="unsupported-circuit-type",

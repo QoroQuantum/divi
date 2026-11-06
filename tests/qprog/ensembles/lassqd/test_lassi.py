@@ -108,7 +108,7 @@ def _interaction(h1, h2, shapes, references, n_hops):
     bases = [
         _lassi._basis(
             n,
-            _lassi.fragment_multiplets(
+            _lassi.solve_fragment_multiplets(
                 h1[block, block],
                 h2[block, block, block, block],
                 _every_determinant(n, reference),
@@ -122,7 +122,7 @@ def _interaction(h1, h2, shapes, references, n_hops):
     ]
     nelec = tuple(references[0][s] + references[1][s] for s in (0, 1))
     pairs = _lassi._sector_pairs(*bases, nelec)
-    return _lassi.si_matrices(h1, h2, *bases, pairs)
+    return _lassi.build_si_matrices(h1, h2, *bases, pairs)
 
 
 @pytest.mark.parametrize(

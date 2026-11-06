@@ -32,11 +32,11 @@ from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
 from divi.backends._shot_allocation import (
     ShotRange,
     bucket_by_shots,
+    expand_ranges,
     from_wire,
-    per_circuit,
     validate,
 )
-from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
+from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
 
 logger = logging.getLogger(__name__)
 
@@ -374,7 +374,7 @@ class QiskitSimulator(CircuitRunner):
         raise_if_cancelled(cancellation_event, "Qiskit batch cancelled before dispatch")
         self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 
-        circuits = bound_circuits(payloads)
+        circuits = flatten_bound_payloads(payloads)
         n_circuits = len(circuits)
         logger.debug(
             f"Simulating {n_circuits} circuits with {self.n_processes} processes"
@@ -441,7 +441,7 @@ class QiskitSimulator(CircuitRunner):
         # Aer applies one shot count per run, so each distinct count is one run;
         # deterministic mode runs every circuit alone on its own seeded simulator.
         if self._deterministic_execution:
-            per_circuit_shots = per_circuit(shot_ranges, n_circuits)
+            per_circuit_shots = expand_ranges(shot_ranges, n_circuits)
             runs = [([i], shots) for i, shots in enumerate(per_circuit_shots)]
         else:
             runs = [(idx, shots) for shots, idx in bucket_by_shots(shot_ranges).items()]

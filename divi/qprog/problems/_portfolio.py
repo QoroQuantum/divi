@@ -25,7 +25,7 @@ from scipy.optimize import LinearConstraint as ScipyLinearConstraint
 from scipy.optimize import minimize
 
 from divi.hamiltonians import xy_mixer
-from divi.hamiltonians._mixers import single_pauli_label
+from divi.hamiltonians._mixers import build_single_pauli_label
 from divi.qprog.initial_states import (
     DickeState,
     InitialState,
@@ -664,7 +664,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
                 self.n_assets, 1, assets, connectivity="ring"
             )
             slack_x = [
-                (single_pauli_label(n_qubits, idx[s], "X"), 1.0)
+                (build_single_pauli_label(n_qubits, idx[s], "X"), 1.0)
                 for s in self._slack_variables
             ]
             mixer = xy_mixer(ring, n_qubits=n_qubits)

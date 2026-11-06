@@ -13,9 +13,9 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.hamiltonians._molecular import (
     MoleculeLike,
+    compute_molecule_integrals,
     is_pennylane_molecule,
     molecular_hamiltonian,
-    molecule_integrals,
     molecule_spin_counts,
 )
 from divi.hamiltonians._term_ops import ObservableLike, to_spo
@@ -230,7 +230,9 @@ class MolecularProblem(HamiltonianProblem):
                 raise RuntimeError(
                     "MolecularProblem holds neither integrals nor a molecule."
                 )
-            self._integrals = _read_only((*molecule_integrals(self._molecule), None))
+            self._integrals = _read_only(
+                (*compute_molecule_integrals(self._molecule), None)
+            )
         return self._integrals
 
     @property

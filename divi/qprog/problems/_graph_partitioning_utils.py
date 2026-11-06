@@ -17,7 +17,7 @@ from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 from sklearn.cluster import SpectralClustering
 
-from divi._optional import optional_module
+from divi._optional import import_if_available
 
 from ._graph_hamiltonians import _edge_weight, _wire_edges
 from ._partitioning_config import GraphPartitioningConfig
@@ -56,7 +56,7 @@ def _canonical_edges(graph: GraphProblemTypes) -> tuple[list, list[_WeightedEdge
     return ids, edges
 
 
-def _spectral_inputs(graph: GraphProblemTypes) -> tuple[sps.csr_matrix, list]:
+def _build_spectral_inputs(graph: GraphProblemTypes) -> tuple[sps.csr_matrix, list]:
     """Return ``(adjacency_matrix, node_ids)`` for spectral clustering.
 
     Row ``i`` of the CSR adjacency matrix corresponds to ``node_ids[i]``; an
@@ -82,7 +82,7 @@ def _spectral_inputs(graph: GraphProblemTypes) -> tuple[sps.csr_matrix, list]:
     return adj_matrix, node_ids
 
 
-def _metis_inputs(graph: GraphProblemTypes) -> tuple[list[list[int]], list]:
+def _build_metis_inputs(graph: GraphProblemTypes) -> tuple[list[list[int]], list]:
     """Return ``(adjacency_list, node_ids)`` for METIS.
 
     The adjacency list is keyed by positions ``0..N-1`` with each neighbour list
@@ -108,7 +108,7 @@ def _kernighan_lin_input(graph: GraphProblemTypes) -> tuple[nx.Graph, list]:
     return kl_graph, node_ids
 
 
-def _relabeled_subgraph_with_ids(
+def _build_relabeled_subgraph_with_ids(
     graph: GraphProblemTypes, cluster: list
 ) -> tuple[GraphProblemTypes, list]:
     """Build a ``0..M-1``-indexed subgraph for ``cluster`` and return it
@@ -147,7 +147,7 @@ def _apply_split_with_relabel(
     is the parent-graph identifier for local node ``i``.
     """
     if algorithm == "spectral":
-        adj_matrix, node_ids = _spectral_inputs(graph)
+        adj_matrix, node_ids = _build_spectral_inputs(graph)
         sc = SpectralClustering(
             n_clusters=n_clusters,
             affinity="precomputed",
@@ -157,7 +157,7 @@ def _apply_split_with_relabel(
         )
         parts = sc.fit_predict(adj_matrix)
     elif algorithm == "metis":
-        if sys.platform == "win32" and optional_module("pymetis") is None:
+        if sys.platform == "win32" and import_if_available("pymetis") is None:
             raise ImportError(
                 "The 'metis' partitioning algorithm needs pymetis, which is not "
                 "installed on Windows by default; install it via conda: "
@@ -166,7 +166,7 @@ def _apply_split_with_relabel(
             )
         from pymetis import part_graph
 
-        adj_list, node_ids = _metis_inputs(graph)
+        adj_list, node_ids = _build_metis_inputs(graph)
         _, parts = part_graph(n_clusters, adjacency=adj_list)
     else:
         raise RuntimeError("Relabeling only needed for `spectral` and `metis`.")
@@ -186,7 +186,7 @@ def _apply_split_with_relabel(
         )
 
     return tuple(
-        _relabeled_subgraph_with_ids(graph, clstr) for clstr in non_empty_clusters
+        _build_relabeled_subgraph_with_ids(graph, clstr) for clstr in non_empty_clusters
     )
 
 
@@ -222,7 +222,9 @@ def _split_graph(
     elif partitioning_config.partitioning_algorithm == "kernighan_lin":
         kl_graph, node_ids = _kernighan_lin_input(graph)
         return tuple(
-            _relabeled_subgraph_with_ids(graph, [node_ids[i] for i in sorted(part)])
+            _build_relabeled_subgraph_with_ids(
+                graph, [node_ids[i] for i in sorted(part)]
+            )
             for part in nx.algorithms.community.kernighan_lin_bisection(
                 kl_graph, seed=0
             )
@@ -321,7 +323,7 @@ def _merge_edgeless_clusters(
         (
             clusters[i]
             if ids == list(clusters[i][1])
-            else _relabeled_subgraph_with_ids(graph, ids)
+            else _build_relabeled_subgraph_with_ids(graph, ids)
         )
         for i, ids in target_ids.items()
     ]
@@ -400,7 +402,7 @@ def _bisect_with_predicate(
     return subgraphs
 
 
-def _node_partition_graph(
+def _partition_graph_by_nodes(
     graph: GraphProblemTypes, partitioning_config: GraphPartitioningConfig
 ) -> list[_SubgraphWithIds]:
     """Partition ``graph`` into subgraphs honouring the configured constraints.

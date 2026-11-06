@@ -56,7 +56,7 @@ def validate(ranges: Sequence[ShotRange], n_circuits: int) -> None:
         )
 
 
-def per_circuit(ranges: Sequence[ShotRange], n_circuits: int) -> list[int]:
+def expand_ranges(ranges: Sequence[ShotRange], n_circuits: int) -> list[int]:
     """Expand ranges into one shot count per circuit.
 
     Assumes ranges have already been validated; missing circuits yield ``0``.
@@ -68,7 +68,7 @@ def per_circuit(ranges: Sequence[ShotRange], n_circuits: int) -> list[int]:
     return out
 
 
-def per_circuit_or_none(
+def expand_shot_groups(
     shot_groups: Sequence[list[int]] | None, n_circuits: int
 ) -> list[int] | None:
     """Validate a wire-format allocation and expand it to one count per circuit.
@@ -79,10 +79,10 @@ def per_circuit_or_none(
         return None
     ranges = from_wire(shot_groups)
     validate(ranges, n_circuits)
-    return per_circuit(ranges, n_circuits)
+    return expand_ranges(ranges, n_circuits)
 
 
-def from_per_circuit(shots: Sequence[int]) -> list[ShotRange]:
+def group_shots_into_ranges(shots: Sequence[int]) -> list[ShotRange]:
     """Ranges grouping consecutive circuits that share a shot count."""
     ranges: list[ShotRange] = []
     for index, count in enumerate(shots):

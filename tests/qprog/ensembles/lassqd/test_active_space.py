@@ -11,9 +11,9 @@ from pyscf import gto, mcscf, scf
 
 from divi.qprog.ensembles.lassqd import _active_space as _active_space_module
 from divi.qprog.ensembles.lassqd._active_space import (
-    _localized_active_space_integrals,
+    _build_localized_active_space_integrals,
     assign_orbitals_to_atoms,
-    auto_fragment_specs,
+    build_auto_fragment_specs,
     build_coupling_graph,
     localize_blocks,
     merge_clusters,
@@ -104,7 +104,7 @@ def test_localisation_keeps_orbitals_already_on_separate_fragments_apart():
     )
     mean_field = scf.ROHF(mol).run()
 
-    specs, _, _ = auto_fragment_specs(
+    specs, _, _ = build_auto_fragment_specs(
         AOIntegrals.of(mol),
         mean_field.mo_coeff,
         3,
@@ -417,7 +417,7 @@ def test_localize_blocks_passes_a_single_orbital_block_through(
 
 
 def test_auto_fragment_specs_on_h4_finds_two_fragments(h4_chain_mean_field):
-    specs, localized, active_positions = auto_fragment_specs(
+    specs, localized, active_positions = build_auto_fragment_specs(
         AOIntegrals.of(h4_chain_mean_field.mol),
         np.asarray(h4_chain_mean_field.mo_coeff),
         n_occupied=2,
@@ -452,7 +452,7 @@ def _h8_auto_specs(**overrides):
         fragment_atoms=([0, 1, 2, 3], [4, 5, 6, 7]),
     )
     kwargs.update(overrides)
-    return auto_fragment_specs(
+    return build_auto_fragment_specs(
         AOIntegrals.of(mol),
         np.asarray(mean_field.mo_coeff),
         **kwargs,
@@ -476,7 +476,7 @@ def test_auto_fragment_specs_rejects_unreachable_local_spin():
 
 
 def _canonical_partition_key(ao, mo_coeff, **selector):
-    specs, _, _ = auto_fragment_specs(
+    specs, _, _ = build_auto_fragment_specs(
         ao,
         mo_coeff,
         n_occupied=2,
@@ -525,7 +525,7 @@ def test_auto_fragment_specs_active_integrals_include_frozen_core(
     )
     localized = np.hstack([localized_occ, localized_virt])
 
-    one_body, _ = _localized_active_space_integrals(
+    one_body, _ = _build_localized_active_space_integrals(
         AOIntegrals(
             mol, cached_ao_eri(mol), mean_field.get_hcore(), mean_field.energy_nuc()
         ),

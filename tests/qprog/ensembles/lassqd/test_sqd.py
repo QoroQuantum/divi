@@ -26,20 +26,20 @@ from divi.qprog.ensembles.lassqd._sqd import (
     _modified_relu,
     _occupations_from_bit_matrix,
     _spatial_rdms_exact,
-    bit_flip_correction,
-    carryover_weights,
+    apply_bit_flip_correction,
     ci_string_to_int,
+    compute_carryover_weights,
     compute_spatial_rdm1,
     compute_spatial_rdms,
     deinterleave_spin_bitstring,
+    enumerate_string_hops,
     filter_symmetry,
     interleave_spin_bitstring,
     map_carried_strings,
-    projected_matrices,
-    sci_vector,
+    project_onto_determinants,
+    spatial_to_spin_integrals,
     spatial_to_spin_occupations,
-    spin_orbital_integrals,
-    string_hops,
+    to_sci_vector,
 )
 from tests._helpers import exact_match
 from tests.qprog.ensembles.lassqd._helpers import (  # noqa: F401
@@ -224,14 +224,14 @@ def test_full_subspace_diagonalization_reproduces_fci(integrals_fn, n_alpha, n_b
     """The strongest single check: the projected Hamiltonian over the COMPLETE
     determinant space is symmetric and gives exactly the FCI energy."""
     one_body, two_body, n_orb, constant = integrals_fn()
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+    h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb)
     space = [
         (a, b)
         for a in itertools.combinations(range(n_orb), n_alpha)
         for b in itertools.combinations(range(n_orb), n_beta)
     ]
     dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
-    hamiltonian = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)[
+    hamiltonian = project_onto_determinants(space, dets_spin, h_spin, g_spin, n_orb)[
         0
     ].toarray()
 
@@ -242,7 +242,7 @@ def test_full_subspace_diagonalization_reproduces_fci(integrals_fn, n_alpha, n_b
 
 
 def _scalar_spin_orbital_integrals(one_body, two_body, n_orb, one_body_beta=None):
-    """The elementwise rule ``spin_orbital_integrals`` replaced with blocks."""
+    """The elementwise rule ``spatial_to_spin_integrals`` replaced with blocks."""
     if one_body_beta is None:
         one_body_beta = one_body
     n_spin = 2 * n_orb
@@ -289,7 +289,7 @@ def test_spin_orbital_integrals_match_the_elementwise_definition(n_orb, polarize
     expected_h, expected_g = _scalar_spin_orbital_integrals(
         one_body, two_body, n_orb, one_body_beta
     )
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb, one_body_beta)
+    h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb, one_body_beta)
 
     np.testing.assert_array_equal(h_spin, expected_h)
     np.testing.assert_array_equal(g_spin, expected_g)
@@ -355,7 +355,7 @@ def _full_space_problem(n_orb, n_alpha, n_beta, seed):
     """``(space, dets_spin, h_spin, g_spin)`` for random symmetric integrals over
     every determinant of the sector."""
     one_body, two_body = _random_integrals(n_orb, seed)
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+    h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb)
 
     space = [
         (alpha, beta)
@@ -401,7 +401,7 @@ def test_projected_matrices_match_pyscf(n_orb, n_alpha, n_beta):
     expected_h, expected_s2 = _pyscf_projected_matrices(
         space, n_orb, (n_alpha, n_beta), seed=2024
     )
-    h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+    h_proj, s2_proj = project_onto_determinants(space, dets_spin, h_spin, g_spin, n_orb)
 
     np.testing.assert_allclose(h_proj.toarray(), expected_h, rtol=1e-10, atol=1e-11)
     np.testing.assert_allclose(s2_proj.toarray(), expected_s2, rtol=1e-10, atol=1e-11)
@@ -413,7 +413,7 @@ def test_projected_matrices_store_only_connected_pairs():
     n_orb = 6
     space, dets_spin, h_spin, g_spin = _full_space_problem(n_orb, 3, 3, seed=3)
 
-    h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+    h_proj, s2_proj = project_onto_determinants(space, dets_spin, h_spin, g_spin, n_orb)
 
     assert scipy.sparse.issparse(h_proj) and scipy.sparse.issparse(s2_proj)
     assert h_proj.nnz < 0.5 * len(space) ** 2
@@ -430,7 +430,7 @@ def test_projected_matrices_are_independent_of_the_row_block(monkeypatch, block_
     expected_h, expected_s2 = _pyscf_projected_matrices(space, n_orb, (2, 2), seed=7)
 
     monkeypatch.setattr(sqd_module, "_PAIR_BLOCK_ROWS", block_rows)
-    h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+    h_proj, s2_proj = project_onto_determinants(space, dets_spin, h_spin, g_spin, n_orb)
 
     np.testing.assert_allclose(h_proj.toarray(), expected_h, rtol=1e-10, atol=1e-11)
     np.testing.assert_allclose(s2_proj.toarray(), expected_s2, rtol=1e-10, atol=1e-11)
@@ -444,7 +444,7 @@ def _penalized_subspace(n_orb=4, n_alpha=2, n_beta=2, seed=17):
     space, dets_spin, h_spin, g_spin = _full_space_problem(
         n_orb, n_alpha, n_beta, seed=seed
     )
-    h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+    h_proj, s2_proj = project_onto_determinants(space, dets_spin, h_spin, g_spin, n_orb)
     target_s = 0.5 * abs(n_alpha - n_beta)
     deviation = s2_proj - target_s * (target_s + 1.0) * scipy.sparse.eye_array(
         len(space), format="csr"
@@ -471,7 +471,7 @@ def test_lowest_roots_iterative_branch_matches_the_dense_solve(monkeypatch, n_ro
     )
 
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
-    values, vectors = sqd_module.lowest_roots(
+    values, vectors = sqd_module.solve_lowest_roots(
         h_proj, deviation, lambda_penalty, n_roots
     )
 
@@ -493,7 +493,7 @@ def test_lowest_roots_rejects_more_roots_than_determinants():
         "fewer roots in SQDConfig.states."
     )
     with pytest.raises(ValueError, match=exact_match(message)):
-        sqd_module.lowest_roots(h_proj, deviation, 0.2, dimension + 1)
+        sqd_module.solve_lowest_roots(h_proj, deviation, 0.2, dimension + 1)
 
 
 def test_lowest_roots_iterative_branch_lets_the_penalty_choose_the_root(
@@ -503,16 +503,18 @@ def test_lowest_roots_iterative_branch_lets_the_penalty_choose_the_root(
     move the root: unpenalised the Sz=0 triplet component is lowest, penalised
     the singlet is. Neither solve may fall back to the dense form."""
     one_body, two_body, n_orb = _degenerate_orbital_integrals(exchange=0.3)
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+    h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb)
     space = [((a,), (b,)) for a in range(n_orb) for b in range(n_orb)]
     dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
-    h_proj, deviation = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+    h_proj, deviation = project_onto_determinants(
+        space, dets_spin, h_spin, g_spin, n_orb
+    )
 
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
     dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
 
-    (triplet,), _ = sqd_module.lowest_roots(h_proj, deviation, 0.0)
-    (singlet,), vectors = sqd_module.lowest_roots(h_proj, deviation, 20.0)
+    (triplet,), _ = sqd_module.solve_lowest_roots(h_proj, deviation, 0.0)
+    (singlet,), vectors = sqd_module.solve_lowest_roots(h_proj, deviation, 20.0)
 
     dense.assert_not_called()
     assert triplet == pytest.approx(-0.3, abs=1e-8)
@@ -532,7 +534,9 @@ def test_lowest_roots_iterative_branch_skips_a_root_of_another_spin(
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
     dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
 
-    (singlet,), vectors = sqd_module.lowest_roots(h_proj, deviation, 0.0, spin=0.0)
+    (singlet,), vectors = sqd_module.solve_lowest_roots(
+        h_proj, deviation, 0.0, spin=0.0
+    )
 
     dense.assert_not_called()
     assert singlet == pytest.approx(0.0, abs=1e-8)
@@ -548,7 +552,7 @@ def test_lowest_roots_iterative_branch_fills_in_when_no_root_has_the_spin(
     h_proj, deviation = _rotated_spectrum(np.arange(60.0), np.full(60, 2.0))
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
 
-    values, _ = sqd_module.lowest_roots(h_proj, deviation, 0.0, 2, spin=0.0)
+    values, _ = sqd_module.solve_lowest_roots(h_proj, deviation, 0.0, 2, spin=0.0)
 
     np.testing.assert_allclose(values, [0.0, 1.0], atol=1e-8)
 
@@ -579,7 +583,7 @@ def test_lowest_roots_falls_back_when_the_iterative_root_is_not_the_lowest(
         ),
     )
 
-    (energy,), _ = sqd_module.lowest_roots(h_proj, deviation, lambda_penalty)
+    (energy,), _ = sqd_module.solve_lowest_roots(h_proj, deviation, lambda_penalty)
 
     assert energy == pytest.approx(expected, abs=1e-12)
 
@@ -600,7 +604,9 @@ def test_lowest_roots_falls_back_when_the_iterative_solve_fails(mocker, monkeypa
         side_effect=sqd_module.scipy.sparse.linalg.ArpackError(-1),
     )
 
-    (energy,), vectors = sqd_module.lowest_roots(h_proj, deviation, lambda_penalty)
+    (energy,), vectors = sqd_module.solve_lowest_roots(
+        h_proj, deviation, lambda_penalty
+    )
 
     failing.assert_called_once()
     assert energy == pytest.approx(expected, abs=1e-12)
@@ -626,7 +632,7 @@ def test_lowest_roots_refuses_a_dense_fallback_past_the_memory_cap(mocker, monke
         "to bound the subspace."
     )
     with pytest.raises(ValueError, match=exact_match(message)):
-        sqd_module.lowest_roots(h_proj, deviation, 0.2)
+        sqd_module.solve_lowest_roots(h_proj, deviation, 0.2)
 
 
 def _rotated_spectrum(eigenvalues, spin_squares=None, seed=3):
@@ -653,7 +659,7 @@ def test_the_block_solve_returns_every_copy_of_a_degenerate_root(monkeypatch):
     h_proj, deviation = _rotated_spectrum(np.r_[0.0, 1.0, 1.0, np.arange(2.0, 49.0)])
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
 
-    values, _ = sqd_module.lowest_roots(h_proj, deviation, 0.0, 3)
+    values, _ = sqd_module.solve_lowest_roots(h_proj, deviation, 0.0, 3)
 
     np.testing.assert_allclose(values, [0.0, 1.0, 1.0], atol=1e-10)
 
@@ -671,7 +677,7 @@ def test_the_block_solve_leaves_the_lowest_determinants_sector(monkeypatch):
     assert int(np.argmin(h_proj.diagonal())) == 0
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
 
-    (block,), _ = sqd_module.lowest_roots(h_proj, deviation, 0.0, block=True)
+    (block,), _ = sqd_module.solve_lowest_roots(h_proj, deviation, 0.0, block=True)
 
     assert block == pytest.approx(-10.0, abs=1e-8)
 
@@ -687,7 +693,7 @@ def test_an_unconverged_block_solve_falls_back_to_the_dense_one(mocker, monkeypa
         return_value=(np.arange(6.0), np.eye(dimension, 6)),
     )
 
-    values, vectors = sqd_module.lowest_roots(h_proj, deviation, 0.2, 2)
+    values, vectors = sqd_module.solve_lowest_roots(h_proj, deviation, 0.2, 2)
 
     np.testing.assert_allclose(values, expected, atol=1e-12)
     assert vectors.shape == (dimension, 2)
@@ -701,7 +707,7 @@ def test_a_block_too_wide_for_the_subspace_is_solved_densely(mocker, monkeypatch
     block = mocker.spy(sqd_module.scipy.sparse.linalg, "lobpcg")
     n_roots = h_proj.shape[0] // 5
 
-    values, _ = sqd_module.lowest_roots(h_proj, deviation, 0.2, n_roots)
+    values, _ = sqd_module.solve_lowest_roots(h_proj, deviation, 0.2, n_roots)
 
     block.assert_not_called()
     assert values.shape == (n_roots,)
@@ -715,8 +721,12 @@ def test_lowest_roots_iterative_branch_repeats_bitwise(mocker, monkeypatch):
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
     dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
 
-    first_values, first_vectors = sqd_module.lowest_roots(h_proj, deviation, 0.2, 2)
-    second_values, second_vectors = sqd_module.lowest_roots(h_proj, deviation, 0.2, 2)
+    first_values, first_vectors = sqd_module.solve_lowest_roots(
+        h_proj, deviation, 0.2, 2
+    )
+    second_values, second_vectors = sqd_module.solve_lowest_roots(
+        h_proj, deviation, 0.2, 2
+    )
 
     dense.assert_not_called()
     np.testing.assert_array_equal(first_values, second_values)
@@ -725,14 +735,14 @@ def test_lowest_roots_iterative_branch_repeats_bitwise(mocker, monkeypatch):
 
 def test_projected_matrices_handles_an_empty_subspace():
     one_body, two_body, n_orb, _ = _h2_integrals()
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
-    h_proj, s2_proj = projected_matrices([], [], h_spin, g_spin, n_orb)
+    h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb)
+    h_proj, s2_proj = project_onto_determinants([], [], h_spin, g_spin, n_orb)
     assert h_proj.shape == (0, 0)
     assert s2_proj.shape == (0, 0)
 
 
 def _projected_s2(space, n_orb):
-    return projected_matrices(
+    return project_onto_determinants(
         space,
         [spatial_to_spin_occupations(a, b, n_orb) for a, b in space],
         np.zeros((2 * n_orb,) * 2),
@@ -770,7 +780,7 @@ def test_bit_flip_correction_always_restores_particle_numbers():
     rng = np.random.default_rng(11)
     occupancy = np.full((2, 3), 0.5)
     for bits in ["111000", "000111", "110100", "000000", "111111"]:
-        fixed = bit_flip_correction(
+        fixed = apply_bit_flip_correction(
             bits, n_orb=3, n_alpha=2, n_beta=1, occupancy=occupancy, rng=rng
         )
         assert set(fixed) <= {"0", "1"}
@@ -785,7 +795,7 @@ def test_bit_flip_correction_always_restores_particle_numbers():
 )
 def test_bit_flip_correction_rejects_impossible_sector_counts(n_alpha, n_beta, match):
     with pytest.raises(ValueError, match=f"{match} must be between 0 and n_orb"):
-        bit_flip_correction(
+        apply_bit_flip_correction(
             "1010",
             n_orb=2,
             n_alpha=n_alpha,
@@ -801,7 +811,7 @@ def test_bit_flip_correction_rejects_impossible_sector_counts(n_alpha, n_beta, m
 )
 def test_bit_flip_correction_accepts_a_full_sector(bits, n_alpha, n_beta, expected):
     """``n_orb`` electrons per sector is the bound itself, not past it."""
-    fixed = bit_flip_correction(
+    fixed = apply_bit_flip_correction(
         bits,
         n_orb=2,
         n_alpha=n_alpha,
@@ -868,8 +878,8 @@ def test_bit_flip_draws_follow_the_modified_relu_weights(
 def test_bit_flip_correction_is_deterministic_under_a_seed():
     occupancy = np.full((2, 3), 0.5)
     kwargs = dict(n_orb=3, n_alpha=2, n_beta=1, occupancy=occupancy)
-    first = bit_flip_correction("111000", rng=np.random.default_rng(5), **kwargs)
-    second = bit_flip_correction("111000", rng=np.random.default_rng(5), **kwargs)
+    first = apply_bit_flip_correction("111000", rng=np.random.default_rng(5), **kwargs)
+    second = apply_bit_flip_correction("111000", rng=np.random.default_rng(5), **kwargs)
     assert first == second
 
 
@@ -887,7 +897,7 @@ def test_bit_flip_correction_prefers_flipping_uncertain_orbitals():
     uncertain_survivals = 0
 
     for _ in range(trials):
-        fixed = bit_flip_correction(
+        fixed = apply_bit_flip_correction(
             "111100", n_orb=3, n_alpha=1, n_beta=1, occupancy=occupancy, rng=rng
         )
         assert fixed[:3].count("1") == 1
@@ -902,7 +912,7 @@ def test_bit_flip_correction_prefers_flipping_uncertain_orbitals():
 def test_bit_flip_correction_leaves_valid_bitstrings_untouched():
     occupancy = np.full((2, 2), 0.5)
     assert (
-        bit_flip_correction(
+        apply_bit_flip_correction(
             "1010",
             n_orb=2,
             n_alpha=1,
@@ -1117,13 +1127,13 @@ def _spy_on_retained(monkeypatch):
 def _spy_on_dimensions(monkeypatch):
     """Capture the subspace dimension of every projected diagonalization."""
     dimensions = []
-    real = sqd_module.projected_matrices
+    real = sqd_module.project_onto_determinants
 
     def spy(dets, dets_spin, *args, **kwargs):
         dimensions.append(len(dets))
         return real(dets, dets_spin, *args, **kwargs)
 
-    monkeypatch.setattr(sqd_module, "projected_matrices", spy)
+    monkeypatch.setattr(sqd_module, "project_onto_determinants", spy)
     return dimensions
 
 
@@ -1258,7 +1268,7 @@ def test_carryover_weights_rank_the_halves_by_probability():
     strings_beta = ("010", "001", "100")
     amplitudes = np.diag([0.9, 0.4, 0.1])
 
-    alpha_weights, _ = carryover_weights(
+    alpha_weights, _ = compute_carryover_weights(
         strings_alpha, strings_beta, amplitudes, cutoff=1e-8
     )
     assert alpha_weights["100"] > alpha_weights["010"] > alpha_weights["001"]
@@ -1273,7 +1283,7 @@ def test_carryover_weights_rank_by_the_full_marginal_not_the_eligible_part():
     strings_beta = ("10", "01")
     amplitudes = np.array([[0.3, 0.9], [0.4, 0.0]])
 
-    alpha_weights, _ = carryover_weights(
+    alpha_weights, _ = compute_carryover_weights(
         strings_alpha, strings_beta, amplitudes, cutoff=0.4
     )
 
@@ -1319,8 +1329,10 @@ def test_carryover_cutoff_prunes_relative_to_the_largest_coefficient():
     # Determinants "1010" (0.8), "0101" (0.5) and "1001" (0.05); "0110" is absent.
     amplitudes = np.array([[0.8, 0.05], [0.0, 0.5]])
 
-    kept = carryover_weights(strings_alpha, strings_beta, amplitudes, cutoff=0.1)[1]
-    scaled = carryover_weights(
+    kept = compute_carryover_weights(
+        strings_alpha, strings_beta, amplitudes, cutoff=0.1
+    )[1]
+    scaled = compute_carryover_weights(
         strings_alpha, strings_beta, amplitudes / 100.0, cutoff=0.1
     )[1]
 
@@ -1330,14 +1342,16 @@ def test_carryover_cutoff_prunes_relative_to_the_largest_coefficient():
     assert set(kept) == set(scaled)
 
     # Raising the cutoff past 0.5 leaves only the "1010" determinant eligible.
-    pruned = carryover_weights(strings_alpha, strings_beta, amplitudes, cutoff=0.7)[1]
+    pruned = compute_carryover_weights(
+        strings_alpha, strings_beta, amplitudes, cutoff=0.7
+    )[1]
     assert set(pruned) == {"10"}
 
 
 def test_a_determinant_at_the_cutoff_is_not_retained():
     """Retention needs a coefficient that exceeds the cutoff, not one equal to
     it: half of 0.8 is exactly 0.4, so beta ``01`` is dropped."""
-    _, beta_weights = carryover_weights(
+    _, beta_weights = compute_carryover_weights(
         ("10",), ("10", "01"), np.array([[0.8, 0.4]]), cutoff=0.5
     )
 
@@ -1439,7 +1453,7 @@ def test_recovery_accumulates_probability_onto_collapsed_bitstrings(monkeypatch)
     """
     corrections = {"1111": "1010", "1100": "1010", "0011": "0101", "1001": "1001"}
     monkeypatch.setattr(
-        sqd_module, "bit_flip_correction", lambda bits, *_args: corrections[bits]
+        sqd_module, "apply_bit_flip_correction", lambda bits, *_args: corrections[bits]
     )
     solver = _solver(2, 1, 1)
     probs = {"1111": 0.4, "1100": 0.2, "0011": 0.3, "1001": 0.1}
@@ -1734,7 +1748,7 @@ def _count_settled_diagonalizations(mocker, **solver_kwargs):
     """Diagonalizations in a two-orbital solve whose iterations all reproduce the
     first: zero two-body terms and one saturating batch per iteration."""
     n_orb = 2
-    spy = mocker.spy(sqd_module, "projected_matrices")
+    spy = mocker.spy(sqd_module, "project_onto_determinants")
     _solver(
         n_orb,
         1,
@@ -1860,7 +1874,7 @@ def test_batch_occupancy_is_the_eigenvector_weighted_occupation():
     """A batch's occupancy is ``sum_k |c_k|^2 n_k`` over its determinants, which
     the solver reads off the sector marginals instead of the determinants."""
     one_body, two_body, n_orb, _ = _h4_integrals()
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+    h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb)
     sectors = (("1110", "1101", "1011"), ("1000", "0100", "0001"))
 
     result, occupancy = _solver(n_orb, 3, 1)._diagonalize(
@@ -2023,7 +2037,7 @@ def test_carryover_weights_pool_eligibility_and_sum_weight_over_states():
     ground = np.array([[1.0, 0.0], [0.0, 0.0]])
     excited = np.array([[0.0, 0.0], [0.0, 1.0]])
 
-    alpha_weights, beta_weights = carryover_weights(
+    alpha_weights, beta_weights = compute_carryover_weights(
         ("10", "01"), ("10", "01"), np.stack([ground, excited]), cutoff=0.5
     )
 
@@ -2039,7 +2053,7 @@ def test_carryover_weights_pool_eligibility_and_sum_weight_over_states():
     ],
 )
 def test_string_hops_move_up_to_rank_electrons(rank, expected):
-    assert string_hops("1100", rank) == expected
+    assert enumerate_string_hops("1100", rank) == expected
 
 
 def _hartree_fock_only_solver(extension, **config):
@@ -2132,10 +2146,13 @@ def test_carryover_weights_treat_one_stacked_state_as_that_state():
     amplitudes = np.array([[0.8, 0.0], [0.0, 0.6]])
     strings = (("10", "01"), ("10", "01"))
 
-    assert carryover_weights(
+    assert compute_carryover_weights(
         *strings, amplitudes[np.newaxis], cutoff=0.5
-    ) == carryover_weights(*strings, amplitudes, cutoff=0.5)
-    assert carryover_weights(*strings, np.zeros((2, 2, 2)), cutoff=0.5) == ({}, {})
+    ) == compute_carryover_weights(*strings, amplitudes, cutoff=0.5)
+    assert compute_carryover_weights(*strings, np.zeros((2, 2, 2)), cutoff=0.5) == (
+        {},
+        {},
+    )
 
 
 def test_batches_are_ranked_on_the_sum_over_states(mocker):
@@ -2213,7 +2230,7 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
     2-orbital case cannot exercise that path at all.
 
     Also pins rdm2's ``rspq`` and ``qpsr`` invariances, which
-    ``rotation_energy_gradient_fn`` needs to collapse the two-electron
+    ``build_rotation_energy_gradient_fn`` needs to collapse the two-electron
     derivative into one Fock matrix. The last assertion keeps them non-vacuous.
     """
     one_body, two_body, n_orb, constant = _h4_integrals()
@@ -2300,7 +2317,7 @@ def _pyscf_rdms(strings_alpha, strings_beta, amplitudes, n_orb):
     """``(rdm1, rdm2, rdm1_alpha, rdm1_beta)`` from PySCF's separate 1- and
     2-RDM passes."""
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    civec = sci_vector(strings_alpha, strings_beta, amplitudes)
+    civec = to_sci_vector(strings_alpha, strings_beta, amplitudes)
     rdm1_alpha, rdm1_beta = selected_ci.make_rdm1s(civec, n_orb, nelec)
     rdm2 = selected_ci.make_rdm2(civec, n_orb, nelec)
     return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta

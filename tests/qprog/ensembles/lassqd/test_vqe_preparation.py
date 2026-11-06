@@ -22,15 +22,15 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
 )
 from divi.qprog.algorithms._ansatze import (
+    fit_rotation_angles,
     lucj_jastrow_pairs,
     n_rotation_params,
-    rotation_angles,
     uccsd_excitations,
 )
 from divi.qprog.ensembles.lassqd import _preparation, _vqe_preparation
 from divi.qprog.ensembles.lassqd._integrals import (
     AOIntegrals,
-    fragment_effective_integrals,
+    build_fragment_effective_integrals,
     transform_integrals,
 )
 from divi.qprog.ensembles.lassqd._state import FragmentSpec, FragmentState
@@ -117,7 +117,7 @@ def test_ccsd_seed_params_warns_and_skips(n_beta, n_params, ansatz, message):
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=n_beta)
 
     with pytest.warns(UserWarning, match=exact_match(message)):
-        result = _vqe_preparation._ccsd_seed_params(
+        result = _vqe_preparation._compute_ccsd_seed_params(
             np.eye(2), np.zeros((2,) * 4), spec, n_params, ansatz
         )
 
@@ -135,7 +135,7 @@ def _h4_as_one_fragment(mean_field):
     placeholder = FragmentState(
         spec=H4_WHOLE_SPACE, rdm1=np.zeros((4, 4)), rdm2=np.zeros((4, 4, 4, 4))
     )
-    h_eff, _, g_frag = fragment_effective_integrals(integrals, [placeholder], 0)
+    h_eff, _, g_frag = build_fragment_effective_integrals(integrals, [placeholder], 0)
     return h_eff, g_frag
 
 
@@ -158,7 +158,7 @@ def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(
         2 * spec.n_orbitals, ElectronCounts(spec.n_alpha + spec.n_beta)
     )
 
-    seed = _vqe_preparation._ccsd_seed_params(
+    seed = _vqe_preparation._compute_ccsd_seed_params(
         h_eff, g_frag, spec, n_params, UCCSDAnsatz()
     )
 
@@ -213,7 +213,7 @@ def test_a_spin_polarised_uccsd_seed_recovers_correlation(
         8, ElectronCounts(4, spec.n_alpha, spec.n_beta)
     )
 
-    seed = _vqe_preparation._ccsd_seed_params(
+    seed = _vqe_preparation._compute_ccsd_seed_params(
         h_eff, g_frag, spec, n_params, UCCSDAnsatz()
     )
 
@@ -265,7 +265,7 @@ def test_seed_beats_the_reference_determinant_in_a_localized_basis(
         exact = fci.direct_spin1.kernel(
             h_alpha, g_frag, spec.n_orbitals, (spec.n_alpha, spec.n_beta)
         )[0]
-        seed = _vqe_preparation._ccsd_seed_params(
+        seed = _vqe_preparation._compute_ccsd_seed_params(
             0.5 * (h_alpha + h_beta), g_frag, spec, n_params, ansatz
         )
         assert seed is not None
@@ -299,7 +299,9 @@ def _seed_gain(
     )
     n_params = ansatz.n_params_per_layer(2 * spec.n_orbitals, electron_counts)
     h_seed, g_seed = seed_integrals or (0.5 * (h_alpha + h_beta), g_frag)
-    seed = _vqe_preparation._ccsd_seed_params(h_seed, g_seed, spec, n_params, ansatz)
+    seed = _vqe_preparation._compute_ccsd_seed_params(
+        h_seed, g_seed, spec, n_params, ansatz
+    )
     assert seed is not None
     if permute:
         seed = np.random.default_rng(0).permutation(seed)
@@ -415,7 +417,7 @@ def test_uccsd_seed_singles_match_the_ccsd_t1_amplitudes(h4_chain_mean_field):
     h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
     n_params = UCCSDAnsatz().n_params_per_layer(8, ElectronCounts(4))
 
-    seed = _vqe_preparation._ccsd_seed_params(
+    seed = _vqe_preparation._compute_ccsd_seed_params(
         h_eff, g_frag, spec, n_params, UCCSDAnsatz()
     )
     assert seed is not None
@@ -465,7 +467,7 @@ def test_an_unconverged_seed_calculation_warns_but_still_seeds(
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
-        seed = _vqe_preparation._ccsd_seed_params(
+        seed = _vqe_preparation._compute_ccsd_seed_params(
             h_eff, g_frag, H4_WHOLE_SPACE, n_params, ansatz
         )
 
@@ -479,7 +481,7 @@ def test_a_failed_seed_calculation_falls_back_with_a_warning(mocker, ansatz):
     message = f"CCSD seeding failed for fragment (0, 1): boom. {_FALLBACK}"
 
     with pytest.warns(UserWarning, match=exact_match(message)):
-        seed = _vqe_preparation._ccsd_seed_params(
+        seed = _vqe_preparation._compute_ccsd_seed_params(
             np.eye(2), np.zeros((2,) * 4), _ONE_PAIR_SPEC, 6, ansatz
         )
 
@@ -507,7 +509,7 @@ def test_a_seed_the_ansatz_cannot_map_skips_the_fragment_with_a_warning(mocker):
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
-        seed = _vqe_preparation._ccsd_seed_params(
+        seed = _vqe_preparation._compute_ccsd_seed_params(
             np.eye(2),
             np.zeros((2,) * 4),
             _ONE_PAIR_SPEC,
@@ -520,7 +522,7 @@ def test_a_seed_the_ansatz_cannot_map_skips_the_fragment_with_a_warning(mocker):
 
 _ONE_PAIR_REFERENCE = ElectronCounts(2, 1, 1)
 
-_ROTATION_ANGLES = "divi.qprog.algorithms._ansatze.rotation_angles"
+_ROTATION_ANGLES = "divi.qprog.algorithms._ansatze.fit_rotation_angles"
 
 
 def _lucj_n_params(ansatz):
@@ -564,8 +566,8 @@ def test_lucj_seed_places_the_factorised_jastrow_in_its_layout(ansatz_options, d
 
 
 def _fit_only_the_first(count):
-    """``rotation_angles`` that gives up after its first ``count`` fits."""
-    fit = rotation_angles
+    """``fit_rotation_angles`` that gives up after its first ``count`` fits."""
+    fit = fit_rotation_angles
     calls = iter(range(count))
 
     def first_only(target, *, depth=None):
@@ -602,7 +604,7 @@ _THREE_ORBITAL_DOUBLES = np.array([0.3, 0.1, 0.05, 0.2]).reshape(1, 1, 2, 2)
 
 
 def _numbered_rotation_angles(fail_on=None):
-    """``rotation_angles`` stand-in returning ``1, 2, ..., n`` for each block, so
+    """``fit_rotation_angles`` stand-in returning ``1, 2, ..., n`` for each block, so
     every block's position in the seed is readable; call ``fail_on`` (counting
     from 1) gives up instead."""
     calls = itertools.count(1)
@@ -694,7 +696,7 @@ def _h4_fragment_vqe(backend, h_alpha, h_beta, g_frag, optimizer=None, params=No
 def test_seed_averages_an_asymmetric_embedding_and_warns(
     h4_chain_mean_field, dummy_expval_backend, mocker
 ):
-    seed_params = mocker.spy(_vqe_preparation, "_ccsd_seed_params")
+    seed_params = mocker.spy(_vqe_preparation, "_compute_ccsd_seed_params")
     h_alpha, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
     h_beta = h_alpha + np.diag([0.0, 2e-3, 0.0, 0.0])
     message = (

@@ -17,8 +17,8 @@ from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from divi.viz import (
     GradientMethod,
+    compute_fourier_analysis_2d,
     compute_hessian,
-    fourier_analysis_2d,
     run_neb,
     scan_2d,
     scan_interp_1d,
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     )
 
     # ---- 3. Fourier analysis ----
-    spectrum = fourier_analysis_2d(hess_scan)
+    spectrum = compute_fourier_analysis_2d(hess_scan)
     print(f"\nFourier power spectrum shape: {spectrum.power_spectrum.shape}")
 
     # ---- 4. Nudged Elastic Band ----

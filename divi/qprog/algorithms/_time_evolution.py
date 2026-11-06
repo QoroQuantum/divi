@@ -239,7 +239,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         # TimeEvolution trotterizes the Hamiltonian into the evolution circuit.
         return TrotterSpecStage(
             trotterization_strategy=self.trotterization_strategy,
-            meta_circuit_factory=self._meta_circuit_factory,
+            meta_circuit_factory=self._build_meta_circuit,
             n_steps=self.n_steps,
         )
 
@@ -280,7 +280,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             overrides["param_sets"] = np.array([[float(self.time)]])
         return super()._build_pipeline_env(**overrides)
 
-    def _meta_circuit_factory(
+    def _build_meta_circuit(
         self, result: TrotterizationResult, ham_id: int
     ) -> MetaCircuit:
         """Build a MetaCircuit from one explicit trotterization result."""

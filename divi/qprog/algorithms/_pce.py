@@ -31,7 +31,7 @@ from divi.qprog.mixins import (
 from divi.qprog.problems import BinaryOptimizationProblem
 
 from ._ansatze import GenericLayerAnsatz
-from ._numba_kernels import _popcount_parity_jit
+from ._numba_kernels import _compute_popcount_parity_jit
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -40,7 +40,7 @@ def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.
     Uses a Numba JIT kernel with XOR-fold bit manipulation.
     """
     # copy=False skips the copy on the hot path when already uint64.
-    return _popcount_parity_jit(arr_input.astype(np.uint64, copy=False))
+    return _compute_popcount_parity_jit(arr_input.astype(np.uint64, copy=False))
 
 
 _LIMB_BITS = 64

@@ -18,11 +18,11 @@ from qiskit import QuantumCircuit
 from divi.backends._job_status import JobStatus
 from divi.backends._pauli_serde import group_ham_ops, ham_ops_terms_per_circuit
 from divi.backends._shot_allocation import (
-    from_per_circuit,
-    per_circuit_or_none,
+    expand_shot_groups,
+    group_shots_into_ranges,
     to_wire,
 )
-from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
+from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
 from divi.exceptions import VJPUnavailableError
 
 
@@ -37,7 +37,7 @@ def normalise_circuit_batch(circuits: CircuitBatch) -> dict[str, str]:
             an element is neither a string nor a QuantumCircuit.
         ValueError: If a QuantumCircuit cannot be exported to OpenQASM 2.
     """
-    return bound_circuits(circuits)
+    return flatten_bound_payloads(circuits)
 
 
 @dataclass(frozen=True)
@@ -138,11 +138,11 @@ class PerCircuitKwarg:
 
 
 def _decode_shots(kwargs: Mapping[str, Any], n_circuits: int) -> list[int] | None:
-    return per_circuit_or_none(kwargs.get("shot_groups"), n_circuits)
+    return expand_shot_groups(kwargs.get("shot_groups"), n_circuits)
 
 
 def _encode_shots(shots: Sequence[int]) -> dict[str, Any]:
-    return {"shot_groups": to_wire(from_per_circuit(shots))}
+    return {"shot_groups": to_wire(group_shots_into_ranges(shots))}
 
 
 def _decode_observables(kwargs: Mapping[str, Any], n_circuits: int) -> list[str] | None:
@@ -268,7 +268,7 @@ class CircuitRunner(ABC):
                 variant. Each carries its own labelled parameter
                 sets, one resolved circuit per row. Backends that do not set
                 :attr:`resolves_parameters` receive them already bound —
-                no parameters, one row each — which ``bound_circuits``
+                no parameters, one row each — which ``flatten_bound_payloads``
                 flattens to a ``label -> circuit`` mapping. It also accepts the
                 plain collections callers may pass in their place: a mapping of
                 label → OpenQASM string or

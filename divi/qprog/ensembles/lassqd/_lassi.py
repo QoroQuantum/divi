@@ -24,10 +24,10 @@ from ._sqd import (
     SQDResult,
     ci_string_to_int,
     compute_spatial_rdm1,
-    projected_matrices,
+    project_onto_determinants,
     resolves_spin,
+    spatial_to_spin_integrals,
     spatial_to_spin_occupations,
-    spin_orbital_integrals,
 )
 from ._state import ElectronicState, FragmentSpec
 
@@ -86,7 +86,7 @@ class _FragmentBasis:
     states: Mapping[_Sector, np.ndarray]
 
 
-def lassi_states(
+def solve_lassi_states(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
@@ -146,7 +146,7 @@ def lassi_states(
         )
         counts = counts_a if index == 0 else [total - count for count in counts_a]
         multiplets.append(
-            fragment_multiplets(
+            solve_fragment_multiplets(
                 h1[own, own] + coulomb - 0.5 * exchange,
                 h2[own, own, own, own],
                 list(itertools.product(result.strings_alpha, result.strings_beta)),
@@ -202,7 +202,9 @@ def lassi_states(
     basis_a = _basis(n_a, multiplets[0], limit)
     basis_b = _basis(n_b, multiplets[1], limit)
     pairs = _sector_pairs(basis_a, basis_b, nelec)
-    hamiltonian, spin_square, labels = si_matrices(h1, h2, basis_a, basis_b, pairs)
+    hamiltonian, spin_square, labels = build_si_matrices(
+        h1, h2, basis_a, basis_b, pairs
+    )
     states = tuple(
         ElectronicState(
             state.multiplicity,
@@ -217,12 +219,14 @@ def lassi_states(
                 )
             ),
         )
-        for state, vector in si_states(hamiltonian, spin_square, energy_core, requested)
+        for state, vector in solve_si_states(
+            hamiltonian, spin_square, energy_core, requested
+        )
     )
     return states, kept, incomplete
 
 
-def fragment_multiplets(
+def solve_fragment_multiplets(
     h1: np.ndarray,
     h2: np.ndarray,
     sampled: Sequence[tuple[str, str]],
@@ -246,7 +250,7 @@ def fragment_multiplets(
     """
     n_orbitals = h1.shape[0]
     operators = _Operators(n_orbitals)
-    h_spin, g_spin = spin_orbital_integrals(h1, h2, n_orbitals)
+    h_spin, g_spin = spatial_to_spin_integrals(h1, h2, n_orbitals)
     sampled_bits = [
         (ci_string_to_int(alpha), ci_string_to_int(beta)) for alpha, beta in sampled
     ]
@@ -370,7 +374,7 @@ def _multiplets_in(
         )
         for alpha, beta in determinants
     ]
-    h_proj, s2_proj = projected_matrices(
+    h_proj, s2_proj = project_onto_determinants(
         occupations,
         [spatial_to_spin_occupations(a, b, n_orbitals) for a, b in occupations],
         h_spin,
@@ -708,7 +712,7 @@ def _cross_terms(
     return terms
 
 
-def si_matrices(
+def build_si_matrices(
     h1: np.ndarray,
     h2: np.ndarray,
     basis_a: _FragmentBasis,
@@ -823,7 +827,7 @@ def _contract(
     )
 
 
-def si_states(
+def solve_si_states(
     hamiltonian: np.ndarray,
     spin_square: np.ndarray,
     energy_core: float,

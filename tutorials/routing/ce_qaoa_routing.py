@@ -39,12 +39,12 @@ from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
 from divi.qprog.problems import (
     CVRPProblem,
     TSPProblem,
-    binary_block_config,
-    cvrp_block_structure,
+    build_cvrp_block_structure,
+    compute_binary_block_config,
+    compute_tour_cost,
     is_valid_tsp_tour,
     parse_tsplib_file,
     parse_vrp_solution,
-    tour_cost,
 )
 from tutorials._backend import get_backend
 
@@ -110,7 +110,7 @@ def _brute_force_tsp(cost_matrix, start_city):
     best_cost, best_tour = float("inf"), None
     for perm in permutations(cities):
         t = [start_city, *perm, start_city]
-        c = tour_cost(t, cost_matrix)
+        c = compute_tour_cost(t, cost_matrix)
         if c < best_cost:
             best_cost, best_tour = c, t
     return best_tour, best_cost
@@ -156,10 +156,13 @@ def _print_qubit_projections():
     proj.add_column("Savings", justify="right")
 
     for n_cust, k in [(3, 2), (10, 3), (20, 4), (50, 10)]:
-        oh_q = cvrp_block_structure(n_cust, k)[0] * cvrp_block_structure(n_cust, k)[1]
-        bin_full = binary_block_config(n_cust, k)
+        oh_q = (
+            build_cvrp_block_structure(n_cust, k)[0]
+            * build_cvrp_block_structure(n_cust, k)[1]
+        )
+        bin_full = compute_binary_block_config(n_cust, k)
         tight_steps = max(2, (n_cust + k - 1) // k + 1)
-        bin_tight = binary_block_config(n_cust, k, max_steps=tight_steps)
+        bin_tight = compute_binary_block_config(n_cust, k, max_steps=tight_steps)
         proj.add_row(
             str(n_cust),
             str(k),

@@ -28,7 +28,7 @@ from divi.backends import (
 )
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import (
@@ -107,7 +107,7 @@ def test_pipeline_env_keeps_progress_transport_out_of_public_constructor(
 def _compile_bound(batch):
     """Lower an already-bound batch to ``{label: qasm}`` plus its lineage map."""
     payloads, lineage_by_label = _compile_batch(batch, [[]])
-    return bound_circuits(payloads), lineage_by_label
+    return flatten_bound_payloads(payloads), lineage_by_label
 
 
 def _parametric_meta_one_body():

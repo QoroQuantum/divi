@@ -158,7 +158,7 @@ def test_quiver_joint_allocation_matches_published_rule(
         target_gradient_variance=0.5,
     )
 
-    V_star, M_star = optimizer._allocation_targets(
+    V_star, M_star = optimizer._compute_allocation_targets(
         n_params=5,
         gradient_norm_squared=3.0,
         measurement_variance=measurement_variance,
@@ -186,7 +186,7 @@ def test_quiver_rate_limits_allocation_changes(target, current, lower, expected)
 
 def test_quiver_default_learning_rate_scales_adams_update_by_dimension():
     opt = QUIVEROptimizer(calibration_steps=10)
-    gain = opt._calibrated_learning_rate(
+    gain = opt._calibrate_learning_rate(
         _sphere,
         np.ones(100),
         np.random.default_rng(0),
@@ -278,10 +278,10 @@ def test_cost_variance_is_positive_and_scales_inversely_with_shots(
     vqe.backend.set_seed(7)
     theta = np.linspace(0.1, 1.0, vqe.n_layers * vqe.n_params_per_layer)
 
-    var_low = vqe._cost_shot_variances(
+    var_low = vqe._map_cost_shot_variances(
         vqe._evaluate_cost_param_sets(theta[None, :], shots=500, collect_variance=True)
     )
-    var_high = vqe._cost_shot_variances(
+    var_high = vqe._map_cost_shot_variances(
         vqe._evaluate_cost_param_sets(theta[None, :], shots=8000, collect_variance=True)
     )
     assert np.isfinite(var_low[0]) and var_low[0] > 0
@@ -297,7 +297,7 @@ def test_cost_variance_is_nan_on_native_expval_backend(
     and QUIVER falls back to fixed-M (V-from-spread only)."""
     vqe = small_vqe(default_test_simulator, default_optimizer)
     theta = np.linspace(0.1, 1.0, vqe.n_layers * vqe.n_params_per_layer)
-    variances = vqe._cost_shot_variances(
+    variances = vqe._map_cost_shot_variances(
         vqe._evaluate_cost_param_sets(theta[None, :], collect_variance=True)
     )
     assert np.isnan(variances[0])
@@ -660,7 +660,7 @@ def test_variance_nan_when_keys_collapse_across_extra_axes(
         (("circuit", 0), ("zne_scale", 1), ("param_set", 0)): 0.01,
         (("circuit", 0), ("zne_scale", 3), ("param_set", 0)): 0.04,
     }
-    variances = vqe._cost_shot_variances({0: 0.5})
+    variances = vqe._map_cost_shot_variances({0: 0.5})
     assert np.isnan(variances[0])
 
 
@@ -674,7 +674,7 @@ def test_shots_override_is_ignored_on_analytic_expval_backend(
     losses = vqe._evaluate_cost_param_sets(
         theta[None, :], shots=128, collect_variance=True
     )
-    variances = vqe._cost_shot_variances(losses)
+    variances = vqe._map_cost_shot_variances(losses)
     assert np.isfinite(losses[0])
     assert np.isnan(variances[0])
 

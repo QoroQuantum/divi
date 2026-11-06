@@ -1066,7 +1066,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         parameter set and is mutually exclusive with ``shots``.
         ``collect_variance`` asks the pipeline to also estimate the shot-noise
         variance of each cost value, stashed on ``_last_cost_variance`` and read
-        back via :meth:`_cost_shot_variances`.
+        back via :meth:`_map_cost_shot_variances`.
 
         Subclasses should prefer overriding the initial-spec hook over
         replacing the full evaluator. One that replaces it must also override
@@ -1406,7 +1406,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             if not return_variance:
                 return losses
 
-            var_map = self._cost_shot_variances(values_map)
+            var_map = self._map_cost_shot_variances(values_map)
             variances = np.asarray(list(var_map.values()), dtype=np.float64)
             variances = variances if params.ndim > 1 else variances.item()
             return losses, variances

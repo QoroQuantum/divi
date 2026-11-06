@@ -14,7 +14,7 @@ from scipy.optimize import OptimizeResult
 from ._base import Optimizer
 from ._linalg import (
     _matrix_abs_psd,
-    _regularized_solve,
+    _solve_regularized,
 )
 from .metrics import (
     MetricEstimator,
@@ -159,7 +159,7 @@ class _SPSAConfigMixin:
         """Number of parameter sets per step — always ``1`` (single-point)."""
         return 1
 
-    def _calibrated_learning_rate(
+    def _calibrate_learning_rate(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
         theta: npt.NDArray[np.float64],
@@ -188,7 +188,7 @@ class _SPSAConfigMixin:
             return _TARGET_STEP_MAGNITUDE
         return _TARGET_STEP_MAGNITUDE / average
 
-    def _calibrated_allowed_increase(
+    def _calibrate_allowed_increase(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
         theta: npt.NDArray[np.float64],
@@ -473,9 +473,9 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
 
         theta = np.atleast_1d(np.asarray(initial_params, dtype=np.float64).squeeze())
         A = self.A if self.A is not None else 0.1 * max_iterations
-        learning_rate = self._calibrated_learning_rate(cost_fn, theta, rng)
+        learning_rate = self._calibrate_learning_rate(cost_fn, theta, rng)
         allowed_increase = (
-            self._calibrated_allowed_increase(cost_fn, theta) if self.blocking else 0.0
+            self._calibrate_allowed_increase(cost_fn, theta) if self.blocking else 0.0
         )
 
         best_x = theta.copy()
@@ -687,9 +687,9 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
         theta = np.atleast_1d(np.asarray(initial_params, dtype=np.float64).squeeze())
         n_params = theta.shape[0]
         A = self.A if self.A is not None else 0.1 * max_iterations
-        learning_rate = self._calibrated_learning_rate(cost_fn, theta, rng)
+        learning_rate = self._calibrate_learning_rate(cost_fn, theta, rng)
         allowed_increase = (
-            self._calibrated_allowed_increase(cost_fn, theta) if self.blocking else 0.0
+            self._calibrate_allowed_increase(cost_fn, theta) if self.blocking else 0.0
         )
 
         g_bar = np.eye(n_params)
@@ -764,7 +764,7 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
 
             if step_is_usable:
                 g_reg = _matrix_abs_psd(g_bar) + self.regularization * np.eye(n_params)
-                delta = _regularized_solve(
+                delta = _solve_regularized(
                     ghat,
                     g_reg,
                     solver="tikhonov",
@@ -1004,7 +1004,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         self.adam_epsilon = adam_epsilon
         self.b = b
 
-    def _allocation_targets(
+    def _compute_allocation_targets(
         self,
         n_params: int,
         gradient_norm_squared: float,
@@ -1050,7 +1050,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         # ceil(0.7 * 2) == 2, so the configured V_min=1 is unreachable.
         return int(np.clip(np.floor(clipped + 0.5), lower, upper))
 
-    def _calibrated_learning_rate(
+    def _calibrate_learning_rate(
         self,
         cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
         theta: npt.NDArray[np.float64],
@@ -1142,11 +1142,9 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 return np.asarray(losses, dtype=np.float64).reshape(-1)
             return np.asarray(cost_fn(batch), dtype=np.float64).reshape(-1)
 
-        learning_rate = self._calibrated_learning_rate(cost_only, theta, rng)
+        learning_rate = self._calibrate_learning_rate(cost_only, theta, rng)
         allowed_increase = (
-            self._calibrated_allowed_increase(cost_only, theta)
-            if self.blocking
-            else 0.0
+            self._calibrate_allowed_increase(cost_only, theta) if self.blocking else 0.0
         )
         n_params = theta.shape[0]
         V_max = (
@@ -1288,7 +1286,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
 
             # --- Adapt (V, M) for the next step ---
             if k >= self.warmup and gradient_norm_squared_ema is not None:
-                V_star, M_star = self._allocation_targets(
+                V_star, M_star = self._compute_allocation_targets(
                     n_params,
                     gradient_norm_squared_ema,
                     measurement_variance_ema or 0.0,

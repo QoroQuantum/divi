@@ -72,7 +72,7 @@ def _extract_code_blocks(text: str) -> list[str]:
     return _CODE_BLOCK_RE.findall(text)
 
 
-def _safe_display(text: str) -> str:
+def _escape_markup(text: str) -> str:
     """Escape Rich markup in user/LLM content so it is shown literally."""
     return escape(str(text))
 
@@ -489,7 +489,7 @@ class DiviAIApp(App):
         event.input.value = ""
         self._update_slash_help("")
         self._append_message(
-            f"[bold #ED56E6]You:[/bold #ED56E6] {_safe_display(user_input)}",
+            f"[bold #ED56E6]You:[/bold #ED56E6] {_escape_markup(user_input)}",
             "user-msg",
         )
         self._run_query(user_input)
@@ -632,7 +632,7 @@ class DiviAIApp(App):
                 )
         except OSError as e:
             self._append_message(
-                f"[#ff5555]Failed to save: {_safe_display(str(e))}[/#ff5555]",
+                f"[#ff5555]Failed to save: {_escape_markup(str(e))}[/#ff5555]",
                 "error-msg",
             )
 
@@ -648,7 +648,7 @@ class DiviAIApp(App):
             )
         except pyperclip.PyperclipException as e:
             self._append_message(
-                f"[#ff5555]Clipboard error: {_safe_display(str(e))}[/#ff5555]",
+                f"[#ff5555]Clipboard error: {_escape_markup(str(e))}[/#ff5555]",
                 "error-msg",
             )
 
@@ -663,7 +663,7 @@ class DiviAIApp(App):
                 )
             else:
                 self._append_message(
-                    f"[#ff5555]{_safe_display(err)}[/#ff5555]", "error-msg"
+                    f"[#ff5555]{_escape_markup(err)}[/#ff5555]", "error-msg"
                 )
             return
 
@@ -683,7 +683,7 @@ class DiviAIApp(App):
                 )
             else:
                 self._append_message(
-                    f"[#ff5555]{label}: {_safe_display(err)}[/#ff5555]",
+                    f"[#ff5555]{label}: {_escape_markup(err)}[/#ff5555]",
                     "error-msg",
                 )
 
@@ -702,7 +702,7 @@ class DiviAIApp(App):
             self.history.pop()  # user
 
         self._append_message(
-            f"[bold #8be9fd]You (retry):[/bold #8be9fd] {_safe_display(last_user)}",
+            f"[bold #8be9fd]You (retry):[/bold #8be9fd] {_escape_markup(last_user)}",
             "user-msg",
         )
         self._run_query(last_user, temperature=0.4)
@@ -823,7 +823,7 @@ class DiviAIApp(App):
                 short_err = err.rpartition("\n")[2]
                 self.call_from_thread(
                     self._append_message,
-                    f"[#ff5555]  {label}: syntax error - {_safe_display(short_err)}[/#ff5555]",
+                    f"[#ff5555]  {label}: syntax error - {_escape_markup(short_err)}[/#ff5555]",
                     "error-msg",
                 )
 
@@ -882,7 +882,7 @@ class DiviAIApp(App):
             else:
                 self.call_from_thread(
                     self._append_message,
-                    f"[#ff5555]Error: {_safe_display(str(e))}[/#ff5555]",
+                    f"[#ff5555]Error: {_escape_markup(str(e))}[/#ff5555]",
                     "error-msg",
                 )
             self.call_from_thread(self._stop_thinking_indicator)

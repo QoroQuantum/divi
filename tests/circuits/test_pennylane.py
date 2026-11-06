@@ -25,7 +25,7 @@ from divi.circuits._pennylane import (
     _PL_TO_QISKIT_GATE,
     _SHAPE_HINT,
     _batch_input_argnums,
-    _fresh_symbols,
+    _create_fresh_symbols,
     _qnode_to_symbolic_qscript,
     _qscript_to_dag,
     _symbol_arg_name,
@@ -613,7 +613,7 @@ class TestSymbolizeTrainableSubset:
 
     def test_fresh_symbols_avoid_name_collision(self):
         existing = [sp.Symbol("p0") + sp.Symbol("p2")]
-        fresh = _fresh_symbols(2, existing)
+        fresh = _create_fresh_symbols(2, existing)
         names = {symbol.name for symbol in fresh}
         assert names.isdisjoint({"p0", "p2"})
         assert len(names) == 2
@@ -631,7 +631,7 @@ class TestSymbolizeTrainableSubset:
         ids=["nothing-taken", "sympy-and-qiskit-taken"],
     )
     def test_fresh_symbols_take_lowest_free_names(self, n_symbols, existing, expected):
-        assert [s.name for s in _fresh_symbols(n_symbols, existing)] == expected
+        assert [s.name for s in _create_fresh_symbols(n_symbols, existing)] == expected
 
 
 class TestQScriptToDag:

@@ -117,7 +117,7 @@ def _build_prefix_index(
     return index, lengths
 
 
-def _prefix_index_for(node: MetaCircuit) -> PrefixIndex | None:
+def _build_node_prefix_index(node: MetaCircuit) -> PrefixIndex | None:
     """Build the prefix index over ``node.qasm_bodies`` (an upstream stage's
     parked partials), or ``None`` when none are present."""
     if node.qasm_bodies:
@@ -156,7 +156,7 @@ def _lookup_or_serialize(
 
 def _serialize_circuit_bodies(node: MetaCircuit) -> tuple[tuple[tuple, str], ...]:
     """Serialize every body DAG to QASM, preferring upstream-parked partials."""
-    prefix_index = _prefix_index_for(node)
+    prefix_index = _build_node_prefix_index(node)
     return tuple(
         (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
         for tag, dag in node.circuit_bodies
@@ -320,7 +320,7 @@ class ParameterBindingStage(BundleStage):
                 out[key] = node.set_qasm_bodies(_serialize_circuit_bodies(node))
                 continue
 
-            prefix_index = _prefix_index_for(node)
+            prefix_index = _build_node_prefix_index(node)
             bound = _iterate_bodies_over_param_sets(
                 node,
                 param_sets,

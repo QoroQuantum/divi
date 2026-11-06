@@ -176,7 +176,7 @@ def _payload_from_eigh(
     }
 
 
-def _factored_truncated(
+def _truncate_factored(
     eigvals: np.ndarray, V: np.ndarray, diag_orig: np.ndarray, Q: np.ndarray
 ) -> dict | None:
     """Truncate the off-diagonal eigendecomposition with diagonal absorption.
@@ -269,7 +269,7 @@ def _serialize_qubo_factored(canonical) -> dict:
     cand_b = _payload_from_eigh(eigvals_full, V_full, np.zeros(n, dtype=np.float64), n)
 
     # Strategy C: truncated A with diagonal absorption (reuses Strategy A's eigh).
-    cand_c = _factored_truncated(eigvals_off, V_off, diag, Q)
+    cand_c = _truncate_factored(eigvals_off, V_off, diag, Q)
 
     candidates: list[tuple[dict, bool]] = [(cand_a, False), (cand_b, False)]
     if cand_c is not None:
@@ -630,7 +630,7 @@ class _Constraint(BaseModel):
 
     @field_validator("weights", mode="before")
     @classmethod
-    def _int_keys(cls, v):
+    def _coerce_int_keys(cls, v):
         """Accept the string keys a JSON round-trip produces."""
         if isinstance(v, dict):
             return {

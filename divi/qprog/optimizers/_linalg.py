@@ -9,7 +9,7 @@ import numpy.typing as npt
 from scipy.linalg import solve as _solve_linear_system
 
 
-def _regularized_solve(
+def _solve_regularized(
     grad: npt.NDArray[np.float64],
     metric: npt.NDArray[np.float64],
     *,

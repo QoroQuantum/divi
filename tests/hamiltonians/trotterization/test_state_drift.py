@@ -12,7 +12,7 @@ from scipy.linalg import expm
 
 from divi.hamiltonians.trotterization import _pauli_bits as _bits
 from divi.hamiltonians.trotterization import _state_drift
-from divi.hamiltonians.trotterization._allocation import state_drift_distribution
+from divi.hamiltonians.trotterization._allocation import fit_state_drift_distribution
 from divi.hamiltonians.trotterization._state_drift import (
     StateDriftCache,
     StateDriftDensities,
@@ -205,11 +205,11 @@ _WAIT = 10.0
 
 
 def _hold_evaluation(mocker, state, error=None):
-    """Make the first ``state.pauli_expectations`` call signal ``entered`` and
+    """Make the first ``state.compute_pauli_expectations`` call signal ``entered`` and
     wait for ``release``, then evaluate, or raise ``error`` when given; later
     calls evaluate straight away."""
     entered, release = Event(), Event()
-    evaluate = state.pauli_expectations
+    evaluate = state.compute_pauli_expectations
 
     def held(*args):
         if not entered.is_set():
@@ -219,7 +219,7 @@ def _hold_evaluation(mocker, state, error=None):
                 raise error
         return evaluate(*args)
 
-    mocker.patch.object(state, "pauli_expectations", side_effect=held)
+    mocker.patch.object(state, "compute_pauli_expectations", side_effect=held)
     return entered, release
 
 
@@ -554,7 +554,7 @@ _REAL_HAMILTONIAN = SparsePauliOp.from_list(
 
 
 def _distribution_probs(expansion, **kwargs):
-    distribution = state_drift_distribution(expansion, **kwargs)
+    distribution = fit_state_drift_distribution(expansion, **kwargs)
     return np.array(
         [distribution[label] for label in expansion.densities.terms.paulis.to_labels()]
     )

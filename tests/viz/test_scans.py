@@ -759,7 +759,7 @@ def test_resolve_2d_rejects_invalid_directions(direction_x, direction_y, match):
 )
 def test_resolve_2d_rejects_parallel_random_sample(mocker, direction_x, direction_y):
     mocker.patch(
-        "divi.viz._api._random_gaussian_direction",
+        "divi.viz._api._sample_gaussian_direction",
         return_value=np.array([2.0, 0.0, 0.0]),
     )
 

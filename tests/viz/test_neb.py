@@ -8,9 +8,9 @@ import pytest
 
 from divi.viz import GradientMethod, run_neb
 from divi.viz._gradients import (
+    _compute_finite_difference_gradients,
     _compute_gradients,
-    _finite_difference_gradients,
-    _parameter_shift_gradients,
+    _compute_parameter_shift_gradients,
 )
 from divi.viz._neb import (
     _cumulative_distances,
@@ -135,13 +135,13 @@ class TestRunNEB:
 
     def test_finite_difference_gradients_correct_for_known_function(self):
         """Verify finite-difference gradients of f(x) = x0^2 + x1^2."""
-        grads = _finite_difference_gradients(_sphere, _SPHERE_PIVOTS, eps=1e-5)
+        grads = _compute_finite_difference_gradients(_sphere, _SPHERE_PIVOTS, eps=1e-5)
 
         np.testing.assert_allclose(grads, 2.0 * _SPHERE_PIVOTS, atol=1e-8)
 
     def test_parameter_shift_gradients_correct_for_trig(self):
         """Verify parameter-shift gradients of f(x) = sin(x0) + cos(x1)."""
-        grads = _parameter_shift_gradients(_trig, _TRIG_PIVOTS)
+        grads = _compute_parameter_shift_gradients(_trig, _TRIG_PIVOTS)
 
         np.testing.assert_allclose(grads, _trig_gradient(_TRIG_PIVOTS), atol=1e-10)
 

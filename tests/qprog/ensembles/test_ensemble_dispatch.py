@@ -30,7 +30,7 @@ from rich.console import Console
 import divi.qprog.ensembles._base as ensemble_module
 from divi.backends import MaestroConfig
 from divi.backends._cancellation import _cancel_job_on_abort
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
 from divi.pipeline import PipelineEnv
 from divi.pipeline._core import _wait_for_async_result
@@ -2837,7 +2837,8 @@ class TestEnsembleCountAccounting:
         assert gradients > 0
         assert submit_vjp.call_count == gradients
         submitted_rows = sum(
-            len(bound_circuits(call.args[0])) for call in submit_circuits.call_args_list
+            len(flatten_bound_payloads(call.args[0]))
+            for call in submit_circuits.call_args_list
         ) + sum(
             len(payload.parameter_sets)
             for call in submit_vjp.call_args_list
@@ -2845,7 +2846,7 @@ class TestEnsembleCountAccounting:
         )
         assert ensemble.total_circuit_count == submitted_rows
         assert any(
-            len(bound_circuits(call.args[0])) > 1
+            len(flatten_bound_payloads(call.args[0])) > 1
             for call in submit_circuits.call_args_list
         )
         assert {key: p.best_loss for key, p in ensemble.programs.items()} == (

@@ -28,8 +28,8 @@ from divi.pipeline._dry_run_format import (
     _cadence_totals,
     _distinguishing_trait,
     _merge_group_report,
+    _merge_shared_metadata,
     _program_signature,
-    _shared_metadata,
 )
 from divi.pipeline.stages import (
     MeasurementStage,
@@ -1116,13 +1116,13 @@ def test_distinguishing_trait_names_every_difference(other, expected):
 def test_mixed_metadata_counts_only_values_beyond_three(n_values, expected):
     """Truncating the value list defeats the disclosure when a group is big enough
     to need it, so the count of hidden values is part of the row."""
-    assert _shared_metadata([{"depth": d} for d in range(n_values)]) == {
+    assert _merge_shared_metadata([{"depth": d} for d in range(n_values)]) == {
         "depth": expected
     }
 
 
 def test_a_field_missing_from_one_member_does_not_hide_later_fields():
-    assert _shared_metadata([{"a": 1, "b": 2}, {"b": 2}]) == {"b": 2}
+    assert _merge_shared_metadata([{"a": 1, "b": 2}, {"b": 2}]) == {"b": 2}
 
 
 def test_format_dry_run_accepts_a_one_column_width():

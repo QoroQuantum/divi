@@ -470,7 +470,7 @@ def merge_clusters(
     return clusters
 
 
-def _localized_active_space_integrals(
+def _build_localized_active_space_integrals(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     occupied_indices,
@@ -505,7 +505,7 @@ def _localized_active_space_integrals(
     return integrals.h_eff, integrals.g_act
 
 
-def auto_fragment_specs(
+def build_auto_fragment_specs(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_occupied: int,
@@ -598,7 +598,7 @@ def auto_fragment_specs(
     if fragment_atoms is not None:
         clusters = assign_orbitals_to_atoms(mol, localized, fragment_atoms)
     else:
-        one_body, two_body = _localized_active_space_integrals(
+        one_body, two_body = _build_localized_active_space_integrals(
             ao, mo_coeff, occupied_indices, n_occupied, localized
         )
         if coupling_threshold is None:

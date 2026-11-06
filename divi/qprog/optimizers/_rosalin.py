@@ -22,7 +22,7 @@ from ._base import Optimizer
 _PARAMETER_SHIFT = np.pi / 2
 
 
-def _icans_shots_and_gains(
+def _compute_icans_shots_and_gains(
     gradient_ema: npt.NDArray[np.float64],
     variance_ema: npt.NDArray[np.float64],
     *,
@@ -58,7 +58,7 @@ def _icans_shots_and_gains(
     return np.clip(shots, min_shots, smax), gains
 
 
-def _gcans_shots(
+def _compute_gcans_shots(
     gradient_ema: npt.NDArray[np.float64],
     variance_ema: npt.NDArray[np.float64],
     *,
@@ -124,7 +124,7 @@ def _fit_shots_to_budget(
     return minimum + allocated
 
 
-def _default_shift_rule(
+def _build_default_shift_rule(
     n_params: int,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return the conventional two-term rule for every parameter."""
@@ -138,7 +138,7 @@ def _default_shift_rule(
     return shifts, weights
 
 
-def _shift_rule_layout(
+def _resolve_shift_rule_layout(
     shifts: npt.NDArray[np.float64],
     weights: npt.NDArray[np.float64],
     n_params: int,
@@ -305,9 +305,11 @@ class RosalinOptimizer(Optimizer):
         n_params = theta.size
         if n_params == 0:
             raise ValueError("initial_params must contain at least one parameter.")
-        rule = _default_shift_rule(n_params) if shift_rule is None else shift_rule()
+        rule = (
+            _build_default_shift_rule(n_params) if shift_rule is None else shift_rule()
+        )
         rule_shifts, rule_weights = rule
-        shifts, weights, owners, evaluation_counts = _shift_rule_layout(
+        shifts, weights, owners, evaluation_counts = _resolve_shift_rule_layout(
             rule_shifts, rule_weights, n_params
         )
         uses = weights != 0
@@ -419,13 +421,13 @@ class RosalinOptimizer(Optimizer):
                 "evaluation_counts": evaluation_counts,
             }
             if self.allocation == "icans":
-                shots, _ = _icans_shots_and_gains(
+                shots, _ = _compute_icans_shots_and_gains(
                     corrected_gradient,
                     corrected_variance,
                     **allocation_kwargs,
                 )
             else:
-                shots = _gcans_shots(
+                shots = _compute_gcans_shots(
                     corrected_gradient,
                     corrected_variance,
                     **allocation_kwargs,

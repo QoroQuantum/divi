@@ -15,7 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.hamiltonians._term_ops import generate_empty_spo
 from divi.hamiltonians.trotterization import ExactTrotterization, QDrift, TrotterSpec
 from divi.hamiltonians.trotterization import _qdrift as qdrift_module
-from divi.hamiltonians.trotterization._allocation import state_drift_distribution
+from divi.hamiltonians.trotterization._allocation import fit_state_drift_distribution
 from divi.hamiltonians.trotterization._state_drift import StateDriftExpansion
 from divi.qprog.initial_states import CustomPerQubitState, DickeState, ZerosState
 from tests._helpers import exact_match
@@ -232,7 +232,7 @@ class TestQDrift:
         strategy.process_hamiltonian(
             _state_drift_spec(state, observable, time=0.2), n_steps=n_steps, rng=rng
         )
-        expected = state_drift_distribution(
+        expected = fit_state_drift_distribution(
             StateDriftExpansion.compute(_STATE_DRIFT_HAMILTONIAN, observable, state),
             time=0.2,
             n_samples=2 * n_steps,
@@ -263,7 +263,7 @@ class TestQDrift:
         assert wrapped.sampled_terms == bare.sampled_terms
 
     def test_state_drift_batch_draws_from_one_distribution(self, mocker):
-        spy = mocker.spy(qdrift_module, "state_drift_distribution")
+        spy = mocker.spy(qdrift_module, "fit_state_drift_distribution")
         results = QDrift(
             sampling_budget=2, seed=3, sampling_strategy="state_drift"
         ).process_hamiltonian_batch(

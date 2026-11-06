@@ -16,9 +16,9 @@ from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import RosalinOptimizer
 from divi.qprog.optimizers._rosalin import (
+    _compute_gcans_shots,
+    _compute_icans_shots_and_gains,
     _fit_shots_to_budget,
-    _gcans_shots,
-    _icans_shots_and_gains,
 )
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
@@ -137,7 +137,7 @@ def test_optimizer_contract(optimizer_contract):
 
 
 def test_icans_allocation_matches_the_paper_formula():
-    shots, gains = _icans_shots_and_gains(
+    shots, gains = _compute_icans_shots_and_gains(
         gradient_ema=np.array([2.0, 1.0]),
         variance_ema=np.array([4.0, 1.0]),
         learning_rate=0.2,
@@ -168,7 +168,7 @@ def test_icans_caps_low_gain_flat_direction_at_best_gain_allocation(min_shots):
     factor = 2 * lipschitz * learning_rate / (2 - lipschitz * learning_rate)
     variances = raw_proposals * (np.square(gradients) + bias) / factor
 
-    shots, gains = _icans_shots_and_gains(
+    shots, gains = _compute_icans_shots_and_gains(
         gradients,
         variances,
         learning_rate=learning_rate,
@@ -187,7 +187,7 @@ def test_gcans_allocation_matches_the_paper_formula():
     gradients = np.array([2.0, 1.0])
     variances = np.array([400.0, 100.0])
 
-    shots = _gcans_shots(
+    shots = _compute_gcans_shots(
         gradients,
         variances,
         learning_rate=0.2,
@@ -208,7 +208,7 @@ def test_gcans_allocation_matches_the_paper_formula():
 
 
 def test_gcans_accounts_for_generalized_shift_evaluation_costs():
-    shots = _gcans_shots(
+    shots = _compute_gcans_shots(
         np.array([0.2, 0.2]),
         np.array([1.0, 1.0]),
         learning_rate=0.1,
@@ -848,7 +848,7 @@ def test_rosalin_ema_bias_correction_and_bias_decay_drive_the_allocation():
 
 
 def test_icans_caps_at_the_shot_count_of_the_best_gain_per_evaluation():
-    shots, gains = _icans_shots_and_gains(
+    shots, gains = _compute_icans_shots_and_gains(
         gradient_ema=np.array([1.0, 1.0]),
         variance_ema=np.array([100.0, 400.0]),
         learning_rate=0.1,
@@ -868,7 +868,10 @@ def test_icans_caps_at_the_shot_count_of_the_best_gain_per_evaluation():
 
 @pytest.mark.parametrize(
     "allocate",
-    [lambda **kwargs: _icans_shots_and_gains(**kwargs)[0], _gcans_shots],
+    [
+        lambda **kwargs: _compute_icans_shots_and_gains(**kwargs)[0],
+        _compute_gcans_shots,
+    ],
     ids=["icans", "gcans"],
 )
 @pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")
@@ -889,7 +892,7 @@ def test_gcans_rejects_a_non_positive_evaluation_count():
     with pytest.raises(
         ValueError, match=exact_match("evaluation_counts must be positive.")
     ):
-        _gcans_shots(
+        _compute_gcans_shots(
             np.ones(2),
             np.ones(2),
             learning_rate=0.1,

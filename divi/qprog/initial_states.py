@@ -79,7 +79,7 @@ class InitialState(ABC):
         their axis; ``None`` for any other state."""
         return None
 
-    def pauli_expectations(
+    def compute_pauli_expectations(
         self, terms: PauliList, n_qubits: int
     ) -> npt.NDArray[np.floating]:
         """Expectation value of each Pauli string in ``terms`` in this state
@@ -138,7 +138,7 @@ class _ProductState(InitialState):
         chars = np.array(list(self._state_string(n_qubits)))
         return np.isin(chars, ("0", "1")), np.isin(chars, ("1", "-"))
 
-    def pauli_expectations(
+    def compute_pauli_expectations(
         self, terms: PauliList, n_qubits: int
     ) -> npt.NDArray[np.floating]:
         along_z, flipped = self.product_masks(n_qubits)

@@ -36,12 +36,12 @@ from divi.qprog.ensembles.lassqd._integrals import (
     AOIntegrals,
     assemble_active_rdms,
     build_active_permutation,
-    fragment_effective_integrals,
+    build_fragment_effective_integrals,
     transform_integrals,
 )
 from divi.qprog.ensembles.lassqd._orbital_solvers import (
-    ciah_orbital_solve,
     optimize_orbitals,
+    solve_orbitals_ciah,
 )
 from divi.qprog.ensembles.lassqd._sqd import (
     _DENSE_MAX_DIM,
@@ -116,7 +116,7 @@ def fragment_integrals(ensemble, mo_coeff, fragments, index):
     integrals = transform_integrals(
         AOIntegrals.of(ensemble._mol), mo_coeff, n_core, n_act
     )
-    return fragment_effective_integrals(integrals, fragments, index)
+    return build_fragment_effective_integrals(integrals, fragments, index)
 
 
 def fragment_problem(h_alpha, h_beta, g_frag, spec):
@@ -133,7 +133,7 @@ def fragment_problem(h_alpha, h_beta, g_frag, spec):
 def embedded_fragment_ccsd(h_eff, g_frag, spec):
     """CCSD on a fragment's effective integrals, in the fragment's own basis.
 
-    Mirrors the embedded mean field ``_ccsd_seed_params`` builds internally,
+    Mirrors the embedded mean field ``_compute_ccsd_seed_params`` builds internally,
     including its identity ``mo_coeff``.
     """
     n_orb = spec.n_orbitals
@@ -326,9 +326,9 @@ def orbital_rotation_case():
     )
 
 
-#: ``ciah_orbital_solve`` under ``SecondOrderOrbitalUpdate``'s default cap.
+#: ``solve_orbitals_ciah`` under ``SecondOrderOrbitalUpdate``'s default cap.
 capped_ciah_orbital_solve = partial(
-    ciah_orbital_solve, max_iterations=SecondOrderOrbitalUpdate().max_iterations
+    solve_orbitals_ciah, max_iterations=SecondOrderOrbitalUpdate().max_iterations
 )
 
 

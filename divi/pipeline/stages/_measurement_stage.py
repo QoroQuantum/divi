@@ -18,10 +18,10 @@ from divi.pipeline._grouping import (
     BACKEND_EXPVAL,
     BACKEND_EXPVAL_GROUPS,
     GroupingStrategy,
+    _build_observable_union,
     _compute_measurement_groups,
     _create_postprocessing_fn,
     _ResolvedGroupingStrategy,
-    _union_labels,
 )
 from divi.pipeline._postprocessing import (
     _counts_to_cost_variance,
@@ -742,7 +742,7 @@ class MeasurementStage(BundleStage):
                     )
 
             if strategy in _SHADOW_STRATEGIES:
-                union_obs, per_obs_term_indices, labels = _union_labels(
+                union_obs, per_obs_term_indices, labels = _build_observable_union(
                     observable, meta.n_qubits
                 )
                 codes = _encode_paulis(union_obs.paulis)

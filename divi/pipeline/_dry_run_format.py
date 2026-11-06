@@ -35,7 +35,7 @@ from divi.pipeline._preprocessor import PipelineCadence
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def _safe_text(value: Any) -> str:
+def _render_safe_text(value: Any) -> str:
     """Render a caller-supplied label: escape rich markup, make control characters
     visible so a newline cannot forge a tree row and an escape byte cannot emit
     live ANSI."""
@@ -126,27 +126,29 @@ def _populate_pipeline_node(
     group's envelope from :func:`_aggregate_group_stats`.
     """
     for idx, stage in enumerate(report.stages):
-        axis_str = f" [dim]\\[{_safe_text(stage.axis)}][/dim]" if stage.axis else ""
+        axis_str = (
+            f" [dim]\\[{_render_safe_text(stage.axis)}][/dim]" if stage.axis else ""
+        )
         line_token, total_token, total_op = _format_factor(stage.factor)
 
         # Spec stage is the source, not a multiplier — bare number on its line.
         display_token = total_token if idx == 0 and total_op == "×" else line_token
         stage_node = node.add(
-            f"[cyan]{_safe_text(stage.name)}[/cyan]{axis_str} → {display_token}"
+            f"[cyan]{_render_safe_text(stage.name)}[/cyan]{axis_str} → {display_token}"
         )
 
         for key, val in stage.metadata.items():
-            label = _safe_text(key)
+            label = _render_safe_text(key)
             # A two-element sequence renders as a range.
             if isinstance(val, (list, tuple)) and len(val) == 2:
                 stage_node.add(
-                    f"[green]{label}: {_safe_text(val[0])} .. "
-                    f"{_safe_text(val[1])}[/green]"
+                    f"[green]{label}: {_render_safe_text(val[0])} .. "
+                    f"{_render_safe_text(val[1])}[/green]"
                 )
             elif isinstance(val, Real) and not isinstance(val, (bool, Integral)):
                 stage_node.add(f"[green]{label}: {val:.4f}[/green]")
             else:
-                stage_node.add(f"[green]{label}: {_safe_text(val)}[/green]")
+                stage_node.add(f"[green]{label}: {_render_safe_text(val)}[/green]")
 
     expr = _total_expression(report)
     # Shown only when the factors multiply out to the total.
@@ -194,7 +196,7 @@ def _populate_pipeline_node(
 def _render_reports(reports: Mapping[str, DryRunReport], console: Console) -> None:
     """Print one rich tree per pipeline — the single-program layout."""
     for report in reports.values():
-        tree = Tree(f"[bold]{_safe_text(report.pipeline_name)}[/bold]")
+        tree = Tree(f"[bold]{_render_safe_text(report.pipeline_name)}[/bold]")
         _populate_pipeline_node(tree, report, report.circuit_stats)
         console.print(tree)
         console.print()
@@ -206,7 +208,7 @@ def _populate_program_tree(root: Tree, reports: Mapping[str, DryRunReport]) -> N
         root.add(_NO_PREPROCESSORS_ROW)
         return
     for report in reports.values():
-        node = root.add(f"[bold]{_safe_text(report.pipeline_name)}[/bold]")
+        node = root.add(f"[bold]{_render_safe_text(report.pipeline_name)}[/bold]")
         _populate_pipeline_node(node, report, report.circuit_stats)
 
 
@@ -285,8 +287,8 @@ def _ensemble_total_line(nested: EnsembleReports) -> str:
 
 def _ids_preview(ids: Sequence[Hashable]) -> str:
     if len(ids) <= 3:
-        return ", ".join(_safe_text(i) for i in ids)
-    return f"{_safe_text(ids[0])} … {_safe_text(ids[-1])}"
+        return ", ".join(_render_safe_text(i) for i in ids)
+    return f"{_render_safe_text(ids[0])} … {_render_safe_text(ids[-1])}"
 
 
 def _ensemble_header(nested: EnsembleReports) -> str:
@@ -358,7 +360,7 @@ def _render_compact(nested: EnsembleReports, console: Console) -> None:
             if v is not None
         ]
         shape_tag = f"  [dim]({', '.join(shape)})[/dim]" if shape else ""
-        prog_node = root.add(f"{_safe_text(program_id)}{shape_tag}")
+        prog_node = root.add(f"{_render_safe_text(program_id)}{shape_tag}")
         if not reports:
             prog_node.add(_NO_PREPROCESSORS_ROW)
         for name, report in reports.items():
@@ -374,7 +376,9 @@ def _render_compact(nested: EnsembleReports, console: Console) -> None:
             if _has_sampled_count(report):
                 # Compact drops the stage metadata that says so elsewhere.
                 once += "  [dim]sampled count[/dim]"
-            prog_node.add(f"[cyan]{_safe_text(name)}[/cyan]: {headline}{detail}{once}")
+            prog_node.add(
+                f"[cyan]{_render_safe_text(name)}[/cyan]: {headline}{detail}{once}"
+            )
     root.add(_ensemble_total_line(nested))
     console.print(root)
 
@@ -382,7 +386,7 @@ def _render_compact(nested: EnsembleReports, console: Console) -> None:
 def _render_verbose(nested: EnsembleReports, console: Console) -> None:
     console.print(_ensemble_header(nested))
     for program_id, reports in nested.items():
-        root = Tree(f"[bold]{_safe_text(program_id)}[/bold]")
+        root = Tree(f"[bold]{_render_safe_text(program_id)}[/bold]")
         _populate_program_tree(root, reports)
         console.print(root)
         console.print()
@@ -456,7 +460,7 @@ def _has_sampled_count(report: DryRunReport) -> bool:
     )
 
 
-def _shared_metadata(metas: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _merge_shared_metadata(metas: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Merge group members' metadata, marking fields they disagree on.
 
     A field present and equal everywhere passes through unchanged. A field whose
@@ -496,7 +500,7 @@ def _merge_group_report(reports: Sequence[DryRunReport]) -> DryRunReport:
     merged_stages = []
     # Members share a stage sequence by construction: _program_signature keys on it.
     for aligned in zip(*(r.stages for r in reports)):
-        metadata = _shared_metadata([stage.metadata for stage in aligned])
+        metadata = _merge_shared_metadata([stage.metadata for stage in aligned])
         factors = {stage.factor for stage in aligned}
         if len(factors) > 1:
             metadata = {
@@ -604,7 +608,7 @@ def _render_grouped(nested: EnsembleReports, console: Console) -> None:
         for name in rep_reports:
             group = [m[name] for m in members]
             merged = _merge_group_report(group)
-            node = root.add(f"[bold]{_safe_text(merged.pipeline_name)}[/bold]")
+            node = root.add(f"[bold]{_render_safe_text(merged.pipeline_name)}[/bold]")
             _populate_pipeline_node(node, merged, _aggregate_group_stats(group))
         root.add(
             _cadence_summary(f"Subtotal (× {count})", [rep_reports], multiplier=count)

@@ -12,7 +12,7 @@ from ._conversions import (
     measurement_qasms_from_groups,
 )
 from ._fidelity import build_overlap_meta
-from ._payloads import CircuitPayload, bound_circuits
+from ._payloads import CircuitPayload, flatten_bound_payloads
 from ._qasm_template import (
     QASMTemplate,
     build_template,
@@ -33,7 +33,7 @@ __all__ = [
     "MetaCircuit",
     "QASMTag",
     "QASMTemplate",
-    "bound_circuits",
+    "flatten_bound_payloads",
     "build_overlap_meta",
     "build_template",
     "dag_to_qasm_body",

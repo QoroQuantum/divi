@@ -81,7 +81,7 @@ def is_bound(payloads: Sequence[CircuitPayload]) -> bool:
     return all(not payload.parameters for payload in payloads)
 
 
-def bound_circuits(
+def flatten_bound_payloads(
     payloads: Sequence[CircuitPayload] | CircuitBatch,
 ) -> dict[str, str]:
     """Flatten already-bound QASM payloads to the ``label -> circuit`` mapping.
@@ -95,10 +95,10 @@ def bound_circuits(
             parametric payload shares one unresolved template, so they would
             all map to the same circuit rather than to their own.
     """
-    payloads = as_payloads(payloads)
+    payloads = normalise_to_payloads(payloads)
     if not is_bound(payloads):
         raise ValueError(
-            "bound_circuits needs resolved payloads, but one still carries free "
+            "flatten_bound_payloads needs resolved payloads, but one still carries free "
             "parameters. Its rows share a single unresolved template, so the "
             "mapping would submit the same circuit under every label."
         )
@@ -109,8 +109,8 @@ def bound_circuits(
     }
 
 
-def bound_payloads(circuits: CircuitBatch) -> list[CircuitPayload]:
-    """Wrap resolved circuits as single-row payloads — inverse of :func:`bound_circuits`.
+def wrap_bound_circuits(circuits: CircuitBatch) -> list[CircuitPayload]:
+    """Wrap resolved circuits as single-row payloads — inverse of :func:`flatten_bound_payloads`.
 
     Sequences are labelled by positional index; Qiskit circuits are exported to
     OpenQASM 2.
@@ -130,7 +130,7 @@ def bound_payloads(circuits: CircuitBatch) -> list[CircuitPayload]:
     ]
 
 
-def as_payloads(
+def normalise_to_payloads(
     submitted: Sequence[CircuitPayload] | CircuitBatch,
 ) -> Sequence[CircuitPayload]:
     """Normalise a submission argument to :class:`CircuitPayload` objects.
@@ -149,13 +149,13 @@ def as_payloads(
             "would otherwise be iterated character by character."
         )
     if isinstance(submitted, Mapping):
-        return bound_payloads(submitted)
+        return wrap_bound_circuits(submitted)
 
     items = list(submitted)
     payloads = [item for item in items if isinstance(item, CircuitPayload)]
     circuits = [item for item in items if not isinstance(item, CircuitPayload)]
     if not payloads:
-        return bound_payloads(circuits)
+        return wrap_bound_circuits(circuits)
     if circuits:
         raise TypeError(
             "A sequence must hold either CircuitPayloads or circuits, not both."

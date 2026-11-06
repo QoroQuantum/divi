@@ -88,7 +88,7 @@ class OrbitalSolution:
     n_rotation_pairs: int
 
 
-def rotation_energy_gradient_fn(
+def build_rotation_energy_gradient_fn(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
@@ -128,7 +128,7 @@ def rotation_energy_gradient_fn(
         ImportError: If the ``chem`` extra is not installed.
     """
     pairs = rotation_pairs(mo_coeff.shape[1], n_core, fragment_specs)
-    rows, cols = pair_indices(pairs)
+    rows, cols = split_pair_indices(pairs)
 
     def energy_and_gradient(
         rotation_params: np.ndarray,
@@ -192,7 +192,7 @@ def rotation_pairs(
     return pairs
 
 
-def pair_indices(
+def split_pair_indices(
     rotation_pairs: Sequence[tuple[int, int]],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Split rotation pairs into row and column index arrays."""
@@ -227,7 +227,7 @@ def optimize_orbitals(
     Minimises the energy with L-BFGS-B over the angles of an orbital rotation
     on :func:`rotation_pairs` -- core-active, core-virtual, active-active across
     fragments, and active-virtual -- using the analytic gradient of
-    :func:`rotation_energy_gradient_fn`, one four-index MO transform per
+    :func:`build_rotation_energy_gradient_fn`, one four-index MO transform per
     iteration. Rotations within a fragment are excluded because its RDM is only
     valid in its current orbital basis.
 
@@ -274,7 +274,7 @@ def optimize_orbitals(
     n_orb_total = mo_coeff.shape[1]
     fixed = (n_core, fragment_specs, rdm1_active, rdm2_active)
 
-    pairs, energy_and_gradient = rotation_energy_gradient_fn(ao, mo_coeff, *fixed)
+    pairs, energy_and_gradient = build_rotation_energy_gradient_fn(ao, mo_coeff, *fixed)
     n_rot = len(pairs)
     best_energy, best_gradient = energy_and_gradient(np.zeros(n_rot))
     rotated_mo_coeff = mo_coeff
@@ -282,7 +282,7 @@ def optimize_orbitals(
     n_evaluations = 1
     stop_reason = "no rotation freedom"
     if n_rot > 0:
-        rows, cols = pair_indices(pairs)
+        rows, cols = split_pair_indices(pairs)
         started = time.monotonic()
         latest_gradient_norm = float(np.linalg.norm(best_gradient))
 
@@ -302,7 +302,7 @@ def optimize_orbitals(
                     f"{latest_gradient_norm:.2e}, {time.monotonic() - started:.0f} s"
                 )
 
-        # The first pass runs even within tolerance, as ciah_orbital_solve's
+        # The first pass runs even within tolerance, as solve_orbitals_ciah's
         # first step does.
         for restart in range(_MAX_RESTARTS):
             if restart and np.linalg.norm(best_gradient) <= gradient_tol:
@@ -327,7 +327,7 @@ def optimize_orbitals(
             rotated_mo_coeff = rotated_mo_coeff @ scipy.linalg.expm(
                 rotation_generator(rows, cols, res.x, n_orb_total)
             )
-            _, energy_and_gradient = rotation_energy_gradient_fn(
+            _, energy_and_gradient = build_rotation_energy_gradient_fn(
                 ao, rotated_mo_coeff, *fixed
             )
             best_energy, best_gradient = energy_and_gradient(np.zeros(n_rot))
@@ -411,7 +411,7 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
         self._n_core = n_core
         self._rdm1_active = rdm1_active
         self._rdm2_active = rdm2_active
-        self._rows, self._cols = pair_indices(
+        self._rows, self._cols = split_pair_indices(
             rotation_pairs(self.norb, n_core, fragment_specs)
         )
         self.evaluations = 0
@@ -506,7 +506,7 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
         )
 
 
-def ciah_orbital_solve(
+def solve_orbitals_ciah(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
@@ -687,7 +687,7 @@ def escape_orbital_saddle(
     return (mo_coeff @ best_rotation, float(best_energy)), True
 
 
-def abelian_molecule(mol):
+def to_abelian_molecule(mol):
     """``mol``, or for a linear molecule a copy that works in D2h or C2v.
 
     PySCF pairs a linear molecule's degenerate orbitals by their energies,
@@ -709,7 +709,7 @@ def orbital_irreps(mol, mo_coeff: np.ndarray) -> np.ndarray | None:
         return None
     try:
         return hf_symm.get_orbsym(
-            abelian_molecule(mol), mo_coeff, mol.intor_symmetric("int1e_ovlp"), True
+            to_abelian_molecule(mol), mo_coeff, mol.intor_symmetric("int1e_ovlp"), True
         )
     except ValueError:
         return None
@@ -746,7 +746,7 @@ def _broken_symmetry(
     return None
 
 
-def state_averaged_orbital_solve(
+def solve_state_averaged_orbitals(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
@@ -796,7 +796,7 @@ def state_averaged_orbital_solve(
     keeps_symmetry = orbital_irreps(mol, mo_coeff) is not None
     if keeps_symmetry:
         casscf = mcscf.mc1step_symm.SymAdaptedCASSCF(
-            _exact_mean_field(replace(ao, mol=abelian_molecule(mol))),
+            _exact_mean_field(replace(ao, mol=to_abelian_molecule(mol))),
             n_active,
             nelec,
             n_core,
@@ -852,7 +852,7 @@ def state_averaged_orbital_solve(
         )
 
     rdm1, rdm2 = casscf.fcisolver.make_rdm12(casscf.ci, n_active, nelec)
-    pairs, energy_and_gradient = rotation_energy_gradient_fn(
+    pairs, energy_and_gradient = build_rotation_energy_gradient_fn(
         ao, casscf.mo_coeff, n_core, [spec], rdm1, rdm2
     )
     energy, gradient = energy_and_gradient(np.zeros(len(pairs)))

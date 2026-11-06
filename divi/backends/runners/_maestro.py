@@ -25,13 +25,13 @@ from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
 from divi.backends._config import describe_unknown, reject_unknown_reset
 from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
-from divi.backends._shot_allocation import per_circuit_or_none
+from divi.backends._shot_allocation import expand_shot_groups
 from divi.circuits._conversions import (
     _format_bound_param,
     _sparse_pauli_op_to_ham_string,
     lower_to_basis_gates,
 )
-from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
+from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
 from divi.circuits._qasm_template import build_template, render_template
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
@@ -661,7 +661,7 @@ class MaestroSimulator(CircuitRunner):
         )
         self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 
-        circuits = bound_circuits(payloads)
+        circuits = flatten_bound_payloads(payloads)
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
         if ham_ops is not None:
@@ -685,7 +685,7 @@ class MaestroSimulator(CircuitRunner):
             noise_kwargs = config._noise_realization_kwargs()
 
         base_config = config._simulator_config()
-        per_circuit_shots = per_circuit_or_none(shot_groups, len(circuit_labels))
+        per_circuit_shots = expand_shot_groups(shot_groups, len(circuit_labels))
         if ham_ops is not None:
             per_circuit_terms = ham_ops_terms_per_circuit(
                 len(circuit_labels), ham_ops, circuit_ham_map
@@ -798,7 +798,7 @@ class MaestroSimulator(CircuitRunner):
             for qubit in lowered.qubits:
                 if qubit not in active:
                     lowered.rz(0.0, qubit)
-        (qasm,) = bound_circuits([lowered]).values()
+        (qasm,) = flatten_bound_payloads([lowered]).values()
         amplitudes = maestro.get_statevector(
             maestro.QasmToCirc().parse_and_translate(qasm),
             config=self.maestro_config._simulator_config(),

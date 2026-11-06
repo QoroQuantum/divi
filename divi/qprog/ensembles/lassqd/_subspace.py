@@ -21,12 +21,12 @@ from ._integrals import AOIntegrals, _exact_mean_field
 from ._sqd import (
     ci_string_to_int,
     compute_spatial_rdms,
-    lowest_roots,
-    projected_matrices,
+    project_onto_determinants,
     resolves_spin,
-    sci_vector,
-    spin_orbital_integrals,
+    solve_lowest_roots,
+    spatial_to_spin_integrals,
     subspace_determinants,
+    to_sci_vector,
 )
 from ._state import (
     ElectronicState,
@@ -95,14 +95,14 @@ class _SubspaceCI(selected_ci.SelectedCI):
         self, h1e, eri, norb: int, ecore: float = 0.0
     ) -> tuple[list[float], list[np.ndarray]]:
         """Every root's energy and CI vector, as lists whatever ``nroots``."""
-        h_spin, g_spin = spin_orbital_integrals(
+        h_spin, g_spin = spatial_to_spin_integrals(
             np.asarray(h1e), ao2mo.restore(1, eri, norb), norb
         )
-        h_proj, s2_proj = projected_matrices(*self._dets, h_spin, g_spin, norb)
+        h_proj, s2_proj = project_onto_determinants(*self._dets, h_spin, g_spin, norb)
         deviation = s2_proj - self._spin * (self._spin + 1.0) * scipy.sparse.eye_array(
             len(self._dets[0]), format="csr"
         )
-        _, vectors = lowest_roots(
+        _, vectors = solve_lowest_roots(
             h_proj,
             deviation,
             self._lambda_penalty,
@@ -182,7 +182,7 @@ def _subspace_roots(
             index += 1
 
 
-def subspace_wavefunctions(
+def solve_subspace_wavefunctions(
     ao: AOIntegrals, subspace: _SampledSubspace, n_core: int
 ) -> tuple[StateWavefunction, ...]:
     """Each requested state of ``subspace`` at its orbitals, with its CI vector
@@ -211,7 +211,7 @@ def subspace_wavefunctions(
     return tuple(wavefunctions)
 
 
-def subspace_nevpt2(
+def compute_subspace_nevpt2(
     ao: AOIntegrals, subspace: _SampledSubspace, n_core: int
 ) -> tuple[tuple[ElectronicState, float], ...]:
     """Each requested state of ``subspace`` at its orbitals with its strongly
@@ -237,7 +237,7 @@ def subspace_nevpt2(
         casci.verbose = 0
         casci.mo_coeff = subspace.mo_coeff
         casci.ci = selected_ci.to_fci(
-            sci_vector(strings_alpha, strings_beta, amplitudes), n_active, nelec
+            to_sci_vector(strings_alpha, strings_beta, amplitudes), n_active, nelec
         )
         corrections.append((state, float(mrpt.NEVPT(casci).kernel())))
     return tuple(corrections)
@@ -345,7 +345,7 @@ def _root_overlaps(
         )
 
 
-def state_transitions(
+def compute_state_transitions(
     mol, wavefunctions: Sequence[StateWavefunction]
 ) -> tuple[StateTransition, ...]:
     """Every pair of same-multiplicity states' one-electron transition, the
@@ -363,8 +363,8 @@ def state_transitions(
             continue
         nelec = (lower.strings_alpha[0].count("1"), lower.strings_beta[0].count("1"))
         transition_rdm1 = selected_ci.trans_rdm1(
-            sci_vector(upper.strings_alpha, upper.strings_beta, upper.amplitudes),
-            sci_vector(lower.strings_alpha, lower.strings_beta, lower.amplitudes),
+            to_sci_vector(upper.strings_alpha, upper.strings_beta, upper.amplitudes),
+            to_sci_vector(lower.strings_alpha, lower.strings_beta, lower.amplitudes),
             n_active,
             nelec,
         )

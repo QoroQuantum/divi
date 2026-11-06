@@ -19,12 +19,12 @@ from divi.qprog.ensembles.lassqd import _preparation as preparation
 from divi.qprog.ensembles.lassqd._preparation import (
     LUCJFragmentProgram,
     LUCJPreparation,
-    _fragment_rohf,
+    _solve_fragment_rohf,
     build_lucj_circuit,
-    fragment_coupled_cluster,
-    paper_lucj_interaction_pairs,
+    build_paper_lucj_interaction_pairs,
     prepare_lucj_fragment,
     rotate_rdms_to_fragment_basis,
+    run_fragment_coupled_cluster,
 )
 from divi.qprog.ensembles.lassqd._state import FragmentSpec
 from divi.qprog.problems import MolecularProblem
@@ -47,10 +47,11 @@ def _patch_linear_method(mocker, optimum):
 def _patch_mean_field_and_ccsd(mocker, mo_coeff, t1, t2):
     """Stub the fragment ROHF and CCSD solves with fixed results."""
     mocker.patch(
-        f"{_PREPARATION}._fragment_rohf", return_value=mocker.Mock(mo_coeff=mo_coeff)
+        f"{_PREPARATION}._solve_fragment_rohf",
+        return_value=mocker.Mock(mo_coeff=mo_coeff),
     )
     mocker.patch(
-        f"{_PREPARATION}.fragment_coupled_cluster",
+        f"{_PREPARATION}.run_fragment_coupled_cluster",
         return_value=mocker.Mock(t1=t1, t2=t2),
     )
 
@@ -74,7 +75,7 @@ def _two_orbital_problem(spec):
 
 
 def test_paper_lucj_interaction_pairs_match_the_reference_topology():
-    assert paper_lucj_interaction_pairs(6) == (
+    assert build_paper_lucj_interaction_pairs(6) == (
         [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
         [(0, 0), (4, 4)],
         [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
@@ -83,7 +84,7 @@ def test_paper_lucj_interaction_pairs_match_the_reference_topology():
 
 def _identity_lucj_operator(norb):
     """The paper-topology LUCJ operator at zero parameters, i.e. the identity."""
-    pairs = paper_lucj_interaction_pairs(norb)
+    pairs = build_paper_lucj_interaction_pairs(norb)
     n_params = ffsim.UCJOpSpinUnbalanced.n_params(
         norb,
         1,
@@ -149,7 +150,7 @@ def test_lucj_circuit_merges_orbital_rotations_without_changing_the_state(
     default_test_simulator,
 ):
     norb, nelec = 4, (3, 1)
-    pairs = paper_lucj_interaction_pairs(norb)
+    pairs = build_paper_lucj_interaction_pairs(norb)
     n_params = ffsim.UCJOpSpinUnbalanced.n_params(
         norb, 1, interaction_pairs=pairs, with_final_orbital_rotation=True
     )
@@ -190,7 +191,7 @@ def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
     assert isinstance(call.args[0], tuple)
     assert isinstance(call.kwargs["t1"], tuple)
     assert call.kwargs["n_reps"] == 1
-    assert call.kwargs["interaction_pairs"] == paper_lucj_interaction_pairs(2)
+    assert call.kwargs["interaction_pairs"] == build_paper_lucj_interaction_pairs(2)
     assert call.kwargs["optimize"] is True
     assert minimize.call_count == 1
     np.testing.assert_allclose(result.params, minimize.call_args.kwargs["x0"])
@@ -239,7 +240,7 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
         _antisymmetric_t2(rng),
     )
     spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
-    pairs = paper_lucj_interaction_pairs(4)
+    pairs = build_paper_lucj_interaction_pairs(4)
     dense_masked = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
         t2,
         t1=t1,
@@ -273,7 +274,7 @@ def test_fragment_rohf_reaches_the_ground_state_of_a_spin_polarised_iron_fragmen
     n_alpha, n_beta = (int(count) for count in data["nelec"])
     spec = FragmentSpec(orbitals=tuple(range(5)), n_alpha=n_alpha, n_beta=n_beta)
 
-    mean_field = _fragment_rohf(data["one_body"], data["two_body"], spec)
+    mean_field = _solve_fragment_rohf(data["one_body"], data["two_body"], spec)
 
     _, stable = preparation.stability.rohf_internal(
         mean_field, with_symmetry=False, return_status=True
@@ -308,7 +309,7 @@ def test_fragment_rohf_retries_unconverged_scf_with_newton(mocker, newton_conver
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
 
     def solve():
-        return _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+        return _solve_fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
 
     if newton_converges:
         assert solve() is newton_solver
@@ -424,7 +425,9 @@ def test_fragment_rohf_keeps_the_lowest_converged_solution(mocker):
     _patch_rohf_starts(mocker, starts=[_ONE_START] * 3)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    assert _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec) is low
+    assert (
+        _solve_fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec) is low
+    )
 
 
 def _descending_solver(mocker):
@@ -445,7 +448,7 @@ def test_fragment_rohf_reoptimises_from_an_unstable_solution(mocker):
     _patch_rohf_starts(mocker, stability=[(rotated, False), (rotated, True)])
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+    _solve_fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
 
     assert solver.kernel.call_count == 2
     solver.make_rdm1.assert_called_once_with(rotated, solver.mo_occ)
@@ -469,7 +472,7 @@ def test_fragment_rohf_rejects_an_unstable_or_unconverged_restart(
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
     with pytest.raises(RuntimeError, match="ROHF did not converge"):
-        _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+        _solve_fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
 
 
 def test_fragment_rohf_accepts_an_instability_that_lowers_nothing(mocker):
@@ -479,7 +482,10 @@ def test_fragment_rohf_accepts_an_instability_that_lowers_nothing(mocker):
     _patch_rohf_starts(mocker, stability=lambda mean_field, **_: (np.eye(2), False))
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    assert _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec) is solver
+    assert (
+        _solve_fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+        is solver
+    )
     assert solver.kernel.call_count == 2
 
 
@@ -489,7 +495,7 @@ def test_fragment_rohf_uses_positive_local_spin_for_beta_majority(mocker):
     _patch_rohf_starts(mocker)
     spec = FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=2)
 
-    _fragment_rohf(
+    _solve_fragment_rohf(
         np.diag([-1.0, -0.5, 0.5]),
         np.zeros((3, 3, 3, 3)),
         spec,
@@ -550,7 +556,7 @@ def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
-        result = fragment_coupled_cluster(ccsd, "UCCSD", mean_field, spec)
+        result = run_fragment_coupled_cluster(ccsd, "UCCSD", mean_field, spec)
 
     ccsd.assert_called_once_with(mean_field)
     assert coupled_cluster.max_cycle == 500

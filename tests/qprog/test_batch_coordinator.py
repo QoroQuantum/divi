@@ -19,7 +19,7 @@ from divi.backends import (
     JobStatus,
     JobTimedOutError,
 )
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.exceptions import ExecutionCancelledError
 from divi.qprog._batch_coordinator import (
     _BATCH_COLORS,
@@ -64,7 +64,7 @@ class FakeSyncBackend(CircuitRunner):
         return False
 
     def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
-        circuits = bound_circuits(payloads)
+        circuits = flatten_bound_payloads(payloads)
         self.submitted.append(circuits)
         results = [
             {"label": label, "results": {"00": self._shots}} for label in circuits
@@ -84,7 +84,7 @@ class FakeExpvalBackend(CircuitRunner):
         return True
 
     def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
-        circuits = bound_circuits(payloads)
+        circuits = flatten_bound_payloads(payloads)
         self.call_log.append((circuits, dict(kwargs)))
         results = [{"label": label, "results": {"expval": 0.5}} for label in circuits]
         return ExecutionResult(results=results)

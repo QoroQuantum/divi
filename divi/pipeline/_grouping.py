@@ -123,7 +123,7 @@ def _create_postprocessing_fn(
     return postprocessing_fn
 
 
-def _union_labels(
+def _build_observable_union(
     observable: Sequence[SparsePauliOp], n_qubits: int
 ) -> tuple[SparsePauliOp, list[list[int]], list[str]]:
     """Flatten an observable tuple into its deduplicated union.
@@ -180,7 +180,9 @@ def _compute_measurement_groups(
         indices of its Pauli terms, as :func:`_create_postprocessing_fn`
         takes them.
     """
-    union, per_obs_term_indices, be_labels = _union_labels(observable, n_qubits)
+    union, per_obs_term_indices, be_labels = _build_observable_union(
+        observable, n_qubits
+    )
     n_union_terms = len(be_labels)
 
     if strategy in ("qwc", "default"):

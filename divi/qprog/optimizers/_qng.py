@@ -12,7 +12,7 @@ import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
 from ._base import Optimizer
-from ._linalg import _regularized_solve
+from ._linalg import _solve_regularized
 from .metrics import (
     MetricEstimator,
     PullbackMetricEstimator,
@@ -134,7 +134,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
         """Number of parameter sets per step — always ``1`` (single-point)."""
         return 1
 
-    def _natural_gradient(
+    def _compute_natural_gradient(
         self,
         grad: npt.NDArray[np.float64],
         metric: npt.NDArray[np.float64],
@@ -152,7 +152,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
                 "or set `max_step_norm`."
             )
 
-        delta = _regularized_solve(
+        delta = _solve_regularized(
             grad,
             metric,
             solver=self.solver,
@@ -258,7 +258,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
                     )
                 )
 
-            update = self.step_size * self._natural_gradient(grad, metric)
+            update = self.step_size * self._compute_natural_gradient(grad, metric)
             overshoot_warned = self._warn_if_overshooting(update, overshoot_warned)
             theta = theta - update
 

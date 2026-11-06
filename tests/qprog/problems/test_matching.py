@@ -23,10 +23,10 @@ from divi.qprog.problems import (
 from divi.qprog.problems import _matching as _matching_module
 from divi.qprog.problems._matching import (
     _bitstring_to_matching,
-    _classical_cleanup,
     _construct_matching_qubo,
     _count_conflicts,
     _edge_index_graph,
+    _fill_unmatched_nodes,
     _integer_weights,
     _kl_bisect,
     _matching_edges,
@@ -452,7 +452,7 @@ def test_repair_matching(weighted_edges, expected):
 
 def _cleanup(graph: nx.Graph, solution: list[int]) -> list[int]:
     _, edges, weights = _matching_edges(graph)
-    return _classical_cleanup(solution, edges, _integer_weights(weights))
+    return _fill_unmatched_nodes(solution, edges, _integer_weights(weights))
 
 
 @pytest.mark.parametrize(
@@ -773,7 +773,7 @@ class TestMaxWeightMatchingProblemStrict:
     def test_strict_valid_skips_repair_and_cleanup(self, mocker, path_graph):
         p = MaxWeightMatchingProblem(path_graph, use_classical_cleanup=True)
         repair_spy = mocker.spy(_matching_module, "_repair_matching")
-        cleanup_spy = mocker.spy(_matching_module, "_classical_cleanup")
+        cleanup_spy = mocker.spy(_matching_module, "_fill_unmatched_nodes")
 
         sol = _select_edges(p, [(0, 1), (2, 3)])
         edges, weight = p.postprocess_candidates([(-99.0, sol)], strict=True)[0]
@@ -788,7 +788,7 @@ class TestMaxWeightMatchingProblemStrict:
     ):
         p = MaxWeightMatchingProblem(path_graph, use_classical_cleanup=True)
         repair_spy = mocker.spy(_matching_module, "_repair_matching")
-        cleanup_spy = mocker.spy(_matching_module, "_classical_cleanup")
+        cleanup_spy = mocker.spy(_matching_module, "_fill_unmatched_nodes")
         sol = _select_edges(p, [(0, 1), (1, 2)])
 
         with pytest.warns(UserWarning, match="No valid matching candidates"):
@@ -820,7 +820,7 @@ class TestMaxWeightMatchingProblemStrict:
     ):
         p = MaxWeightMatchingProblem(path_graph, use_classical_cleanup=True)
         repair_spy = mocker.spy(_matching_module, "_repair_matching")
-        cleanup_spy = mocker.spy(_matching_module, "_classical_cleanup")
+        cleanup_spy = mocker.spy(_matching_module, "_fill_unmatched_nodes")
 
         invalid = _select_edges(p, [(0, 1), (1, 2)])
         valid = _select_edges(p, [(0, 1), (2, 3)])

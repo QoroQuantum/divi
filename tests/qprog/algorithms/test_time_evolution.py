@@ -12,7 +12,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import ExecutionResult, MaestroConfig
 from divi.circuits import DEFAULT_PRECISION
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import flatten_bound_payloads
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.hamiltonians.trotterization import (
@@ -141,7 +141,7 @@ def _unit_expval_submit(payloads, **kwargs):
     return ExecutionResult(
         results=[
             {"label": label, "results": payload.copy()}
-            for label in bound_circuits(payloads)
+            for label in flatten_bound_payloads(payloads)
         ]
     )
 
@@ -1412,7 +1412,7 @@ class TestTimeEvolutionPrecision:
             precision=3,
         )
         result = te.trotterization_strategy.process_hamiltonian(te._initial_spec())
-        meta = te._meta_circuit_factory(result, ham_id=0)
+        meta = te._build_meta_circuit(result, ham_id=0)
         assert meta.precision == 3
 
 

@@ -35,13 +35,13 @@ from ._routing import (
     CVRPProblem,
     RoutingInstance,
     TSPProblem,
-    binary_block_config,
+    compute_binary_block_config,
     create_tsp_qubo,
-    cvrp_block_structure,
+    build_cvrp_block_structure,
     is_valid_tsp_tour,
     parse_tsplib_file,
     parse_vrp_solution,
-    tour_cost,
+    compute_tour_cost,
 )
 
 __all__ = [
@@ -67,17 +67,17 @@ __all__ = [
     "QUBOPartitioningConfig",
     "RoutingInstance",
     "TSPProblem",
-    "binary_block_config",
+    "compute_binary_block_config",
     "check_matching_matrix",
     "create_tsp_qubo",
-    "cvrp_block_structure",
+    "build_cvrp_block_structure",
     "draw_graph_solution_nodes",
     "draw_partitions",
     "is_valid_matching",
     "is_valid_tsp_tour",
     "parse_tsplib_file",
     "parse_vrp_solution",
-    "tour_cost",
+    "compute_tour_cost",
 ]
 
 

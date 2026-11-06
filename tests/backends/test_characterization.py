@@ -1557,7 +1557,7 @@ class TestNamedVariableBQMSerialization:
         ``{"a": ..., "b": ...}`` can't distinguish a correct mapping from one
         that accidentally works only because insertion order matched index
         order. Non-integer labels are ordered lexicographically by ``repr``
-        (see ``_default_variable_order``), so "x10" < "x2" < "x9" -- neither
+        (see ``_build_default_variable_order``), so "x10" < "x2" < "x9" -- neither
         insertion order nor numeric order -- which is exactly what would
         expose an off-by-one or ordering bug in the remap.
         """

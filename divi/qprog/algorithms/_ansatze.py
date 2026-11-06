@@ -972,7 +972,7 @@ def _rotation_one_particle(
     return np.exp(1j * orbital_phases)[:, None] * matrix
 
 
-def rotation_angles(
+def fit_rotation_angles(
     target: np.ndarray, *, tol: float = 1e-7, depth: int | None = None
 ) -> np.ndarray | None:
     """Parameters whose rotation block realizes ``target``, or ``None``.
@@ -1500,7 +1500,7 @@ class LUCJAnsatz(AmplitudeSeededAnsatz):
         for rotation in (rotation_alpha, rotation_beta):
             # The block runs first, in exp(-K), so it realises the inverse; the
             # conjugate transpose, not the transpose, pairs with the -i above.
-            angles = rotation_angles(rotation.conj().T, depth=depth)
+            angles = fit_rotation_angles(rotation.conj().T, depth=depth)
             if angles is None:
                 raise AmplitudeSeedError(
                     "a spin sector's orbital rotation cannot be realised by the "
@@ -1524,7 +1524,7 @@ class LUCJAnsatz(AmplitudeSeededAnsatz):
                 n_occupied, n_virtual = t1_block.shape
                 generator[:n_occupied, n_occupied : n_occupied + n_virtual] = -t1_block
                 generator -= generator.T
-                angles = rotation_angles(expm(generator), depth=depth)
+                angles = fit_rotation_angles(expm(generator), depth=depth)
                 if angles is None:
                     # Only this block is lost; the rest of the seed stays useful.
                     warn(

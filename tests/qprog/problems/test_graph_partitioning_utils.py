@@ -37,10 +37,10 @@ from divi.qprog.problems._graph_hamiltonians import _node_ids
 from divi.qprog.problems._graph_partitioning_utils import (
     _apply_split_with_relabel,
     _bisect_with_predicate,
+    _build_relabeled_subgraph_with_ids,
     _canonical_edges,
     _merge_edgeless_clusters,
-    _node_partition_graph,
-    _relabeled_subgraph_with_ids,
+    _partition_graph_by_nodes,
     _split_graph,
 )
 from tests._helpers import exact_match
@@ -278,7 +278,7 @@ class TestGraphPartitioningConfig:
         mocker.patch.object(_graph_partitioning_utils.sys, "platform", "win32")
         probe = mocker.patch.object(
             _graph_partitioning_utils,
-            "optional_module",
+            "import_if_available",
             return_value=object() if pymetis_present else None,
         )
         G = nx.path_graph(6)
@@ -533,7 +533,7 @@ class TestGraphPartitioningConfig:
                 "the graph, since every cluster needs at least one edge."
             ),
         ):
-            _node_partition_graph(G, config)
+            _partition_graph_by_nodes(G, config)
 
     def test_node_partition_of_pygraph_uses_node_indices(self):
         g: rx.PyGraph = rx.PyGraph()
@@ -544,7 +544,7 @@ class TestGraphPartitioningConfig:
             minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
         )
 
-        clusters = _node_partition_graph(g, config)
+        clusters = _partition_graph_by_nodes(g, config)
 
         _assert_balanced_cycle_arcs(nx.cycle_graph(6), clusters, arc_size=3)
 
@@ -553,7 +553,7 @@ class TestGraphPartitioningConfig:
             max_n_nodes_per_cluster=4, partitioning_algorithm="kernighan_lin"
         )
 
-        clusters = _node_partition_graph(nx.path_graph(8), config)
+        clusters = _partition_graph_by_nodes(nx.path_graph(8), config)
 
         assert _sorted_id_groups(clusters) == [[0, 1, 2, 3], [4, 5, 6, 7]]
 
@@ -563,7 +563,7 @@ class TestGraphPartitioningConfig:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            partitions = _node_partition_graph(graph, config)
+            partitions = _partition_graph_by_nodes(graph, config)
 
         assert len(partitions) == 1
         assert partitions[0][0].number_of_nodes() == 40
@@ -585,7 +585,7 @@ class TestGraphPartitioningConfig:
         with pytest.warns(
             UserWarning, match="below the requested 'minimum_n_clusters'"
         ):
-            result = _node_partition_graph(graph, config)
+            result = _partition_graph_by_nodes(graph, config)
 
         _assert_partitions_correct(graph, result, expected_n_clusters=2)
 
@@ -609,7 +609,7 @@ class TestGraphPartitioningConfig:
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            partitions = _node_partition_graph(G, config)
+            partitions = _partition_graph_by_nodes(G, config)
 
         _assert_partitions_correct(G, partitions)
         # Which nodes a bisection peels off a complete graph is eigensolver-dependent.
@@ -636,7 +636,7 @@ class TestGraphPartitioningConfig:
             max_n_nodes_per_cluster=max_nodes, partitioning_algorithm=algorithm
         )
 
-        partitions = _node_partition_graph(G, config)
+        partitions = _partition_graph_by_nodes(G, config)
         _assert_partitions_correct(G, partitions)
 
         for sub, _ in partitions:
@@ -662,7 +662,7 @@ class TestGraphPartitioningConfig:
             max_n_nodes_per_cluster=max_nodes,
             partitioning_algorithm=algorithm,
         )
-        partitions = _node_partition_graph(G, config)
+        partitions = _partition_graph_by_nodes(G, config)
 
         # The final number of partitions should be at least min_clusters
         assert len(partitions) >= min_clusters
@@ -700,7 +700,7 @@ def test_decompose_with_pygraph_input():
 
 def _clusters_from_ids(graph, id_groups):
     """Build the partitioner's ``(relabeled_subgraph, cluster_ids)`` shape."""
-    return [_relabeled_subgraph_with_ids(graph, ids) for ids in id_groups]
+    return [_build_relabeled_subgraph_with_ids(graph, ids) for ids in id_groups]
 
 
 def _ids_containing(clusters, node):
@@ -1092,7 +1092,7 @@ def test_partition_subgraph_edges_map_to_original_edges(
         max_n_nodes_per_cluster=cap, partitioning_algorithm=algorithm
     )
 
-    clusters = _node_partition_graph(graph, config)
+    clusters = _partition_graph_by_nodes(graph, config)
 
     _assert_clusters_map_to_original_edges(graph, clusters)
 
@@ -1124,7 +1124,7 @@ def _partition_outcome(graph, config, node_ids) -> list[list] | str:
     """Cluster ids in ``graph``'s positional frame, or the raised error message."""
     position = {node: i for i, node in enumerate(node_ids)}
     try:
-        clusters = _node_partition_graph(graph, config)
+        clusters = _partition_graph_by_nodes(graph, config)
     except ValueError as exc:
         # The message names the offending nodes by their own library's ids.
         return re.sub(r"\[.*?\]", "[...]", str(exc))
@@ -1178,8 +1178,8 @@ def test_rx_and_nx_twins_give_identical_partitions(algorithm, seed, weighted, sh
         max_n_nodes_per_cluster=5, partitioning_algorithm=algorithm
     )
 
-    rx_clusters = [ids for _sub, ids in _node_partition_graph(graph, config)]
-    nx_clusters = [ids for _sub, ids in _node_partition_graph(twin, config)]
+    rx_clusters = [ids for _sub, ids in _partition_graph_by_nodes(graph, config)]
+    nx_clusters = [ids for _sub, ids in _partition_graph_by_nodes(twin, config)]
 
     assert rx_clusters == nx_clusters
 
@@ -1210,7 +1210,7 @@ def test_relabeled_pygraph_subgraph_ids_follow_local_indices(cluster):
     graph.add_nodes_from(list("abcdef"))
     graph.add_edges_from([(0, 1, 1.0), (4, 5, 2.0), (1, 4, 3.0)])
 
-    sub, ids = _relabeled_subgraph_with_ids(graph, cluster)
+    sub, ids = _build_relabeled_subgraph_with_ids(graph, cluster)
 
     assert [graph[node] for node in ids] == sub.nodes()
     _assert_clusters_map_to_original_edges(

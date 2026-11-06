@@ -7,7 +7,7 @@
 Indices are represented as little-endian ``uint64`` limb arrays so the
 decoder works uniformly for arbitrary ``n_bits`` (including circuits with
 more than 64 qubits).  A single ULEB128 primitive
-(:func:`_uleb128_decode_limbs_jit`) is used for every varint in the stream;
+(:func:`_decode_uleb128_limbs_jit`) is used for every varint in the stream;
 callers allocate a scratch limb buffer sized for the value they expect.
 The primitive raises a :class:`ValueError` when the encoded value does not
 fit in the caller-supplied buffer, converting silent-corruption failure
@@ -20,7 +20,7 @@ import numpy.typing as npt
 
 
 @numba.njit(cache=True, nogil=True)
-def _uleb128_decode_limbs_jit(
+def _decode_uleb128_limbs_jit(
     data: npt.NDArray[np.uint8],
     pos: int,
     out: npt.NDArray[np.uint64],
@@ -102,13 +102,13 @@ def _decompress_histogram_jit(
 
     gap_scratch = np.zeros(L, dtype=np.uint64)
 
-    pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
+    pos = _decode_uleb128_limbs_jit(data, pos, scratch1)
     unique = int(scratch1[0])
-    pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
+    pos = _decode_uleb128_limbs_jit(data, pos, scratch1)
     total_shots = int(scratch1[0])
 
     # --- Decode gaps → indices ---
-    pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
+    pos = _decode_uleb128_limbs_jit(data, pos, scratch1)
     num_gaps = int(scratch1[0])
 
     indices = np.zeros((num_gaps, L), dtype=np.uint64)
@@ -116,7 +116,7 @@ def _decompress_histogram_jit(
     acc = np.zeros(L, dtype=np.uint64)
 
     for i in range(num_gaps):
-        pos = _uleb128_decode_limbs_jit(data, pos, gap_scratch)
+        pos = _decode_uleb128_limbs_jit(data, pos, gap_scratch)
         # acc += gap_scratch with ripple carry across limbs.
         carry = np.uint64(0)
         for k in range(L):
@@ -138,13 +138,13 @@ def _decompress_histogram_jit(
             indices[i, k] = acc[k]
 
     # --- RLE bool decode (compute actual length from run data) ---
-    pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
+    pos = _decode_uleb128_limbs_jit(data, pos, scratch1)
     rb_len = int(scratch1[0])
 
     rle_start = pos
     pos_rle = rle_start
 
-    pos_rle = _uleb128_decode_limbs_jit(data, pos_rle, scratch1)
+    pos_rle = _decode_uleb128_limbs_jit(data, pos_rle, scratch1)
     num_runs = int(scratch1[0])
 
     # First pass: compute total RLE length
@@ -153,7 +153,7 @@ def _decompress_histogram_jit(
     if num_runs > 0:
         pos_scan += 1  # skip first_val byte
         for _ in range(num_runs):
-            pos_scan = _uleb128_decode_limbs_jit(data, pos_scan, scratch1)
+            pos_scan = _decode_uleb128_limbs_jit(data, pos_scan, scratch1)
             rle_total += int(scratch1[0])
 
     if rle_total != num_gaps:
@@ -168,7 +168,7 @@ def _decompress_histogram_jit(
         val = first_val
         fill_pos = 0
         for _ in range(num_runs):
-            pos_rle = _uleb128_decode_limbs_jit(data, pos_rle, scratch1)
+            pos_rle = _decode_uleb128_limbs_jit(data, pos_rle, scratch1)
             ln = int(scratch1[0])
             for _j in range(ln):
                 is_one[fill_pos] = val
@@ -179,7 +179,7 @@ def _decompress_histogram_jit(
     n_decoded = rle_total
 
     # --- Extras ---
-    pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
+    pos = _decode_uleb128_limbs_jit(data, pos, scratch1)
     extras_len = int(scratch1[0])
 
     expected_extras = 0
@@ -191,7 +191,7 @@ def _decompress_histogram_jit(
 
     extras = np.empty(extras_len, dtype=np.int64)
     for i in range(extras_len):
-        pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
+        pos = _decode_uleb128_limbs_jit(data, pos, scratch1)
         extras[i] = np.int64(scratch1[0])
 
     # --- Build counts ---

@@ -29,7 +29,7 @@ class GradientMethod(str, Enum):
 _PARAM_SHIFT = 0.5 * np.pi
 
 
-def _finite_difference_gradients(
+def _compute_finite_difference_gradients(
     evaluate_fn,
     pivots: npt.NDArray[np.float64],
     eps: float,
@@ -50,7 +50,7 @@ def _finite_difference_gradients(
     return ((losses[0::2] - losses[1::2]) / (2.0 * eps)).reshape(m, d)
 
 
-def _parameter_shift_gradients(
+def _compute_parameter_shift_gradients(
     evaluate_fn,
     pivots: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
@@ -78,5 +78,5 @@ def _compute_gradients(
 ) -> npt.NDArray[np.float64]:
     """Dispatch gradient computation to the chosen method."""
     if method is GradientMethod.PARAMETER_SHIFT:
-        return _parameter_shift_gradients(evaluate_fn, pivots)
-    return _finite_difference_gradients(evaluate_fn, pivots, eps)
+        return _compute_parameter_shift_gradients(evaluate_fn, pivots)
+    return _compute_finite_difference_gradients(evaluate_fn, pivots, eps)

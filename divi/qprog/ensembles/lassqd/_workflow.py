@@ -29,7 +29,7 @@ from divi.qprog.ensembles import ProgramEnsemble, ReportingLevel
 from divi.qprog.problems import MolecularProblem
 
 from ._active_space import (
-    auto_fragment_specs,
+    build_auto_fragment_specs,
     select_frontier_orbitals,
     split_active_orbitals,
 )
@@ -51,13 +51,13 @@ from ._integrals import (
     MOIntegrals,
     assemble_active_rdms,
     build_active_permutation,
+    build_fragment_effective_integrals,
     cached_ao_eri,
     cached_h_ao,
     fragment_blocks,
-    fragment_effective_integrals,
     transform_integrals,
 )
-from ._lassi import lassi_states
+from ._lassi import solve_lassi_states
 from ._orbital_solvers import escape_orbital_saddle, orbital_irreps
 from ._preparation import rotate_rdms_to_fragment_basis
 from ._solvent import _SolventField
@@ -83,7 +83,7 @@ from ._state import (
     _SampledSubspace,
     validate_fragment_specs,
 )
-from ._subspace import subspace_wavefunctions
+from ._subspace import solve_subspace_wavefunctions
 from ._warnings import _outside_divi_stacklevel
 
 #: Scale of the random rotation applied to the starting orbitals.
@@ -564,7 +564,7 @@ from_molecule` from a PySCF ``gto.Mole`` (RHF, or ROHF for a non-zero ``spin``,
         if config.active_spaces is not None:
             specs = list(config.active_spaces)
         else:
-            specs, localized, active_positions = auto_fragment_specs(
+            specs, localized, active_positions = build_auto_fragment_specs(
                 self._ao_integrals(),
                 mo_coeff,
                 n_occupied,
@@ -636,7 +636,7 @@ from_molecule` from a PySCF ``gto.Mole`` (RHF, or ROHF for a non-zero ``spin``,
         fragment_seeds = self._rng.integers(0, 2**63 - 1, size=len(state.fragments))
 
         for index, fragment in enumerate(state.fragments):
-            h_alpha, h_beta, g_frag = fragment_effective_integrals(
+            h_alpha, h_beta, g_frag = build_fragment_effective_integrals(
                 integrals, state.fragments, index
             )
             fragment_problem = MolecularProblem(
@@ -1058,7 +1058,7 @@ ProgramEnsemble.workflow_state` holds it.
         electronic_states: tuple[ElectronicState, ...] = ()
         if across and states is not None:
             specs = [fragment.spec for fragment in new_fragments]
-            interaction, kept, incomplete = lassi_states(
+            interaction, kept, incomplete = solve_lassi_states(
                 ao,
                 in_sampled_basis(solution.mo_coeff),
                 n_core,
@@ -1175,7 +1175,7 @@ ProgramEnsemble.workflow_state` holds it.
         fragments' assembled RDM at ``mo_coeff``."""
         final_subspace = self._excited.final_subspace
         if self._sqd.states is not None and final_subspace is not None:
-            wavefunctions = subspace_wavefunctions(
+            wavefunctions = solve_subspace_wavefunctions(
                 self._ao_integrals(), final_subspace, n_core
             )
             lowest = min(

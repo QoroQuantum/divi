@@ -180,7 +180,7 @@ class DataBindingStage(BundleStage):
         # DAG-walking stage (QEM/PauliTwirl) sits between us and PB.
         self._use_template_path: bool = True
 
-    def _feature_batch(
+    def _read_feature_batch(
         self, env: PipelineEnv, *, assert_finite: bool = True
     ) -> np.ndarray:
         """Read and validate the run's feature batch from the env.
@@ -253,7 +253,7 @@ class DataBindingStage(BundleStage):
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
-        feature_batch = self._feature_batch(env)
+        feature_batch = self._read_feature_batch(env)
         if self._use_template_path:
             return self._expand_template(batch, feature_batch)
         return self._expand_eager(batch, feature_batch)
@@ -324,7 +324,7 @@ class DataBindingStage(BundleStage):
         needs correct circuit counts and depth/width stats, both of which
         are invariant under data binding.
         """
-        n_samples = self._feature_batch(env, assert_finite=False).shape[0]
+        n_samples = self._read_feature_batch(env, assert_finite=False).shape[0]
         out: MetaCircuitBatch = {}
         for key, mc in batch.items():
             weight_params = self._weight_params(mc)
@@ -390,15 +390,17 @@ class DataBindingStage(BundleStage):
             return [
                 float(
                     self.loss_reduction(
-                        self._per_sample_loss(values[:, i] + const, labels)
+                        self._compute_per_sample_loss(values[:, i] + const, labels)
                     )
                 )
                 for i in range(n_obs)
             ]
         predictions = np.asarray(samples, dtype=np.float64) + const
-        return float(self.loss_reduction(self._per_sample_loss(predictions, labels)))
+        return float(
+            self.loss_reduction(self._compute_per_sample_loss(predictions, labels))
+        )
 
-    def _per_sample_loss(
+    def _compute_per_sample_loss(
         self, predictions: npt.NDArray[np.float64], labels: np.ndarray | None
     ) -> npt.NDArray[np.float64]:
         """Map predictions to per-sample losses against ``labels``.

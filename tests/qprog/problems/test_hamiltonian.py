@@ -149,7 +149,7 @@ def _jordan_wigner_of_stored_integrals(problem):
 
 def test_from_molecule_solves_once_on_first_access(pyscf_h2, mocker):
     pytest.importorskip("openfermion")
-    integrals = mocker.spy(_hamiltonian, "molecule_integrals")
+    integrals = mocker.spy(_hamiltonian, "compute_molecule_integrals")
 
     problem = MolecularProblem.from_molecule(pyscf_h2)
 

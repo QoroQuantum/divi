@@ -243,7 +243,7 @@ def _partition(
     return clusters
 
 
-def signed_multiview_partition(
+def partition_spectral(
     sigma: sps.csr_matrix, config: _Config, *, seed: int = 0
 ) -> list[np.ndarray]:
     """Partition via signed multi-view spectral clustering (arXiv 2502.16212).
@@ -264,17 +264,17 @@ def partition_by_method(
 ) -> list[np.ndarray]:
     """Partition with ``config.method`` and ``config.seed``."""
     if config.method == "spectral":
-        return signed_multiview_partition(sigma, config, seed=config.seed)
-    return louvain_partition(sigma, config, seed=config.seed)
+        return partition_spectral(sigma, config, seed=config.seed)
+    return partition_louvain(sigma, config, seed=config.seed)
 
 
-def louvain_partition(
+def partition_louvain(
     sigma: sps.csr_matrix, config: _Config, *, seed: int = 0
 ) -> list[np.ndarray]:
     """Partition via Louvain modularity community detection on the interaction graph.
 
     Same component pre-split and budget/floor handling as
-    :func:`signed_multiview_partition`, but clusters each over-budget component by
+    :func:`partition_spectral`, but clusters each over-budget component by
     modularity maximisation (coupling-magnitude weights) instead of spectral views.
 
     Returns:

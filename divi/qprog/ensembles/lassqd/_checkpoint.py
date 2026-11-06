@@ -54,7 +54,7 @@ def _molecule_fingerprint(mol) -> str:
     return digest.hexdigest()
 
 
-def _stored_array(
+def _load_stored_array(
     stored: Any,
     name: str,
     shape: Sequence[int] | None = None,
@@ -357,7 +357,7 @@ def load_snapshot(
             spec = _spec_from_metadata(metadata, index)
             rdm1_shape = (spec.n_orbitals,) * 2
             params = (
-                _stored_array(stored, f"{prefix}_params")
+                _load_stored_array(stored, f"{prefix}_params")
                 if metadata.get("params")
                 else None
             )
@@ -367,14 +367,14 @@ def load_snapshot(
                 )
             rdm1_alpha, rdm1_beta = (
                 (
-                    _stored_array(stored, f"{prefix}_{name}", rdm1_shape)
+                    _load_stored_array(stored, f"{prefix}_{name}", rdm1_shape)
                     if metadata.get(name)
                     else None
                 )
                 for name in ("rdm1_alpha", "rdm1_beta")
             )
             sampled_orbitals = (
-                _stored_array(
+                _load_stored_array(
                     stored,
                     f"{prefix}_sampled_orbitals",
                     (n_ao, spec.n_orbitals),
@@ -389,8 +389,8 @@ def load_snapshot(
             fragments.append(
                 FragmentState(
                     spec=spec,
-                    rdm1=_stored_array(stored, f"{prefix}_rdm1", rdm1_shape),
-                    rdm2=_stored_array(
+                    rdm1=_load_stored_array(stored, f"{prefix}_rdm1", rdm1_shape),
+                    rdm2=_load_stored_array(
                         stored, f"{prefix}_rdm2", (spec.n_orbitals,) * 4
                     ),
                     params=params,
@@ -401,20 +401,20 @@ def load_snapshot(
                     sampled_orbitals=sampled_orbitals,
                 )
             )
-        mo_coeff = _stored_array(stored, "mo_coeff", (n_ao, n_orbitals))
-        energy = _stored_array(stored, "energy", (), allow_infinite=True)
-        previous_energy = _stored_array(
+        mo_coeff = _load_stored_array(stored, "mo_coeff", (n_ao, n_orbitals))
+        energy = _load_stored_array(stored, "energy", (), allow_infinite=True)
+        previous_energy = _load_stored_array(
             stored, "previous_energy", (), allow_infinite=True
         )
-        orbitals_converged = _stored_array(stored, "orbitals_converged", ())
-        energy_history = _stored_array(stored, "energy_history")
+        orbitals_converged = _load_stored_array(stored, "orbitals_converged", ())
+        energy_history = _load_stored_array(stored, "energy_history")
         if energy_history.ndim != 1:
             raise ValueError("LASSQD checkpoint energy history is not 1-D.")
         reaction_field = None
         if "solvent_potential" in stored.files:
             reaction_field = (
-                float(_stored_array(stored, "solvent_energy", ())),
-                _stored_array(stored, "solvent_potential", (n_ao, n_ao)),
+                float(_load_stored_array(stored, "solvent_energy", ())),
+                _load_stored_array(stored, "solvent_potential", (n_ao, n_ao)),
             )
         final_strings = payload.get("final_strings")
         final_subspace = None
@@ -425,7 +425,7 @@ def load_snapshot(
                     "only with SQDConfig.states."
                 )
             final_subspace = _SampledSubspace(
-                _stored_array(stored, "final_orbitals", (n_ao, n_orbitals)),
+                _load_stored_array(stored, "final_orbitals", (n_ao, n_orbitals)),
                 (
                     _carried_strings_from_metadata(
                         final_strings, "strings_alpha", fragments[0].spec, 0

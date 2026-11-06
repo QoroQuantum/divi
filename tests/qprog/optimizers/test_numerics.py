@@ -22,7 +22,7 @@ from scipy.linalg import hilbert
 from divi.circuits import MetaCircuit
 from divi.qprog.algorithms import CustomVQA
 from divi.qprog.optimizers import QNGOptimizer, QNSPSAOptimizer
-from divi.qprog.optimizers._linalg import _matrix_abs_psd, _regularized_solve
+from divi.qprog.optimizers._linalg import _matrix_abs_psd, _solve_regularized
 from divi.qprog.optimizers._spsa import _fidelity_metric_sample, _spsa_gain_c
 from divi.qprog.optimizers.metrics import (
     FubiniStudyMetricEstimator,
@@ -37,7 +37,7 @@ from tests.qprog.optimizers._helpers import (
 
 
 def _solve(metric, grad, *, solver="tikhonov", regularization=0.0, scaled=False):
-    return _regularized_solve(
+    return _solve_regularized(
         grad,
         metric,
         solver=solver,
@@ -150,7 +150,7 @@ def test_matrix_abs_psd_lifts_eigenvalues_of_every_magnitude(eigenvalue):
     )
 
 
-# --- _regularized_solve on indefinite and rank-deficient metrics ------------ #
+# --- _solve_regularized on indefinite and rank-deficient metrics ------------ #
 
 
 @pytest.mark.parametrize("regularization", [0.0, 1e-6, 1e-4])
@@ -209,7 +209,7 @@ def test_qng_step_on_singular_metric_is_unbounded_without_max_step_norm():
     unclipped = QNGOptimizer(
         step_size=1.0, regularization=1e-12, scale_regularization=False
     )
-    delta = unclipped._natural_gradient(grad, _SINGULAR_METRIC)
+    delta = unclipped._compute_natural_gradient(grad, _SINGULAR_METRIC)
     assert np.all(np.isfinite(delta))
     assert np.linalg.norm(delta) > 1e11
 
@@ -219,7 +219,7 @@ def test_qng_step_on_singular_metric_is_unbounded_without_max_step_norm():
         scale_regularization=False,
         max_step_norm=1.0,
     )
-    clipped_delta = clipped._natural_gradient(grad, _SINGULAR_METRIC)
+    clipped_delta = clipped._compute_natural_gradient(grad, _SINGULAR_METRIC)
     assert np.linalg.norm(clipped.step_size * clipped_delta) == pytest.approx(1.0)
 
 

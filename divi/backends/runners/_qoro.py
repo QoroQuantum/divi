@@ -65,9 +65,9 @@ from divi.backends._systems import (
 from divi.circuits._payloads import (
     CircuitBatch,
     CircuitPayload,
-    as_payloads,
-    bound_circuits,
+    flatten_bound_payloads,
     is_bound,
+    normalise_to_payloads,
 )
 from divi.exceptions import (
     CharacterizationSubmitError,
@@ -782,7 +782,7 @@ class QoroService(AsyncJobBackend):
             )
 
     @staticmethod
-    def _job_type_for(job_type: JobType | None, ham_ops: str | None) -> JobType:
+    def _resolve_job_type(job_type: JobType | None, ham_ops: str | None) -> JobType:
         """Resolve the job type, inferring EXPECTATION from ``ham_ops``."""
         if ham_ops is None:
             if job_type is not None and job_type is not JobType.EXECUTE:
@@ -905,7 +905,7 @@ class QoroService(AsyncJobBackend):
                 to poll for results using backend.poll_job_status() and get_job_results().
         """
         self._reject_unknown_options(kwargs)
-        payloads = as_payloads(payloads)
+        payloads = normalise_to_payloads(payloads)
         if not payloads:
             raise ValueError("submit_circuits requires at least one payload.")
 
@@ -915,7 +915,7 @@ class QoroService(AsyncJobBackend):
                 "compute expectation values analytically on the backend and "
                 "ignore shot counts. Pass exactly one."
             )
-        job_type = self._job_type_for(job_type, ham_ops)
+        job_type = self._resolve_job_type(job_type, ham_ops)
 
         if ham_ops is not None:
             # Each |-delimited group is validated independently.
@@ -952,9 +952,9 @@ class QoroService(AsyncJobBackend):
             ham_ops, circuit_ham_map, shot_groups, job_config.shots
         )
         call_plan = (
-            self._bound_call_plan(payloads, shot_groups, envelope)
+            self._build_bound_call_plan(payloads, shot_groups, envelope)
             if is_bound(payloads)
-            else self._parametric_call_plan(
+            else self._build_parametric_call_plan(
                 payloads, ham_ops, circuit_ham_map, shot_groups, envelope
             )
         )
@@ -1001,14 +1001,14 @@ class QoroService(AsyncJobBackend):
             cancellation_event=cancellation_event,
         )
 
-    def _bound_call_plan(
+    def _build_bound_call_plan(
         self,
         payloads: Sequence[CircuitPayload],
         shot_groups: Sequence[list[int]] | None,
         envelope: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         """Chunk resolved circuits into ``add_circuits/`` payload fragments."""
-        circuits = bound_circuits(payloads)
+        circuits = flatten_bound_payloads(payloads)
 
         shot_ranges = None
         if shot_groups is not None:
@@ -1091,7 +1091,7 @@ class QoroService(AsyncJobBackend):
             parameter_sets, row_size, fixed_overhead, max_payload_bytes
         )
 
-    def _parametric_call_plan(
+    def _build_parametric_call_plan(
         self,
         payloads: Sequence[CircuitPayload],
         ham_ops: str | None,
@@ -1102,7 +1102,7 @@ class QoroService(AsyncJobBackend):
         """Chunk parameter matrices into ``add_circuits/`` payload fragments.
 
         Each fragment reuses the same compressed ``circuit_template``; only
-        ``parameter_sets`` is split, mirroring how :meth:`_bound_call_plan`
+        ``parameter_sets`` is split, mirroring how :meth:`_build_bound_call_plan`
         splits the circuit mapping.
         """
         if circuit_ham_map is not None:

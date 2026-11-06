@@ -28,7 +28,7 @@ from divi.hamiltonians import (
     edge_driver,
     x_mixer,
 )
-from divi.hamiltonians._mixers import multi_pauli_label, single_pauli_label
+from divi.hamiltonians._mixers import build_multi_pauli_label, build_single_pauli_label
 
 GraphLike: TypeAlias = nx.Graph | rx.PyGraph
 DiGraphLike: TypeAlias = nx.DiGraph | rx.PyDiGraph
@@ -245,7 +245,9 @@ def loss_hamiltonian_spo(graph: DiGraphLike | GraphLike) -> SparsePauliOp:
         weight = _edge_weight(payload)
         if weight is None:
             raise KeyError(f"Edge {edge} does not contain weight data")
-        terms.append((single_pauli_label(n_qubits, wire, "Z"), float(np.log(weight))))
+        terms.append(
+            (build_single_pauli_label(n_qubits, wire, "Z"), float(np.log(weight)))
+        )
     return SparsePauliOp.from_list(terms)
 
 
@@ -282,7 +284,7 @@ def cycle_mixer_spo(graph: DiGraphLike) -> SparsePauliOp:
             wire_kj = edge_to_wire[(k, j)]
             wires = (wire_ij, wire_ik, wire_kj)
             terms.extend(
-                (multi_pauli_label(n_qubits, list(zip(wires, paulis))), coeff)
+                (build_multi_pauli_label(n_qubits, list(zip(wires, paulis))), coeff)
                 for paulis, coeff in _CYCLE_MIXER_TERMS
             )
 
@@ -338,7 +340,7 @@ def out_flow_constraint_spo(graph: DiGraphLike) -> SparsePauliOp:
         if d == 0:
             continue
         z_sum = SparsePauliOp.from_list(
-            [(single_pauli_label(n_qubits, w, "Z"), 1.0) for w in out_wires]
+            [(build_single_pauli_label(n_qubits, w, "Z"), 1.0) for w in out_wires]
         )
         blocks.append(
             (d * (d - 2)) * identity + (-2 * (d - 1)) * z_sum + (z_sum @ z_sum)
@@ -359,8 +361,12 @@ def net_flow_constraint_spo(graph: DiGraphLike) -> SparsePauliOp:
     ):
         delta = len(out_wires) - len(in_wires)
         terms: list[tuple[str, float]] = [("I" * n_qubits, float(delta))]
-        terms.extend((single_pauli_label(n_qubits, w, "Z"), -1.0) for w in out_wires)
-        terms.extend((single_pauli_label(n_qubits, w, "Z"), 1.0) for w in in_wires)
+        terms.extend(
+            (build_single_pauli_label(n_qubits, w, "Z"), -1.0) for w in out_wires
+        )
+        terms.extend(
+            (build_single_pauli_label(n_qubits, w, "Z"), 1.0) for w in in_wires
+        )
         inner = SparsePauliOp.from_list(terms)
         blocks.append(inner @ inner)
     return SparsePauliOp.sum(blocks).simplify()

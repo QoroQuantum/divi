@@ -243,7 +243,9 @@ def molecule_electron_count(molecule: MoleculeLike) -> int:
     raise _unsupported_molecule(molecule)
 
 
-def molecule_integrals(molecule: MoleculeLike) -> tuple[np.ndarray, np.ndarray, float]:
+def compute_molecule_integrals(
+    molecule: MoleculeLike,
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Hartree-Fock molecular-orbital integrals of a PennyLane or PySCF molecule.
 
     Returns:

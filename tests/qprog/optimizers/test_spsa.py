@@ -774,7 +774,7 @@ def test_calibrated_learning_rate_sizes_the_first_step(
 ):
     """The gain makes the first update ``2π/10`` divided by the mean directional
     derivative; a derivative below ``1e-10`` (or none finite) leaves ``2π/10``."""
-    gain = optimizer._calibrated_learning_rate(cost_fn, theta, np.random.default_rng(0))
+    gain = optimizer._calibrate_learning_rate(cost_fn, theta, np.random.default_rng(0))
     assert gain == pytest.approx(expected)
 
 
@@ -791,7 +791,7 @@ def test_blocking_band_is_calibrated_from_the_loss_noise():
 
     optimizer = SPSAOptimizer(blocking=True, calibration_steps=400)
 
-    band = optimizer._calibrated_allowed_increase(noisy, np.zeros(3))
+    band = optimizer._calibrate_allowed_increase(noisy, np.zeros(3))
 
     assert band == pytest.approx(2.0 * sigma, rel=0.15)
 
@@ -800,15 +800,15 @@ def test_explicit_allowed_increase_is_used_verbatim():
     """A supplied band skips calibration entirely."""
     optimizer = SPSAOptimizer(blocking=True, allowed_increase=1.5)
 
-    assert optimizer._calibrated_allowed_increase(
-        _sphere, np.zeros(3)
-    ) == pytest.approx(1.5)
+    assert optimizer._calibrate_allowed_increase(_sphere, np.zeros(3)) == pytest.approx(
+        1.5
+    )
 
 
 def test_blocking_band_is_zero_when_calibration_losses_are_all_non_finite():
     optimizer = SPSAOptimizer(blocking=True, calibration_steps=4)
 
-    assert optimizer._calibrated_allowed_increase(_nan_cost, np.zeros(3)) == 0.0
+    assert optimizer._calibrate_allowed_increase(_nan_cost, np.zeros(3)) == 0.0
 
 
 @pytest.mark.filterwarnings("ignore:.*blocking has rejected.*:UserWarning")

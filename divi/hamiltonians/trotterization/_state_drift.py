@@ -82,7 +82,7 @@ class _Ladder:
 
         commutators_with_first = np.zeros(first.size, dtype=complex)
         with_first = np.zeros(n_terms, dtype=complex)
-        for a, b, values in _bits.commutator_values(h, first, source):
+        for a, b, values in _bits.compute_commutator_values(h, first, source):
             with_first += _bits.accumulate(a, first.coeffs[b] * values, n_terms)
             commutators_with_first += _bits.accumulate(
                 b, h.coeffs[a] * values, first.size
@@ -102,7 +102,7 @@ class _Ladder:
             slopes.real,
             # φ_{j,H} = <[P_j, [O, H]]>, and [O, H] = i L_H O.
             (1j * with_first).real,
-            _bits.shift_sums(h, first, first.coeffs * first_values).real,
+            _bits.compute_shift_sums(h, first, first.coeffs * first_values).real,
         )
 
 
@@ -255,7 +255,7 @@ class StateDriftExpansion:
         inner = -_bits.accumulate(j, f * ladder.commutators_with_first, n_terms)
         nested = [
             (a, j[b], -f[b] * values)
-            for a, b, values in _bits.commutator_values(h, first, source)
+            for a, b, values in _bits.compute_commutator_values(h, first, source)
         ]
         pair_slopes = (1j * f * ladder.first_values).real
         sloped = np.flatnonzero(pair_slopes)
@@ -274,13 +274,15 @@ class StateDriftExpansion:
         second_values = source.values(second.x, second.z)
         # β_j(L_H² O) = i<[P_j, L_H² O]>; <L_H³ O> = Σ_j c_j β_j(L_H² O).
         curvature_slopes = np.zeros(n_terms, dtype=complex)
-        for a, b, values in _bits.commutator_values(h, second, source):
+        for a, b, values in _bits.compute_commutator_values(h, second, source):
             curvature_slopes += _bits.accumulate(
                 a, 1j * second.coeffs[b] * values, n_terms
             )
         # <L_H² X> = -<[H, [H, X]]>.
-        _, second_curvatures = _bits.double_commutator_sums(h, second, source)
-        first_rotated, first_curvatures = _bits.double_commutator_sums(h, first, source)
+        _, second_curvatures = _bits.compute_double_commutator_sums(h, second, source)
+        first_rotated, first_curvatures = _bits.compute_double_commutator_sums(
+            h, first, source
+        )
 
         return cls(
             StateDriftDensities._from_ladder(
@@ -291,8 +293,8 @@ class StateDriftExpansion:
             (-2 * _bits.accumulate(j, observable_slopes[m], n_terms)).real,
             (-2 * _bits.accumulate(j, observable_curvatures[m], n_terms)).real,
             ladder.slope_shifts,
-            _bits.shift_sums(h, first, first.coeffs * first_slopes).real,
-            _bits.shift_sums(h, second, second.coeffs * second_values).real,
+            _bits.compute_shift_sums(h, first, first.coeffs * first_slopes).real,
+            _bits.compute_shift_sums(h, second, second.coeffs * second_values).real,
             curvature_slopes.real,
             # β_H(i[P_j, L_H O]) = -<[H, [P_j, L_H O]]>.
             (-first_rotated).real,
