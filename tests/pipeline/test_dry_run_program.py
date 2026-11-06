@@ -114,7 +114,7 @@ class _ParametricProgram(QuantumProgram):
     def _preprocessors(self):
         return (CircuitPreprocessor("cost", terminal_stage=MeasurementStage()),)
 
-    def _assemble_pipeline(
+    def assemble_pipeline(
         self, spec_stage, terminal_stage, *, result_format, extra_stages=()
     ):
         return CircuitPipeline(

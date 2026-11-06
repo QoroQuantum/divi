@@ -35,6 +35,7 @@ from divi.pipeline.abc import _EstimatorSamplePlan
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
+    ParameterBindingStage,
     PauliTwirlStage,
     PreprocessStage,
     QEMStage,
@@ -376,7 +377,12 @@ class QuantumProgram(ABC):
         """
         return ()
 
-    def _assemble_pipeline(
+    @property
+    def _binds_parameters(self) -> bool:
+        """Whether the assembled pipelines bind free circuit parameters."""
+        return False
+
+    def assemble_pipeline(
         self,
         spec_stage: Stage,
         terminal_stage: Stage,
@@ -384,20 +390,36 @@ class QuantumProgram(ABC):
         result_format: ResultFormat,
         extra_stages: Sequence[Stage] = (),
     ) -> CircuitPipeline:
-        """Assemble one pipeline from this program's shared error-mitigation config.
+        """Assemble one pipeline from this program's mitigation and binding config.
 
         Ordering: ``spec_stage`` → ``extra_stages`` → [QEM (→ PauliTwirl) when
-        applicable] → ``terminal_stage``.
+        applicable] → ``terminal_stage``. A program that binds parameters gets a
+        :class:`~divi.pipeline.stages.ParameterBindingStage` last, or ahead of
+        the mitigation stages when its protocol needs bound parameters.
 
-        Parameter-binding policy belongs to parameterised program classes, not
-        this shared assembler.
+        Args:
+            spec_stage: First stage; emits the program's seed circuit.
+            terminal_stage: Measurement stage that ends the pipeline.
+            result_format: Result format the pipeline produces.
+            extra_stages: Stages inserted directly after ``spec_stage``.
+
+        Returns:
+            The assembled pipeline.
         """
-        stages = [
-            spec_stage,
-            *extra_stages,
-            *self._mitigation_stages(result_format),
-            terminal_stage,
-        ]
+        mitigation_stages = self._mitigation_stages(result_format)
+        bind_early = (
+            self._binds_parameters
+            and bool(mitigation_stages)
+            and self._qem_protocol.requires_bound_params
+        )
+
+        stages: list[Stage] = [spec_stage, *extra_stages]
+        if bind_early:
+            stages.append(ParameterBindingStage())
+        stages.extend(mitigation_stages)
+        stages.append(terminal_stage)
+        if self._binds_parameters and not bind_early:
+            stages.append(ParameterBindingStage())
         return CircuitPipeline(
             stages=stages,
             suppress_performance_warnings=self._suppress_performance_warnings,
@@ -627,7 +649,7 @@ class QuantumProgram(ABC):
         pipeline = None if key is None else self._preprocessor_pipeline_cache.get(key)
         if pipeline is None:
             terminal = preprocessor.terminal_stage or self._make_measurement_stage()
-            pipeline = self._assemble_pipeline(
+            pipeline = self.assemble_pipeline(
                 self._spec_stage(),
                 terminal,
                 result_format=preprocessor.result_format,

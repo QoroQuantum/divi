@@ -20,7 +20,7 @@ code; :doc:`framework_integration` has complete examples. Its cost pipeline is:
 
 .. code-block:: text
 
-   CircuitSpecStage → QEMStage → MeasurementStage → ParameterBindingStage
+   CircuitSpecStage → PreprocessStage → QEMStage → MeasurementStage → ParameterBindingStage
 
 The :class:`~divi.qprog.algorithms.CustomVQA`,
 :class:`~divi.qprog.algorithms.VQE`, and :class:`~divi.qprog.algorithms.QNN`
@@ -371,7 +371,7 @@ A :class:`~divi.circuits.MetaCircuit` for EXPVALS mode is constructed with an
 ``measured_wires`` instead.
 
 Direct ``QuantumProgram`` subclasses with parameterised seed circuits must
-override ``_assemble_pipeline`` to add :class:`~divi.pipeline.stages.ParameterBindingStage`
+override ``assemble_pipeline`` to add :class:`~divi.pipeline.stages.ParameterBindingStage`
 themselves — the base class does not append one.  Skipping it raises
 :class:`~divi.pipeline.abc.ContractViolation` at execution time.
 
@@ -421,7 +421,7 @@ themselves — the base class does not append one.  Skipping it raises
        def _initial_spec(self):
            return self._meta
 
-       def _assemble_pipeline(self, spec_stage, terminal_stage, *, result_format, extra_stages=()):
+       def assemble_pipeline(self, spec_stage, terminal_stage, *, result_format, extra_stages=()):
            # Direct QuantumProgram subclasses with parameterized circuits must add
            # ParameterBindingStage — the base class does not.
            return CircuitPipeline(stages=[
@@ -464,13 +464,18 @@ Injecting a Custom Stage into an Optimizer-Driven Algorithm
 
 This section reuses ``ReplicaBundleStage`` from `Writing a Custom BundleStage`_.
 
+:class:`~divi.qprog.QuantumProgram` assembles every program's pipeline in
+:meth:`~divi.qprog.QuantumProgram.assemble_pipeline`, which
 :class:`~divi.qprog.VariationalQuantumAlgorithm` (the base of
 :class:`~divi.qprog.algorithms.CustomVQA`, :class:`~divi.qprog.algorithms.VQE`,
-:class:`~divi.qprog.algorithms.QNN`, etc.) assembles its pipeline in
-``_assemble_pipeline``.  The ``extra_stages`` keyword is the injection seam:
-stages passed there are inserted immediately after the spec stage, before any
-mitigation stages and the terminal measurement.  To inject a custom stage into a
-VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
+:class:`~divi.qprog.algorithms.QNN`, etc.) inherits.  The ``extra_stages``
+keyword is the injection seam: stages passed there are inserted directly after
+the spec stage, so they always run before mitigation, the terminal measurement
+and parameter binding.  Stages keep the tuple order, and the program's own
+stages (such as its preprocessor stage) are already in it, so appending puts a
+custom stage after them.  To inject a custom stage into a VQA-family program,
+override :meth:`~divi.qprog.QuantumProgram.assemble_pipeline` and delegate to
+``super()``:
 
 .. code-block:: python
 
@@ -490,8 +495,8 @@ VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
            super().__init__(*args, **kwargs)
            self._n_replicas = n_replicas
 
-       def _assemble_pipeline(self, spec_stage, terminal_stage, *, result_format, extra_stages=()):
-           return super()._assemble_pipeline(
+       def assemble_pipeline(self, spec_stage, terminal_stage, *, result_format, extra_stages=()):
+           return super().assemble_pipeline(
                spec_stage,
                terminal_stage,
                result_format=result_format,
@@ -525,11 +530,12 @@ VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
    program.run()
    assert program.best_loss is not None
 
-The ``extra_stages`` tuple is passed through every ``_assemble_pipeline``
-override in the MRO, so multiple mixins can each append their own stages
-without conflicting.  The canonical example of this pattern is
-:class:`~divi.qprog.algorithms.PCE`, which injects its preprocessor stage via
-exactly this seam.
+The ``extra_stages`` tuple is passed through every ``assemble_pipeline``
+override in the MRO, so multiple mixins can each add their own stages
+without conflicting.  The library uses the seam itself: the base
+:class:`~divi.qprog.QuantumProgram` passes each program's preprocessor stage
+through it, and :class:`~divi.qprog.mixins.DataBindingMixin` prepends its
+data-binding stage when a feature batch is active.
 
 
 Stage-Author Toolkit

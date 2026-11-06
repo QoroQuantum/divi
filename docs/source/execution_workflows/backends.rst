@@ -116,7 +116,7 @@ Configuring MaestroSimulator
 
 Simulator options are ``maestro.SimulatorConfig``'s own — same names, defaults
 and validation, documented in the
-`maestro Python bindings <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_.
+`maestro Python bindings <https://qoroquantum.github.io/maestro/api/configuration.html#all-simulatorconfig-options>`_.
 :class:`~divi.backends.MaestroConfig` takes them as keyword arguments. Options
 left unset use maestro's defaults, so a bare ``MaestroSimulator()`` runs a
 statevector simulation.
@@ -157,7 +157,7 @@ Pass a ``maestro.NoiseModel`` via
 :attr:`~divi.backends.MaestroConfig.noise_model`. Divi runs noisy circuits
 through Maestro's ``full_noise_execute`` (sampling) and
 ``full_noise_estimate`` (expectation values); see the
-`maestro Python guide <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html>`_
+`maestro noise guide <https://qoroquantum.github.io/maestro/user-guide/noise-and-qec.html>`_
 for the channels a ``NoiseModel`` offers. Readout errors only show in sampled
 counts, so divi warns when a model with them is used for expectation values;
 pass ``force_sampling=True`` to :class:`~divi.backends.MaestroSimulator` to

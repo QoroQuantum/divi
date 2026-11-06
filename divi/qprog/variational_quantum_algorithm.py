@@ -21,17 +21,13 @@ from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.pipeline import (
-    CircuitPipeline,
     CircuitPreprocessor,
     GroupingStrategy,
     PipelineCadence,
     PipelineEnv,
-    ResultFormat,
     ShotDistStrategy,
-    Stage,
 )
 from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
-from divi.pipeline.stages import ParameterBindingStage
 from divi.qprog._early_stopping import EarlyStopping, StopReason
 from divi.qprog._program_checkpoint import (
     OptimizerConfig,
@@ -961,35 +957,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         return False
 
-    # ------------------------------------------------------------------ #
-    # Pipeline assembly — one generic builder shared by every named pipeline.
-    # ------------------------------------------------------------------ #
-
-    def _assemble_pipeline(
-        self,
-        spec_stage: Stage,
-        terminal_stage: Stage,
-        *,
-        result_format: ResultFormat,
-        extra_stages: Sequence[Stage] = (),
-    ) -> CircuitPipeline:
-        """Assemble a variational pipeline with parameter binding."""
-        mitigation_stages = self._mitigation_stages(result_format)
-        bind_early = (
-            bool(mitigation_stages) and self._qem_protocol.requires_bound_params
-        )
-
-        stages: list[Stage] = [spec_stage, *extra_stages]
-        if bind_early:
-            stages.append(ParameterBindingStage())
-        stages.extend(mitigation_stages)
-        stages.append(terminal_stage)
-        if not bind_early:
-            stages.append(ParameterBindingStage())
-        return CircuitPipeline(
-            stages=stages,
-            suppress_performance_warnings=self._suppress_performance_warnings,
-        )
+    @property
+    def _binds_parameters(self) -> bool:
+        return True
 
     def _bindable_parameter_count(self) -> int:
         return self.n_params

@@ -30,6 +30,7 @@ from divi.qprog.algorithms import (
     TimeEvolution,
 )
 from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
+from tests.qprog._helpers import ReplicaBundleStage
 
 
 def _stage_types(pipeline):
@@ -49,8 +50,8 @@ def _metric_pipeline(program):
     return program._build_preprocessor_pipeline(CircuitPreprocessor("metric"))
 
 
-def _vqe_with(backend, optimizer, qem_protocol=None, **kwargs):
-    return VQE(
+def _vqe_with(backend, optimizer, qem_protocol=None, program_cls=VQE, **kwargs):
+    return program_cls(
         HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
@@ -116,10 +117,10 @@ def test_assembled_stage_order(mitigated_vqe):
 
 def test_assemble_pipeline_qem_inclusion_is_protocol_driven(mitigated_vqe):
     """The QEM protocol decides applicability per result format — not the recipe."""
-    expval = mitigated_vqe._assemble_pipeline(
+    expval = mitigated_vqe.assemble_pipeline(
         CircuitSpecStage(), MeasurementStage(), result_format=ResultFormat.EXPVALS
     )
-    probs = mitigated_vqe._assemble_pipeline(
+    probs = mitigated_vqe.assemble_pipeline(
         CircuitSpecStage(), MeasurementStage(), result_format=ResultFormat.PROBS
     )
     assert "QEMStage" in _stage_types(expval)
@@ -127,6 +128,35 @@ def test_assemble_pipeline_qem_inclusion_is_protocol_driven(mitigated_vqe):
     # Variational assembly always binds the trainable parameters.
     assert "ParameterBindingStage" in _stage_types(expval)
     assert "ParameterBindingStage" in _stage_types(probs)
+
+
+class _ReplicatedVQE(VQE):
+    def assemble_pipeline(self, spec_stage, terminal_stage, **kwargs):
+        extra_stages = (*kwargs.pop("extra_stages", ()), ReplicaBundleStage())
+        return super().assemble_pipeline(
+            spec_stage, terminal_stage, extra_stages=extra_stages, **kwargs
+        )
+
+
+def test_assemble_pipeline_override_injects_stage_after_spec(
+    dummy_simulator, default_optimizer
+):
+    """A subclass override of the public hook lands its stage after the spec
+    stage and ahead of mitigation, in the pipeline that actually executes."""
+    program = _vqe_with(
+        dummy_simulator,
+        default_optimizer,
+        ZNE(scale_factors=[1.0, 3.0]),
+        program_cls=_ReplicatedVQE,
+    )
+    types = _stage_types(_protocol_pipeline(program, program.cost_preprocessor()))
+
+    assert (
+        types.index("CircuitSpecStage")
+        < types.index("ReplicaBundleStage")
+        < types.index("QEMStage")
+        < types.index("ParameterBindingStage")
+    )
 
 
 def test_twirl_stage_draws_from_the_program_seed(dummy_simulator, default_optimizer):
@@ -215,7 +245,7 @@ def _time_evolution_pipeline(backend, optimizer, **kwargs):
 def test_exhaustive_quepp_warns_unless_suppressed(
     dummy_simulator, default_optimizer, build
 ):
-    """Both the variational assembler and the shared one honour the program's
+    """Programs that bind parameters and ones that do not both honour
     ``suppress_performance_warnings``."""
     with pytest.warns(DiviPerformanceWarning) as record:
         build(dummy_simulator, default_optimizer)

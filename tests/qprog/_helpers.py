@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared program stubs for ``ProgramEnsemble`` tests."""
+"""Shared program stubs and pipeline stages for ``qprog`` tests."""
 
 from io import StringIO
 
 import numpy as np
 from rich.console import Console
 
+from divi.pipeline import BundleStage, StageOutput, group_by_base_key, reduce_mean
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import ProgressEvent
 from divi.reporting._session import ProgressSession
@@ -22,6 +23,38 @@ def central_difference_of_loss(program, params, step=1e-4):
     )
     losses = np.array(list(program._evaluate_cost_param_sets(rows).values()))
     return (losses[: len(params)] - losses[len(params) :]) / (2 * step)
+
+
+class ReplicaBundleStage(BundleStage):
+    """Fans every circuit body out into two replicas and averages the results."""
+
+    def __init__(self):
+        super().__init__(name="replica")
+
+    @property
+    def axis_name(self):
+        return "replica"
+
+    @property
+    def consumes_dag_bodies(self):
+        return False
+
+    def expand(self, batch, env):
+        return StageOutput(
+            batch={
+                key: meta.set_circuit_bodies(
+                    tuple(
+                        ((*tag, (self.axis_name, i)), dag)
+                        for tag, dag in meta.circuit_bodies
+                        for i in range(2)
+                    )
+                )
+                for key, meta in batch.items()
+            }
+        )
+
+    def reduce(self, results, env, token):
+        return reduce_mean(group_by_base_key(results, self.axis_name, indexed=False))
 
 
 class RecordingProgressSession(ProgressSession):

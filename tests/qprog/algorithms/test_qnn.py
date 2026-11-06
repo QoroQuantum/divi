@@ -12,8 +12,13 @@ from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.zne import ZNE
-from divi.pipeline import CircuitPreprocessor, ContractViolation
-from divi.pipeline.stages import MeasurementStage, QEMStage
+from divi.pipeline import CircuitPipeline, CircuitPreprocessor, ContractViolation
+from divi.pipeline.stages import (
+    DataBindingStage,
+    MeasurementStage,
+    PreprocessStage,
+    QEMStage,
+)
 from divi.qprog.algorithms import (
     QNN,
     AngleEmbedding,
@@ -32,6 +37,7 @@ from divi.qprog.optimizers import (
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests._helpers import exact_match
 from tests.qprog._helpers import (
+    ReplicaBundleStage,
     central_difference_of_loss,
     restore_iteration_checkpoint,
 )
@@ -97,8 +103,8 @@ def make_qnn(
         "optimizer": default_optimizer,
     }
 
-    def _make(**overrides):
-        return QNN(**{**defaults, **overrides})
+    def _make(program_cls=QNN, **overrides):
+        return program_cls(**{**defaults, **overrides})
 
     return _make
 
@@ -946,6 +952,31 @@ class TestPredict:
 
         assert emitted == []
 
+    def test_predict_runs_assemble_pipeline_overrides_without_data_binding(
+        self, mocker, make_qnn, feature_batch_2x2
+    ):
+        program = _trained(make_qnn(program_cls=_ReplicatedQNN))
+
+        pipeline = _predict_pipeline(mocker, program, feature_batch_2x2)
+
+        stage_types = [type(stage) for stage in pipeline.stages]
+        assert ReplicaBundleStage in stage_types
+        assert DataBindingStage not in stage_types
+
+    def test_predict_pipeline_is_the_cost_pipeline_without_data_axis(
+        self, mocker, make_qnn, feature_batch_2x2
+    ):
+        program = make_qnn(qem_protocol=ZNE(scale_factors=[1.0, 3.0]))
+        cost = program._build_preprocessor_pipeline(program.cost_preprocessor())
+
+        predict = _predict_pipeline(mocker, program, feature_batch_2x2)
+
+        assert [type(stage) for stage in predict.stages] == [
+            type(stage)
+            for stage in cost.stages
+            if not isinstance(stage, (DataBindingStage, PreprocessStage))
+        ]
+
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     @pytest.fixture
@@ -955,9 +986,11 @@ class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
 
 def test_data_binding_mixin_wrong_mro_order_rejected():
     """DataBindingMixin must precede the VQA base; the reverse order would let
-    the base shadow the mixin's _assemble_pipeline and silently skip data
+    the base shadow the mixin's assemble_pipeline and silently skip data
     binding, so it is rejected at class-definition time."""
-    with pytest.raises(TypeError, match="DataBindingMixin before"):
+    with pytest.raises(
+        TypeError, match="DataBindingMixin before VariationalQuantumAlgorithm"
+    ):
 
         class _BadOrder(VariationalQuantumAlgorithm, DataBindingMixin):
             pass
@@ -981,11 +1014,19 @@ def _trained(program, bias=None):
     return program
 
 
+class _ReplicatedQNN(QNN):
+    def assemble_pipeline(self, spec_stage, terminal_stage, **kwargs):
+        extra_stages = (*kwargs.pop("extra_stages", ()), ReplicaBundleStage())
+        return super().assemble_pipeline(
+            spec_stage, terminal_stage, extra_stages=extra_stages, **kwargs
+        )
+
+
 def _predict_pipeline(mocker, program, features):
-    """The pipeline ``predict`` assembles, captured from the base assembler."""
-    assemble = mocker.spy(VariationalQuantumAlgorithm, "_assemble_pipeline")
+    """The pipeline ``predict`` runs."""
+    run = mocker.spy(CircuitPipeline, "run")
     program.predict(features, params=_WEIGHTS)
-    return assemble.spy_return
+    return run.call_args.args[0]
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.quepp import QuEPP
+from divi.circuits.zne import ZNE
 from divi.hamiltonians.trotterization import ExactTrotterization, QDrift
 from divi.hamiltonians.trotterization._state_drift import StateDriftExpansion
 from divi.pipeline import DiviPerformanceWarning
@@ -972,6 +973,32 @@ def test_templated_programs_run_exhaustive_quepp(default_test_simulator):
         trajectory.run()
 
     assert all(math.isfinite(p.results) for p in trajectory.programs.values())
+
+
+@pytest.mark.parametrize(
+    "protocol, binds_before_mitigation",
+    [
+        pytest.param(ZNE(scale_factors=[1.0, 3.0]), False, id="zne_binds_last"),
+        pytest.param(
+            QuEPP(sampling="exhaustive"), True, id="exhaustive_quepp_binds_first"
+        ),
+    ],
+)
+def test_templated_programs_bind_once_around_mitigation(
+    dummy_simulator, protocol, binds_before_mitigation
+):
+    trajectory = _templated_trajectory(
+        dummy_simulator, qem_protocol=protocol, suppress_performance_warnings=True
+    )
+    program = next(iter(trajectory.programs.values()))
+
+    pipeline = program._build_preprocessor_pipeline(program._evolution_preprocessor())
+
+    types = [type(stage).__name__ for stage in pipeline.stages]
+    assert types.count("ParameterBindingStage") == 1
+    assert (
+        types.index("ParameterBindingStage") < types.index("QEMStage")
+    ) is binds_before_mitigation
 
 
 def _plotted_lines(dummy_simulator, mocker, observable, results):

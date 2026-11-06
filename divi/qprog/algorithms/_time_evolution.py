@@ -26,13 +26,12 @@ from divi.hamiltonians.trotterization import (
     TrotterSpec,
 )
 from divi.pipeline import (
-    CircuitPipeline,
     CircuitPreprocessor,
     PipelineCadence,
     ResultFormat,
     Stage,
 )
-from divi.pipeline.stages import ParameterBindingStage, TrotterSpecStage
+from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog import QuantumProgram
 from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.initial_states import InitialState, ZerosState
@@ -272,38 +271,9 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             return np.array([[float(self.time)]])
         return np.empty((1, 0))
 
-    def _assemble_pipeline(
-        self,
-        spec_stage: Stage,
-        terminal_stage: Stage,
-        *,
-        result_format: ResultFormat,
-        extra_stages: Sequence[Stage] = (),
-    ) -> CircuitPipeline:
-        # Parameter binding is needed only for the trajectory-template path
-        # (binding the template's ``t`` to ``self.time``).
-        if self._template_meta is None:
-            return super()._assemble_pipeline(
-                spec_stage,
-                terminal_stage,
-                result_format=result_format,
-                extra_stages=extra_stages,
-            )
-        mitigation_stages = self._mitigation_stages(result_format)
-        bind_early = (
-            bool(mitigation_stages) and self._qem_protocol.requires_bound_params
-        )
-        stages: list[Stage] = [spec_stage, *extra_stages]
-        if bind_early:
-            stages.append(ParameterBindingStage())
-        stages.extend(mitigation_stages)
-        stages.append(terminal_stage)
-        if not bind_early:
-            stages.append(ParameterBindingStage())
-        return CircuitPipeline(
-            stages=stages,
-            suppress_performance_warnings=self._suppress_performance_warnings,
-        )
+    @property
+    def _binds_parameters(self) -> bool:
+        return self._template_meta is not None
 
     def _build_pipeline_env(self, **overrides):
         if self._template_meta is not None and "param_sets" not in overrides:

@@ -410,7 +410,7 @@ solution-extracting programs add a ``sample`` protocol from
    # A caller (e.g. an optimizer) measures the prepared state through one verb:
    #   losses = program.evaluate(params, program.cost_preprocessor())
 
-The single pipeline is assembled by ``_assemble_pipeline`` — spec → the
+The single pipeline is assembled by ``assemble_pipeline`` — spec → the
 protocol's ``PreprocessStage`` (its post-spec transform) → [error mitigation
 (+ Pauli twirls) when the QEM protocol applies to the result format] → terminal
 measurement.  :class:`~divi.qprog.VariationalQuantumAlgorithm` appends a

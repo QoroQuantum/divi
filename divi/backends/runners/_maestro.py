@@ -234,7 +234,7 @@ class MaestroConfig(BaseModel):
     Simulator options are ``maestro.SimulatorConfig``'s own, given as keyword
     arguments with its names, defaults and validation; see the `maestro Python
     bindings guide
-    <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_
+    <https://qoroquantum.github.io/maestro/api/configuration.html#all-simulatorconfig-options>`_
     for what each one does::
 
         MaestroConfig(simulation_type="MatrixProductState", max_bond_dimension=32)
