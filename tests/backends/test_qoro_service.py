@@ -54,7 +54,11 @@ from divi.backends._systems import (
 from divi.backends.runners._maestro_payload import maestro_config_to_payload
 from divi.backends.runners._qoro import MaxRetriesReachedError
 from divi.circuits._payloads import CircuitPayload
-from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
+from divi.exceptions import (
+    CircuitTooWideError,
+    ExecutionCancelledError,
+    VJPUnavailableError,
+)
 from tests._helpers import exact_match
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
@@ -62,6 +66,7 @@ from tests.backends._circuit_runner_contracts import (
     AsyncRunnerContractsBase,
 )
 from tests.backends._helpers import (
+    VJP_COTANGENTS,
     build_qh_histogram,
     create_failed_job,
     http_response,
@@ -70,6 +75,7 @@ from tests.backends._helpers import (
     make_mock_init_response,
     make_mock_status_response,
     make_qasm_payload,
+    make_vjp_payload,
     patch_transport,
 )
 
@@ -405,6 +411,32 @@ class TestQoroJobStatusAPI:
                 poll()
         else:
             assert poll() is JobStatus.COMPLETED
+
+
+def make_vjp_transport(mocker, status=JobStatus.COMPLETED, metadata=None):
+    """A ``_make_request`` stand-in for a job whose two rows each report the
+    gradient ``[±1, ±3]`` over their gate angles, or ``metadata`` instead."""
+    rows = [
+        {
+            "label": f"row_{i}",
+            "results": {"ZZ": 0.5, "XI": 0.25},
+            "metadata": (
+                {"vjp": [sign * 1.0, sign * 3.0]} if metadata is None else metadata
+            ),
+        }
+        for i, sign in enumerate((1, -1))
+    ]
+
+    def respond(method, path, **kwargs):
+        if path == "job/init/":
+            return make_mock_init_response(mocker)
+        if path.endswith("add_circuits/"):
+            return make_mock_add_response(mocker)
+        if "resultsV2" in path:
+            return mocker.MagicMock(json=lambda: {"results": rows, "next": None})
+        return mocker.MagicMock(json=lambda: {"status": status.value, "run_time": 0.5})
+
+    return respond
 
 
 class TestQoroServiceMock:
@@ -1771,6 +1803,127 @@ class TestQoroServiceMock:
         add_payload = mock_make_request.call_args_list[1].kwargs["json"]
         assert add_payload["observables"].startswith("@gzs")
         assert "shots" not in add_payload
+
+    @pytest.mark.parametrize(
+        "force_sampling, make_config, expected",
+        [
+            pytest.param(False, lambda: None, True, id="native-noiseless"),
+            pytest.param(True, lambda: None, False, id="force-sampling"),
+            pytest.param(
+                False,
+                lambda: MaestroConfig(noise_model=maestro.NoiseModel()),
+                False,
+                id="noise-model",
+            ),
+        ],
+    )
+    def test_vjp_needs_native_noiseless_estimation(
+        self, qoro_service_factory, force_sampling, make_config, expected
+    ):
+        service = qoro_service_factory(maestro_config=make_config())
+        service.job_config = JobConfig(
+            shots=1000,
+            force_sampling=force_sampling,
+            simulator_cluster=SimulatorCluster(name="s", supports_expval=True),
+        )
+
+        assert service.supports_vjp is expected
+
+    def test_vjp_submits_one_expectation_job_with_each_rows_cotangent(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        transport = mocker.patch.object(
+            service, "_make_request", side_effect=make_vjp_transport(mocker)
+        )
+
+        service.submit_vjp(
+            [make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS
+        )
+
+        init, add = (call.kwargs["json"] for call in transport.call_args_list[:2])
+        assert init["job_type"] == JobType.EXPECTATION.value
+        assert [row["cotangent"] for row in add["parameter_sets"]] == [
+            [1.0, 0.5],
+            [-0.3, 2.0],
+        ]
+        assert [row["label"] for row in add["parameter_sets"]] == ["row_0", "row_1"]
+        assert add["observables"] == compress_ham_ops("ZZ;XI")
+
+    def test_vjp_maps_gradients_back_through_scaled_angles(
+        self, mocker, qoro_service_factory
+    ):
+        """The service differentiates gate angles; ry(2*w_0) doubles w_0's share."""
+        service = qoro_service_factory()
+        mocker.patch.object(
+            service, "_make_request", side_effect=make_vjp_transport(mocker)
+        )
+
+        result = service.submit_vjp(
+            [make_vjp_payload("ry(2*w_0) q[0];\nrz(w_1) q[1];\n")],
+            ham_ops="ZZ;XI",
+            cotangents=VJP_COTANGENTS,
+        )
+
+        first, second = result.results
+        assert first["label"] == "row_0"
+        assert first["results"] == {"ZZ": 0.5, "XI": 0.25}
+        np.testing.assert_allclose(first["metadata"]["vjp"], [2.0, 3.0])
+        np.testing.assert_allclose(second["metadata"]["vjp"], [-2.0, -3.0])
+        assert result.run_time == pytest.approx(0.5)
+
+    def test_a_job_the_service_fails_makes_vjp_unavailable(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=make_vjp_transport(mocker, status=JobStatus.FAILED),
+        )
+
+        with pytest.raises(VJPUnavailableError, match="could not differentiate"):
+            service.submit_vjp(
+                [make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS
+            )
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [{}, {"vjp": [1.0]}, {"vjp": [1.0, 2.0, 3.0]}],
+        ids=["no-gradient", "too-short", "too-long"],
+    )
+    def test_a_gradient_that_does_not_fit_the_compiled_circuit_is_unavailable(
+        self, mocker, qoro_service_factory, metadata
+    ):
+        service = qoro_service_factory()
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=make_vjp_transport(mocker, metadata=metadata),
+        )
+
+        with pytest.raises(VJPUnavailableError):
+            service.submit_vjp(
+                [make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS
+            )
+
+    def test_a_cancel_arriving_first_dispatches_no_vjp_job(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        transport = mocker.patch.object(service, "_make_request")
+        event = Event()
+        event.set()
+
+        with pytest.raises(ExecutionCancelledError):
+            service.submit_vjp(
+                [make_vjp_payload()],
+                ham_ops="ZZ;XI",
+                cotangents=VJP_COTANGENTS,
+                cancellation_event=event,
+            )
+
+        transport.assert_not_called()
 
     def test_submission_rejects_empty_payload_list(self, qoro_service_factory):
         service = qoro_service_factory()

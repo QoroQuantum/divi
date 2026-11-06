@@ -20,6 +20,7 @@ from importlib import metadata
 from threading import Event
 from typing import Any, TypeVar
 
+import numpy as np
 import requests
 from dotenv import dotenv_values, find_dotenv
 from qiskit import QuantumCircuit
@@ -37,6 +38,7 @@ from divi.exceptions import (
     CharacterizationSubmitError,
     CircuitTooWideError,
     ExecutionCancelledError,
+    VJPUnavailableError,
 )
 from divi.qasm import (
     _format_validation_error_with_context,
@@ -81,6 +83,7 @@ from .._systems import (
 )
 from ._maestro import MaestroConfig, require_maestro_config
 from ._maestro_payload import maestro_config_from_payload, maestro_config_to_payload
+from ._qoro_adjoint import run_adjoint_job
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
@@ -429,6 +432,15 @@ class QoroService(AsyncJobBackend):
     def resolves_parameters(self) -> bool:
         """The Qoro backend substitutes parameter values server-side."""
         return True
+
+    @property
+    def supports_vjp(self) -> bool:
+        """Whether estimation is native and noiseless, as adjoint differentiation needs.
+
+        The service itself refuses simulators it cannot differentiate on.
+        """
+        config = self.maestro_config
+        return self.supports_expval and (config is None or config.noise_model is None)
 
     def _resolve_and_validate_target(self, config: JobConfig) -> JobConfig:
         """Ensures the config has a valid target, resolving strings if needed.
@@ -954,6 +966,39 @@ class QoroService(AsyncJobBackend):
             device_config=device_config,
             job_type=job_type,
             envelope=envelope,
+        )
+
+    def submit_vjp(
+        self,
+        payloads: Sequence[CircuitPayload],
+        *,
+        ham_ops: str,
+        cotangents: Mapping[str, np.ndarray],
+        cancellation_event: Event | None = None,
+    ) -> ExecutionResult:
+        """Expectation values and vector-Jacobian products by adjoint differentiation.
+
+        Submits one ``EXPECTATION`` job in which every parameter set carries its
+        cotangent, and waits for it. See
+        :meth:`~divi.backends.CircuitRunner.submit_vjp`. Terms shorter than a
+        circuit are padded onto its first qubits, as in :meth:`submit_circuits`.
+
+        Raises:
+            VJPUnavailableError: If :attr:`supports_vjp` is False, a payload's
+                circuit cannot be differentiated, or the service fails the job.
+        """
+        if not self.supports_vjp:
+            raise VJPUnavailableError(
+                "QoroService computes vector-Jacobian products only with "
+                "native, noiseless estimation."
+            )
+        return run_adjoint_job(
+            self,
+            JobType.EXPECTATION,
+            payloads,
+            ham_ops=ham_ops,
+            cotangents=cotangents,
+            cancellation_event=cancellation_event,
         )
 
     def _bound_call_plan(

@@ -54,9 +54,9 @@ L-BFGS-B
 
 L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that uses gradient information.
 
-On a :class:`~divi.backends.MaestroSimulator` that estimates expectation values
-natively and without a noise model, Divi computes the gradient by adjoint
-differentiation on Maestro's statevector: one submission per gradient, however
+On a backend that estimates expectation values natively, without a noise model,
+and offers adjoint differentiation (:attr:`~divi.backends.CircuitRunner.supports_vjp`),
+Divi computes the gradient that way: one submission per gradient, however
 many parameters the circuit has. In a :class:`~divi.qprog.ensembles.ProgramEnsemble`
 these submissions go straight to the backend rather than into merged batches, and
 the progress display shows no batch row for them.

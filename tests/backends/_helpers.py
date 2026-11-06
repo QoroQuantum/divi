@@ -7,6 +7,7 @@
 from collections.abc import Callable
 from http import HTTPStatus
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 from qiskit.circuit import Parameter
@@ -102,6 +103,40 @@ def create_failed_job(service):
     )
     job_id = response.json()["job_id"]
     return ExecutionResult(job_id=job_id)
+
+
+def parametric_payload(
+    body: str,
+    *,
+    rows: tuple[tuple[float, ...], ...],
+    parameters: tuple[str, ...],
+    n_qubits: int,
+) -> CircuitPayload:
+    """A payload over ``parameters``, one set per row labelled ``row_<i>``,
+    whose register is measured at the end."""
+    header = (
+        'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+        f"qreg q[{n_qubits}];\ncreg c[{n_qubits}];\n"
+    )
+    measures = "".join(f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits))
+    return CircuitPayload(
+        circuit=header + body + measures,
+        parameters=tuple(Parameter(name) for name in parameters),
+        parameter_sets=tuple((f"row_{i}", row) for i, row in enumerate(rows)),
+    )
+
+
+VJP_COTANGENTS = {"row_0": np.array([1.0, 0.5]), "row_1": np.array([-0.3, 2.0])}
+
+
+def make_vjp_payload(body="ry(w_0) q[0];\nrz(w_1) q[1];\n") -> CircuitPayload:
+    """A two-row payload over ``w_0`` and ``w_1`` that ``VJP_COTANGENTS`` weights."""
+    return parametric_payload(
+        body,
+        rows=((0.3, -0.7), (-1.2, 0.4)),
+        parameters=("w_0", "w_1"),
+        n_qubits=2,
+    )
 
 
 def make_qasm_payload(

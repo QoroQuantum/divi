@@ -158,6 +158,44 @@ def _compile_adjoint_template(
     return program, angle_matrix, angle_offset
 
 
+def _compile_adjoint_programs(
+    payloads: Sequence[CircuitPayload],
+) -> list[tuple["maestro.AdjointProgram", np.ndarray, np.ndarray]]:
+    """Each payload's adjoint program with the map from its parameters to the
+    program's gate angles.
+
+    Raises:
+        VJPUnavailableError: If a circuit cannot be differentiated.
+    """
+    compiled = []
+    for payload in payloads:
+        program = _compile_adjoint_template(payload.circuit, payload.parameter_names)
+        if isinstance(program, str):
+            raise VJPUnavailableError(program)
+        compiled.append(program)
+    return compiled
+
+
+def _vjp_result_entries(
+    labels: Sequence[str],
+    terms: Sequence[str],
+    raw: Mapping[str, Any],
+    angle_matrix: np.ndarray,
+    time_taken: float,
+) -> list[dict]:
+    """Result entries from an adjoint VJP, its gradients taken back to the
+    payload's parameters."""
+    gradients = np.asarray(raw["vjp"], dtype=np.float64) @ angle_matrix
+    return [
+        {
+            "label": label,
+            "results": dict(zip(terms, map(float, values))),
+            "metadata": {"vjp": gradient, "time_taken": time_taken},
+        }
+        for label, values, gradient in zip(labels, raw["expectation_values"], gradients)
+    ]
+
+
 # Compiled programs are native objects; free them before interpreter shutdown.
 atexit.register(_compile_adjoint_template.cache_clear)
 
@@ -485,12 +523,7 @@ class MaestroSimulator(CircuitRunner):
             cancellation_event,
             "Maestro batch cancelled before any circuit was dispatched",
         )
-        compiled = [
-            _compile_adjoint_template(payload.circuit, payload.parameter_names)
-            for payload in payloads
-        ]
-        if reason := next((c for c in compiled if isinstance(c, str)), None):
-            raise VJPUnavailableError(reason)
+        compiled = _compile_adjoint_programs(payloads)
         if self.track_depth:
             templates = [
                 build_template(payload.circuit, payload.parameter_names)
@@ -527,17 +560,7 @@ class MaestroSimulator(CircuitRunner):
                     f"Maestro cannot differentiate the circuit: {exc}"
                 ) from exc
             time_taken = (time.perf_counter() - start) / len(labels)
-            gradients = raw["vjp"] @ angle_matrix
-            return [
-                {
-                    "label": label,
-                    "results": dict(zip(terms, map(float, values))),
-                    "metadata": {"vjp": gradient, "time_taken": time_taken},
-                }
-                for label, values, gradient in zip(
-                    labels, raw["expectation_values"], gradients
-                )
-            ]
+            return _vjp_result_entries(labels, terms, raw, angle_matrix, time_taken)
 
         per_payload = _run_with_cancellation(
             self._get_executor(),
