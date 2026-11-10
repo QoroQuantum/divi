@@ -75,7 +75,6 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.cost_hamiltonian = SparsePauliOp.from_sparse_list(
             [("X", [0], 1.0), ("Z", [1], 1.0), ("XZ", [0, 1], 1.0)], num_qubits=2
         )
-        self.loss_constant = 0.0
         self.checkpointed_value = None
 
     @property
@@ -346,9 +345,8 @@ class TestProgram(BaseVariationalQuantumAlgorithmTest):
 
     def test_evaluate_cost_param_sets_uses_initial_spec_seed(self, mocker):
         """Cost evaluation seeds from the ``_initial_spec`` hook, threads the param sets,
-        adds the loss constant, and returns results sorted by param-set index."""
+        and returns results sorted by param-set index."""
         program = self._create_sample_program(mocker)
-        program.loss_constant = 10.0
 
         mocker.patch.object(program, "_initial_spec", return_value="hook_spec")
         execute = mocker.patch.object(
@@ -369,7 +367,7 @@ class TestProgram(BaseVariationalQuantumAlgorithmTest):
         np.testing.assert_array_equal(
             execute.call_args.kwargs["param_sets"], param_sets
         )
-        assert list(losses.items()) == [(0, 11.0), (1, 12.0)]
+        assert list(losses.items()) == [(0, 1.0), (1, 2.0)]
 
     def test_evaluate_cost_param_sets_threads_estimator_samples(self, mocker):
         program = self._create_sample_program(mocker)

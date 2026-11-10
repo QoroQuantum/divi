@@ -495,10 +495,6 @@ class MaxWeightMatchingProblem(QAOAProblem):
         return self._bop.mixer_hamiltonian
 
     @property
-    def loss_constant(self) -> float:
-        return self._bop.loss_constant
-
-    @property
     def decode_fn(self) -> Callable[[str], list[tuple]]:
         return partial(_bitstring_to_matching, edges=self._labelled_edges)
 

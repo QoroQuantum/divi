@@ -128,7 +128,6 @@ class TestInitialization:
         labels = [str(p) for p in program.cost_hamiltonian.paulis]
         assert labels == ["ZZ"]
         assert program.cost_hamiltonian.coeffs.real.tolist() == [1.0]
-        assert program.loss_constant == 0.0
 
     def test_defaults(self, make_qnn, simple_feature_map, simple_ansatz):
         with warnings.catch_warnings():
@@ -162,14 +161,6 @@ class TestInitialization:
 
     def test_default_parameter_frequencies_are_undeclared(self, make_qnn):
         assert make_qnn(n_layers=2)._parameter_frequencies() is None
-
-    def test_loss_constant_extracted_from_observable(self, make_qnn):
-        """Identity terms in the observable land on ``loss_constant``."""
-        program = make_qnn(
-            observable=SparsePauliOp.from_list([("ZI", 1.0), ("II", 3.0)])
-        )
-        assert program.loss_constant == pytest.approx(3.0)
-        assert program.cost_hamiltonian.size == 1
 
     def test_meta_circuit_parameter_ordering(self, make_qnn):
         program = make_qnn()
@@ -280,9 +271,20 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="loss_reduction must be"):
             make_qnn(loss_reduction="median")  # type: ignore[arg-type]
 
-    def test_constant_only_observable_rejected(self, make_qnn):
-        with pytest.raises(ValueError, match="only constant terms"):
-            make_qnn(observable=SparsePauliOp.from_list([("II", 5.0)]))
+    @pytest.mark.parametrize(
+        "loss_reduction, n_scored", [("mean", 1), ("sum", 4)], ids=["mean", "sum"]
+    )
+    def test_constant_only_observable_scores_its_constant(
+        self, make_qnn, default_test_simulator, loss_reduction, n_scored
+    ):
+        program = make_qnn(
+            observable=SparsePauliOp.from_list([("II", 5.0)]),
+            backend=default_test_simulator,
+            loss_reduction=loss_reduction,
+        )
+        weights = np.zeros((1, program.n_params))
+
+        assert program._evaluate_cost_param_sets(weights)[0] == 5.0 * n_scored
 
     def test_labels_default_unsupervised(self, make_qnn):
         program = make_qnn()
@@ -611,15 +613,8 @@ def test_batch_loss_matches_per_sample_mean(
 def test_identity_constant_scales_with_sample_count_under_sum_reduction(
     make_qnn, feature_batch_2x2, default_test_simulator
 ):
-    """Regression for the post-hoc ``loss_constant`` add at the VQA layer.
-
-    Under ``loss_reduction="sum"`` an Identity term in the observable must
-    contribute ``n_samples * c`` to the final loss (one per sample), not
-    just ``c`` (one global post-reduction add). The pre-fix code added the
-    constant once at the VQA layer after the sample axis had already been
-    collapsed; with N=4 samples and c=2.5 the bug would manifest as a
-    7.5-unit underestimate.
-    """
+    """Under ``loss_reduction="sum"`` an identity term in the observable
+    contributes ``n_samples * c`` to the loss, one per sample, not ``c``."""
     weights = np.array([[0.5, 1.0, 1.5, 2.0]])
     n_samples = feature_batch_2x2.shape[0]
     constant = 2.5
@@ -643,12 +638,38 @@ def test_identity_constant_scales_with_sample_count_under_sum_reduction(
     )
     shifted_loss = with_const._evaluate_cost_param_sets(weights)[0]
 
-    # With per-sample constant folding the gap is exactly ``n_samples * c``;
-    # the pre-fix bug would yield ``c`` (off by ``(n_samples - 1) * c``).
-    assert with_const.loss_constant == pytest.approx(constant)
     np.testing.assert_allclose(
         shifted_loss - base_loss, n_samples * constant, atol=1e-9
     )
+
+
+def test_supervised_loss_compares_predictions_including_the_constant(
+    make_qnn, feature_batch_2x2, default_test_simulator
+):
+    """Shifting the observable by ``c`` and the labels by ``c`` leaves the
+    squared error unchanged, so the constant is in each prediction."""
+    weights = np.array([[0.5, 1.0, 1.5, 2.0]])
+    labels = np.array([0.2, -0.4, 0.6, 0.1])
+    constant = 2.5
+
+    def evaluate_loss(observable, shifted_labels):
+        default_test_simulator.set_seed(1997)
+        program = make_qnn(
+            observable=observable,
+            labels=shifted_labels,
+            backend=default_test_simulator,
+            n_layers=1,
+            seed=1997,
+            loss_reduction="sum",
+        )
+        return program._evaluate_cost_param_sets(weights)[0]
+
+    base = evaluate_loss(SparsePauliOp("ZI"), labels)
+    shifted = evaluate_loss(
+        SparsePauliOp.from_list([("ZI", 1.0), ("II", constant)]), labels + constant
+    )
+
+    assert shifted == pytest.approx(base, abs=1e-9)
 
 
 @pytest.mark.e2e
@@ -1080,14 +1101,9 @@ def test_predict_returns_nan_scores_without_warning(mocker, make_qnn):
     "params",
     [pytest.param(None, id="best_params"), pytest.param(_WEIGHTS[None, :], id="row")],
 )
-def test_scores_bind_features_then_weights_and_add_the_constant(
-    mocker, make_qnn, params
-):
-    """Each row binds its features ahead of the weights; the readout carries
-    the observable's constant."""
-    program = _trained(
-        make_qnn(observable=SparsePauliOp.from_list([("ZI", 1.0), ("II", 3.0)]))
-    )
+def test_scores_bind_features_then_weights(mocker, make_qnn, params):
+    """Each row binds its features ahead of the weights."""
+    program = _trained(make_qnn())
     measure = mocker.patch.object(
         program, "_measure_observable_for", return_value=np.array([0.1, -0.2])
     )
@@ -1095,10 +1111,25 @@ def test_scores_bind_features_then_weights_and_add_the_constant(
 
     scores = program.predict(features, params=params, return_scores=True)
 
-    np.testing.assert_allclose(scores, [3.1, 2.8])
+    np.testing.assert_allclose(scores, [0.1, -0.2])
     np.testing.assert_array_equal(
         measure.call_args.args[0], np.hstack([features, np.tile(_WEIGHTS, (2, 1))])
     )
+
+
+def test_scores_carry_the_observable_constant(make_qnn, default_test_simulator):
+    program = make_qnn(
+        observable=SparsePauliOp.from_list([("II", 3.0)]),
+        backend=default_test_simulator,
+    )
+
+    scores = program.predict(
+        np.array([[0.1, 0.2], [0.3, 0.4]]),
+        params=np.zeros(program.n_params),
+        return_scores=True,
+    )
+
+    np.testing.assert_array_equal(scores, [3.0, 3.0])
 
 
 def test_predict_pipeline_mitigates_like_the_cost_pipeline(

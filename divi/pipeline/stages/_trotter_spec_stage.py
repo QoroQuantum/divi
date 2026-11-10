@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Callable, Hashable
-from dataclasses import replace
 from numbers import Integral
 from typing import Any
 
@@ -11,7 +10,7 @@ import numpy as np
 
 from divi.circuits import MetaCircuit
 from divi.circuits._core import _assert_hermitian_spo
-from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
+from divi.hamiltonians._term_ops import _split_identity_terms
 from divi.hamiltonians.trotterization import QDrift, TrotterizationStrategy, TrotterSpec
 from divi.pipeline._result_keys_operations import (
     group_by_base_key,
@@ -81,10 +80,8 @@ class TrotterSpecStage(SpecStage[TrotterSpec]):
         self._meta_circuit_factory = meta_circuit_factory
         self._n_steps = int(n_steps)
 
-    def _prepare(
-        self, items: TrotterSpec
-    ) -> tuple[TrotterSpec, TrotterizationStrategy, int, dict]:
-        """Validate input and compute the shared ``(spec, strategy, n_samples, token)`` tuple.
+    def _prepare(self, items: TrotterSpec) -> tuple[TrotterizationStrategy, int, dict]:
+        """Validate input and compute the shared ``(strategy, n_samples, token)`` tuple.
 
         Shared between :meth:`expand` and :meth:`dry_expand`.
         """
@@ -94,31 +91,28 @@ class TrotterSpecStage(SpecStage[TrotterSpec]):
             )
 
         _assert_hermitian_spo(items.hamiltonian)
-        spo_clean, _ = _clean_hamiltonian_spo(items.hamiltonian)
-
-        if spo_clean.size == 0:
-            raise ValueError("Hamiltonian contains only constant terms.")
+        terms, _ = _split_identity_terms(items.hamiltonian.simplify(atol=0))
 
         strategy = self._trotterization_strategy
         n_samples = getattr(strategy, "n_hamiltonians_per_iteration", 1)
 
         token = {
             "strategy": type(strategy).__name__,
-            "n_terms": spo_clean.size,
-            "n_qubits": spo_clean.num_qubits,
+            "n_terms": terms.size,
+            "n_qubits": items.hamiltonian.num_qubits,
             "n_samples": n_samples,
         }
-        return replace(items, hamiltonian=spo_clean), strategy, n_samples, token
+        return strategy, n_samples, token
 
     def expand(
         self, batch: TrotterSpec, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
         """Transform the spec into a keyed batch of MetaCircuits (one per strategy output)."""
-        spec, strategy, n_samples, token = self._prepare(batch)
+        strategy, n_samples, token = self._prepare(batch)
 
         rng = self._rng_for_evaluation(strategy, env)
         results = strategy.process_hamiltonian_batch(
-            spec, n_samples, n_steps=self._n_steps, rng=rng
+            batch, n_samples, n_steps=self._n_steps, rng=rng
         )
         metas: MetaCircuitBatch = {
             (("ham", ham_id),): self._meta_circuit_factory(result, ham_id)
@@ -139,11 +133,11 @@ class TrotterSpecStage(SpecStage[TrotterSpec]):
         deterministic case (``ExactTrotterization`` with ``n_samples=1``)
         this reduces to the same single factory call as :meth:`expand`.
         """
-        spec, strategy, n_samples, token = self._prepare(batch)
+        strategy, n_samples, token = self._prepare(batch)
 
         prototype = self._meta_circuit_factory(
             strategy.process_hamiltonian(
-                spec,
+                batch,
                 n_steps=self._n_steps,
                 rng=self._rng_for_evaluation(strategy, env),
             ),

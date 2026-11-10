@@ -18,6 +18,7 @@ from divi.circuits._conversions import (
     _format_bound_param,
     _real_float_array,
 )
+from divi.circuits._qasm_template import _template_cached
 from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
 from divi.pipeline.abc import (
     BundleStage,
@@ -29,7 +30,7 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
+from divi.pipeline.stages._qasm_cache import _qasm_body_cached
 from divi.pipeline.stages._qem_stage import QEMStage
 
 
@@ -207,9 +208,9 @@ def _slow_prepare(node: MetaCircuit, _body_tag: tuple, dag: DAGCircuit):
 
 
 def _slow_emit(node: MetaCircuit, qc, values: np.ndarray) -> DAGCircuit:
-    """Bind a concrete parameter set into a prepared QuantumCircuit template."""
+    """Bind a parameter set into the circuit, skipping parameters it lacks."""
     binding = dict(zip(node.parameters, values))
-    return circuit_to_dag(qc.assign_parameters(binding, inplace=False))
+    return circuit_to_dag(qc.assign_parameters(binding, inplace=False, strict=False))
 
 
 class ParameterBindingStage(BundleStage):

@@ -43,7 +43,7 @@ def _naive_diagonal_energy(problem, solution):
     and accumulation order) so equality with the cached path is bit-for-bit.
     """
     spo = problem.cost_hamiltonian
-    energy = problem.loss_constant
+    energy = 0.0
     for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
         eigenvalue = 1.0
         for qubit, char in enumerate(reversed(label)):
@@ -526,16 +526,6 @@ class TestGraphInput:
             QAOA(
                 MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
                 initial_state="Bell",
-                backend=dummy_simulator,
-            )
-
-    def test_constant_only_hamiltonian_raises(self, dummy_simulator):
-        """QAOA rejects constant-only cost Hamiltonian (e.g. empty graph) at init."""
-        with pytest.raises(
-            ValueError, match="Hamiltonian contains only constant terms"
-        ):
-            QAOA(
-                MaxCutProblem(nx.empty_graph(1)),
                 backend=dummy_simulator,
             )
 

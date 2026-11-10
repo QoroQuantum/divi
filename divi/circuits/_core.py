@@ -208,6 +208,16 @@ class MetaCircuit:
         _, dag = self.circuit_bodies[0]
         return dag.num_qubits()
 
+    @property
+    def is_unmeasured(self) -> bool:
+        """Whether every expectation value is an exact constant, so no circuit runs."""
+        return (
+            self.result_format is ResultFormat.EXPVALS
+            and isinstance(self.observable, tuple)
+            and len(self.observable) > 0
+            and all(obs.size == 0 for obs in self.observable)
+        )
+
     def set_circuit_bodies(
         self, bodies: Sequence[tuple[QASMTag, DAGCircuit]]
     ) -> MetaCircuit:

@@ -245,8 +245,8 @@ class PullbackMetricEstimator(MetricEstimator):
     r"""Hamiltonian-aware pullback metric.
 
     Builds ``G_ij = sum_r |c_r| (d_i <P_r>)(d_j <P_r>)`` from the per-Pauli-term
-    expectation gradients of the cost observables ``O_j = sum_r a_jr P_r``
-    (identity terms excluded). Each term's weight in the loss is
+    expectation gradients of the cost observables ``O_j = sum_r a_jr P_r``;
+    an identity term's gradient is exactly zero. Each term's weight in the loss is
     ``c_r = a_jr * dL/d<O_j>``, with the slopes supplied by the program at the
     current parameters: ``1`` when the loss is ``<H>``, the loss's local slope
     otherwise. Weighting by ``|c_r|`` is a heuristic choice, not a Gauss–Newton
@@ -340,19 +340,12 @@ class PullbackMetricEstimator(MetricEstimator):
 def _split_into_terms(
     hamiltonian: SparsePauliOp,
 ) -> tuple[tuple[SparsePauliOp, ...], npt.NDArray[np.float64]]:
-    """Split into single-term, unit-coefficient observables (dropping identity
-    terms, which have zero gradient) and the matching real coefficients.
-
-    An identity-only observable splits into no terms.
-    """
-    terms: list[SparsePauliOp] = []
-    coeffs: list[float] = []
-    for label, coeff in hamiltonian.to_list():
-        if set(label) == {"I"}:  # identity term: zero gradient, no contribution
-            continue
-        terms.append(SparsePauliOp(label))
-        coeffs.append(float(np.real(coeff)))
-    return tuple(terms), np.asarray(coeffs, dtype=np.float64)
+    """Split into single-term, unit-coefficient observables and the matching
+    real coefficients."""
+    return (
+        tuple(SparsePauliOp(label) for label in hamiltonian.paulis.to_labels()),
+        np.real(hamiltonian.coeffs).astype(np.float64),
+    )
 
 
 def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
@@ -370,7 +363,7 @@ def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
     if not terms:
         raise ContractViolation(
             "The pullback metric requires the cost observables to carry at least "
-            "one non-identity Pauli term."
+            "one Pauli term."
         )
     return replace(meta, observable=terms, _was_multi_obs=True)
 

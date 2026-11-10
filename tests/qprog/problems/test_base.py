@@ -16,10 +16,6 @@ class MinimalProblem(QAOAProblem):
         return SparsePauliOp.from_list([("ZI", 1.0), ("IZ", -1.0)])
 
     @property
-    def loss_constant(self) -> float:
-        return 0.0
-
-    @property
     def decode_fn(self):
         return lambda bitstring: bitstring
 

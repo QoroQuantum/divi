@@ -16,7 +16,6 @@ import numpy as np
 import scipy.sparse as sps
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.qprog.initial_states import (
     InitialState,
     OnesState,
@@ -86,11 +85,7 @@ class GraphProblemBase(QAOAProblem):
         else:
             resolved = self._resolver(graph)
         cost_spo, self._mixer_hamiltonian, *self._metadata = resolved
-
-        cleaned, ham_constant = _clean_hamiltonian_spo(cost_spo, raise_on_constant=True)
-
-        self._cost_hamiltonian = cleaned
-        self._loss_constant = ham_constant
+        self._cost_hamiltonian = cost_spo.simplify(atol=0)
         self._wire_labels = self._compute_wire_labels()
         self._initial_state = (
             self._constrained_state_cls
@@ -127,10 +122,6 @@ class GraphProblemBase(QAOAProblem):
     @property
     def wire_labels(self) -> tuple:
         return self._wire_labels
-
-    @property
-    def loss_constant(self) -> float:
-        return self._loss_constant
 
     @property
     def recommended_initial_state(self) -> InitialState:
@@ -248,7 +239,7 @@ class GraphProblemBase(QAOAProblem):
                 f"got shape {x.shape}."
             )
         parities = (z_masks @ x) & 1
-        return float(self.loss_constant + coeffs @ (1 - 2 * parities))
+        return float(coeffs @ (1 - 2 * parities))
 
     def postprocess_candidates(
         self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False

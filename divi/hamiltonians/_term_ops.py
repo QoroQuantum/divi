@@ -4,7 +4,6 @@
 
 """Low-level manipulation primitives for ``SparsePauliOp`` Hamiltonians."""
 
-import math
 import numbers
 import warnings
 from collections.abc import Mapping, Sequence
@@ -260,33 +259,10 @@ def _spo_wires(op: _PennyLaneOperator | SparsePauliOp) -> tuple:
     return tuple(op.wires)
 
 
-def _clean_hamiltonian_spo(
-    spo: SparsePauliOp, *, raise_on_constant: bool = False
-) -> tuple[SparsePauliOp, float]:
-    """Partition identity-only rows from the rest. Returns ``(non-identity SPO, constant)``.
-
-    The returned SPO has ``size == 0`` when the input contains only identity
-    terms; callers must use ``size`` (not ``simplify()``) to detect emptiness.
-
-    Set ``raise_on_constant=True`` to reject a constant-only operator instead —
-    variational programs (VQE, QAOA, CustomVQA, QNN) have no objective to
-    minimise when nothing but identity terms remain. Callers that legitimately
-    tolerate constants (e.g. time evolution) keep the default.
-    """
-    if spo.size == 0:
-        if raise_on_constant:
-            raise ValueError("Hamiltonian contains only constant terms.")
-        return spo, 0.0
-    non_id_mask = np.any(spo.paulis.x | spo.paulis.z, axis=1)
-    # ``math.fsum`` is exact-rounding; protects against alternating-sign
-    # cancellation that ``ndarray.sum`` accumulates left-to-right.
-    constant = math.fsum(spo.coeffs[~non_id_mask].real)
-    cleaned = SparsePauliOp(spo.paulis[non_id_mask], spo.coeffs[non_id_mask])
-    if non_id_mask.any():
-        cleaned = cleaned.simplify()
-    if raise_on_constant and cleaned.size == 0:
-        raise ValueError("Hamiltonian contains only constant terms.")
-    return cleaned, constant
+def _split_identity_terms(spo: SparsePauliOp) -> tuple[SparsePauliOp, SparsePauliOp]:
+    """Split ``spo`` into its non-identity terms and its identity terms."""
+    identity = ~np.any(spo.paulis.x | spo.paulis.z, axis=1)
+    return spo[np.flatnonzero(~identity)], spo[np.flatnonzero(identity)]
 
 
 def _sort_hamiltonian_terms_spo(

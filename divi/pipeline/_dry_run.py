@@ -163,9 +163,8 @@ class DryRunReport:
     circuit_stats: Mapping[str, float] = field(default_factory=dict)
     """Aggregate depth/width stats across the post-fan-out final batch's
     DAG bodies — the pre-execution analogue of
-    :attr:`~divi.backends.CircuitRunner.depth_history`.  Empty only when the
-    final batch is empty, since every MetaCircuit carries at least one DAG
-    body. Populated keys: ``min_depth``,
+    :attr:`~divi.backends.CircuitRunner.depth_history`.  Empty when no
+    circuit runs. Populated keys: ``min_depth``,
     ``max_depth``, ``mean_width``, ``min_width``, ``max_width``,
     ``mean_2q_depth``, and ``total_2q_gates`` (entangling gates summed over
     every submitted circuit, counting each body once per measurement circuit),
@@ -248,15 +247,16 @@ def _aggregate_circuit_stats(batch: MetaCircuitBatch) -> dict[str, float]:
 
     Pre-execution analogue of :attr:`~divi.backends.CircuitRunner.depth_history`
     aggregates: walks every ``circuit_bodies`` DAG in the batch and
-    summarises its depth, two-qubit depth, and qubit count.  Returns an
-    empty dict only for an empty batch, since every MetaCircuit carries at
-    least one DAG body.
+    summarises its depth, two-qubit depth, and qubit count.  Unmeasured nodes
+    run no circuit and are skipped, so an empty dict means nothing runs.
     """
     depths: list[int] = []
     twoq_depths: list[int] = []
     widths: list[int] = []
     total_2q_gates = 0
     for mc in batch.values():
+        if mc.is_unmeasured:
+            continue
         # Stats come from the DAGs; qasm_bodies (QASM strings) are skipped —
         # binding doesn't change depth or width. Bodies sharing a tag collapse on
         # submission, so they are counted once, as the circuit total counts them.
@@ -296,6 +296,8 @@ def _distinct_body_tags(mc: MetaCircuit) -> int:
 
 
 def _logical_count(mc: MetaCircuit, *, count_observable_terms: bool) -> int:
+    if mc.is_unmeasured:
+        return 0
     # Distinct tags, matching the submitted count: counting collapsed bodies here
     # would advertise a fan-out the total (correctly) omits.
     n_bodies = _distinct_body_tags(mc)

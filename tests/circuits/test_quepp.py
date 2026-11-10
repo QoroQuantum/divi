@@ -21,7 +21,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import MaestroConfig
 from divi.circuits import MetaCircuit, quepp
-from divi.circuits.qem import _NoMitigation
+from divi.circuits.qem import OBSERVABLE_OVERRIDE, _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
     SymbolicAngleWarning,
@@ -1015,6 +1015,31 @@ class TestQuEPPProtocol:
         # No rotations → reduce returns weights @ classical_values.
         result = p.reduce([1.0, 1.0], ctx)
         assert result == pytest.approx([1.0])
+
+    def test_reduce_adds_the_constant_without_rotations(self, bell_qc):
+        obs = SparsePauliOp.from_list([("ZZ", 1.0), ("II", 2.5)])
+        p = QuEPP(truncation_order=0, sampling="exhaustive", n_twirls=0)
+        _, ctx = p.expand(circuit_to_dag(bell_qc), obs)
+        assert ctx["n_rotations"] == 0
+        assert p.reduce([1.0, 1.0], ctx) == pytest.approx([3.5])
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_reduce_adds_the_constant_when_eta_is_rejected(self):
+        obs = SparsePauliOp.from_list([("Z", 1.0), ("I", 2.5)])
+        p = QuEPP(truncation_order=1, sampling="exhaustive", n_twirls=0)
+        _, ctx = p.expand(circuit_to_dag(_rx_qc(0.5)), obs)
+        result = p.reduce([0.3, *[0.0] * ctx["n_paths"]], ctx)
+        assert ctx["per_obs"][0].eta_rejection == "below_floor"
+        assert result == pytest.approx([2.8])
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_dry_expand_declares_an_identity_only_observable(self, bell_qc):
+        constant = SparsePauliOp("II", 2.5)
+        p = QuEPP(truncation_order=2, sampling="exhaustive", n_twirls=0)
+
+        _, ctx = p.dry_expand(circuit_to_dag(bell_qc), constant)
+
+        assert ctx[OBSERVABLE_OVERRIDE] == (constant,)
 
     def test_missing_observable_raises(self, bell_qc):
         p = QuEPP()
@@ -2270,6 +2295,30 @@ class TestQuEPPMultiObservable:
         assert out_multi[0] == pytest.approx(out1[0], abs=1e-9)
         assert out_multi[1] == pytest.approx(out2[0], abs=1e-9)
 
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_an_identity_only_observable_beside_a_measured_one(
+        self, qc_two_rotations, default_test_simulator
+    ):
+        measured = SparsePauliOp.from_list([("IZ", 0.5), ("ZZ", -0.3)])
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        dags, ctx = protocol.expand(
+            circuit_to_dag(qc_two_rotations), (measured, SparsePauliOp("II", 2.5))
+        )
+
+        declared = ctx[OBSERVABLE_OVERRIDE]
+        assert all(np.any(term.paulis.x | term.paulis.z) for term in declared)
+        rows = [
+            [
+                _exact_expval(default_test_simulator, dag_to_circuit(dag), term)
+                for term in declared
+            ]
+            for dag in dags
+        ]
+        assert protocol.reduce(rows, ctx) == pytest.approx(
+            [_exact_expval(default_test_simulator, qc_two_rotations, measured), 2.5],
+            abs=1e-9,
+        )
+
     def test_empty_observables_tuple_rejected(self, qc_two_rotations):
         protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
         with pytest.raises(ValueError, match="at least one observable"):
@@ -2324,6 +2373,32 @@ class TestQuEPPMultiObservable:
             )
         ]
 
+    def test_pipeline_e2e_adds_an_identity_term_exactly(
+        self, suppress_quepp_warnings, quepp_backend
+    ):
+        hamiltonian = SparsePauliOp.from_list([("IZ", 0.7), ("ZI", -0.4), ("ZZ", 0.9)])
+        base, shifted = (
+            _quepp_pipeline_values(
+                meta_from_circuit(_entangled_two_qubit_circuit(), observable=obs),
+                quepp_backend(),
+            )
+            for obs in (hamiltonian, hamiltonian + SparsePauliOp("II", 1.75))
+        )
+
+        assert shifted == [pytest.approx(base[0] + 1.75, abs=1e-9)]
+
+    def test_pipeline_e2e_returns_an_identity_only_observable_without_a_circuit(
+        self, suppress_quepp_warnings, quepp_backend, mocker
+    ):
+        backend = quepp_backend()
+        submit = mocker.spy(backend, "submit_circuits")
+        meta = meta_from_circuit(
+            _entangled_two_qubit_circuit(), observable=SparsePauliOp("II", 2.5)
+        )
+
+        assert _quepp_pipeline_values(meta, backend) == [2.5]
+        submit.assert_not_called()
+
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")
 class TestQuEPPMultiTermUnderNonUniformNoise:
@@ -2344,25 +2419,77 @@ class TestQuEPPMultiTermUnderNonUniformNoise:
         )
 
     @staticmethod
-    def _mitigated_under_noise(simulator, qc, obs, noise_factors) -> float:
+    def _mitigated_under_noise(
+        simulator, qc, obs, noise_factors, protocol=None
+    ) -> float:
         """Run expand → reduce with per-circuit noise applied to exact values.
 
         Damps each declared single-term value on each emitted circuit by that
         circuit's own factor, standing in for a backend whose noise varies
-        across the ensemble.
+        across the ensemble. An identity-only observable is declared whole and
+        its value stays exact.
         """
-        protocol = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0)
+        protocol = protocol or QuEPP(
+            sampling="exhaustive", truncation_order=5, n_twirls=0
+        )
         dags, ctx = protocol.expand(circuit_to_dag(qc), (obs,))
         declared = ctx["observable_override"]
         rows = []
         for dag_idx, dag in enumerate(dags):
-            exact = [
-                _exact_expval(simulator, dag_to_circuit(dag), term_obs)
-                for term_obs in declared
-            ]
             factor = noise_factors[dag_idx % len(noise_factors)]
-            rows.append([value * factor for value in exact])
+            rows.append(
+                [
+                    _exact_expval(simulator, dag_to_circuit(dag), term_obs)
+                    * (factor if np.any(term_obs.paulis.x | term_obs.paulis.z) else 1.0)
+                    for term_obs in declared
+                ]
+            )
         return protocol.reduce(rows, ctx)[0]
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0),
+            QuEPP(sampling="montecarlo", n_samples=40, seed=3, n_twirls=0),
+        ],
+        ids=["exhaustive", "montecarlo"],
+    )
+    def test_a_constant_shifts_the_mitigated_energy_exactly(
+        self, default_test_simulator, protocol
+    ):
+        qc = _two_qubit_qc()
+        obs = self._hamiltonian()
+        factors = [0.88, 0.94, 0.9, 0.85]
+
+        base = self._mitigated_under_noise(
+            default_test_simulator, qc, obs, factors, protocol
+        )
+        shifted = self._mitigated_under_noise(
+            default_test_simulator,
+            qc,
+            obs + SparsePauliOp("II", 50.0),
+            factors,
+            protocol,
+        )
+
+        assert shifted == pytest.approx(base + 50.0, rel=1e-12)
+
+    def test_an_identity_only_observable_is_its_constant_without_warnings(
+        self, default_test_simulator
+    ):
+        constant = SparsePauliOp("II", 2.5)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            warnings.filterwarnings("ignore", message="QuEPP: truncation order")
+            mitigated = self._mitigated_under_noise(
+                default_test_simulator, _two_qubit_qc(), constant, [0.9]
+            )
+            _, ctx = QuEPP(
+                sampling="exhaustive", truncation_order=5, n_twirls=0
+            ).expand(circuit_to_dag(_two_qubit_qc()), (constant,))
+
+        assert mitigated == 2.5
+        assert ctx[OBSERVABLE_OVERRIDE] == (constant,)
 
     def test_recovers_exact_energy_when_ensemble_is_noiseless(
         self, default_test_simulator

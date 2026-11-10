@@ -5,6 +5,7 @@
 """Tests for divi.pipeline.stages._measurement_stage."""
 
 import warnings
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -157,10 +158,11 @@ class TestMeasurementStageExpvalBackendReduce:
                     total += sum(v.values())
                 else:
                     total += v
-            return total
+            return [total]
 
         token = MeasurementToken(
             postprocess_fn_by_spec={base_key: _postprocess},
+            constant_offsets_by_spec={base_key: (0.0,)},
         )
 
         env = PipelineEnv.__new__(PipelineEnv)
@@ -169,7 +171,7 @@ class TestMeasurementStageExpvalBackendReduce:
 
         assert base_key in reduced
         # 0.5 + (-0.3) + 0.2 = 0.4
-        assert reduced[base_key] == pytest.approx(0.4)
+        assert reduced[base_key] == [pytest.approx(0.4)]
 
     def test_reduce_without_ham_ops_uses_standard_postprocess(
         self, dummy_expval_backend
@@ -239,6 +241,20 @@ class TestMeasurementStageResultFormatOverride:
         # Raw results: obs_group axis stripped, values passed through as-is.
         # Two groups map to the same base_key, so the last one wins (dict update).
         assert reduced == {base_key: {"01": 30, "10": 70}}
+
+    def test_counts_override_runs_an_identity_only_observable(self):
+        backend = RecordingBackend(shots=100)
+        pipeline = build_measurement_pipeline(
+            meta_with_observable(SparsePauliOp("II", 2.0)),
+            result_format_override=ResultFormat.COUNTS,
+        )
+
+        result = pipeline.run("ignored", PipelineEnv(backend=backend))
+
+        ((label, qasm),) = backend.last_circuits.items()
+        assert label == "spec:circ/obs_group:0"
+        assert measured_qubits(qasm) == {0, 1}
+        assert result.value == {"0": 100}
 
 
 # --------------------------------------------------------------------------- #
@@ -1606,6 +1622,64 @@ class TestMeasurementStageEstimatorSamples:
             (("spec", "circ"), ("param_set", 1)): pytest.approx(0.0),
         }
 
+    def test_an_identity_only_observable_draws_no_sample(self):
+        backend = RecordingBackend(shots=100)
+        env = PipelineEnv(
+            backend=backend,
+            param_sets=np.array([[0.0], [np.pi]]),
+            estimator_samples=_EstimatorSamplePlan((2, 8)),
+            rng=np.random.default_rng(4),
+        )
+        meta = replace(
+            _parametric_identity_offset_meta(), observable=SparsePauliOp("I", 2.0)
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta),
+                MeasurementStage(),
+                ParameterBindingStage(),
+            ]
+        )
+
+        result = pipeline.run(initial_spec="ignored", env=env)
+
+        assert result[(("spec", "circ"), ("param_set", 0))] == [2.0]
+        assert result[(("spec", "circ"), ("param_set", 1))] == [2.0]
+        assert backend.last_circuits is None
+
+    def test_a_constant_node_beside_a_measured_one_draws_no_sample(self):
+        backend = RecordingBackend(shots=100)
+        env = PipelineEnv(
+            backend=backend,
+            param_sets=np.array([[0.0], [np.pi]]),
+            estimator_samples=_EstimatorSamplePlan((2, 8)),
+            rng=np.random.default_rng(4),
+        )
+        measured = _parametric_identity_offset_meta()
+        pipeline = CircuitPipeline(
+            stages=[CircuitSpecStage(), MeasurementStage(), ParameterBindingStage()]
+        )
+
+        result = pipeline.run(
+            {
+                "constant": replace(measured, observable=SparsePauliOp("I", 5.0)),
+                "measured": measured,
+            },
+            env,
+        )
+
+        assert result == {
+            (("param_set", 0),): [[5.0], pytest.approx([3.0])],
+            (("param_set", 1),): [[5.0], pytest.approx([3.0])],
+        }
+        assert sorted(backend.last_circuits) == [
+            "circuit:measured/param_set:0/obs_group:0",
+            "circuit:measured/param_set:1/obs_group:0",
+        ]
+        assert backend.last_kwargs["shot_groups"] == [[0, 1, 2], [1, 2, 8]]
+        assert env.artifacts["estimator_samples_requested"] == 10
+        assert env.artifacts["device_shots"] == 10
+
     def test_scalar_budget_is_allocated_for_each_parameter_set(self, make_sampling_env):
         env = _make_estimator_env(make_sampling_env, (8, 8), seed=7)
         stage = MeasurementStage()
@@ -1964,21 +2038,6 @@ class TestMeasurementStageShadows:
 
         assert trace.stage_tokens[1].effective_strategy == BACKEND_EXPVAL
 
-    def test_rejects_an_identity_only_observable(self, make_sampling_env):
-        env = make_sampling_env(100)
-        meta = _make_shadow_meta(SparsePauliOp.from_list([("III", 2.0)]))
-
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "The observable is identity-only, so its expectation is an exact "
-                "constant and there is nothing to sample."
-            ),
-        ):
-            build_measurement_pipeline(
-                meta, grouping_strategy="shadows"
-            ).run_forward_pass("ignored", env)
-
     def test_no_snapshot_measuring_a_term_estimates_the_identity_offset(
         self, make_sampling_env
     ):
@@ -1997,6 +2056,157 @@ class TestMeasurementStageShadows:
 
         assert not plan.term_weights_by_group[0].any()
         assert result.value == pytest.approx(0.5)
+
+
+class TestMeasurementStageIdentityOnlyObservable:
+    """An identity-only observable's expectation is its exact constant, so no
+    circuit runs for it."""
+
+    @pytest.mark.parametrize(
+        "grouping_strategy, shot_distribution",
+        [
+            ("qwc", None),
+            ("wires", None),
+            (None, None),
+            ("qwc", "weighted"),
+            ("shadows", None),
+        ],
+    )
+    def test_sampling_backend_returns_the_constant_without_running(
+        self, grouping_strategy, shot_distribution
+    ):
+        backend = RecordingBackend(shots=100)
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("III", 2.0), ("III", 0.5)]))
+        pipeline = build_measurement_pipeline(
+            meta,
+            grouping_strategy=grouping_strategy,
+            shot_distribution=shot_distribution,
+        )
+
+        result = pipeline.run("ignored", PipelineEnv(backend=backend))
+
+        assert result.value == 2.5
+        assert backend.last_circuits is None
+
+    def test_analytic_backend_returns_the_constant_without_running(
+        self, dummy_expval_backend, mocker
+    ):
+        submit = mocker.spy(dummy_expval_backend, "submit_circuits")
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("III", -1.5)]))
+
+        result = build_measurement_pipeline(meta).run(
+            "ignored", PipelineEnv(backend=dummy_expval_backend)
+        )
+
+        assert result.value == -1.5
+        submit.assert_not_called()
+
+    def test_an_identity_only_member_of_several_observables_is_its_constant(self):
+        meta = _make_shadow_meta(
+            (SparsePauliOp.from_list([("III", 3.0)]), SparsePauliOp("ZII"))
+        )
+
+        result = build_measurement_pipeline(meta).run(
+            "ignored", PipelineEnv(backend=ShotsBackendSpy(shots=100))
+        )
+
+        # The spy reads "000" on 80 of 100 shots and "111" on 20, so <ZII> = 0.6.
+        (value,) = result.values()
+        assert value == [3.0, pytest.approx(0.6)]
+
+    def test_an_identity_only_node_beside_a_measured_one(self):
+        env = PipelineEnv(backend=ShotsBackendSpy(shots=100), collect_variance=True)
+        pipeline = CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
+
+        result = pipeline.run(
+            {
+                "constant": meta_with_observable(SparsePauliOp("I", 2.0)),
+                "measured": meta_with_observable(SparsePauliOp("Z")),
+            },
+            env,
+        )
+
+        # The spy measures 0 on 80 of 100 shots, so <Z> = 0.6.
+        assert result[()] == [[2.0], [pytest.approx(0.6)]]
+        assert env.artifacts["cost_variance"] == {
+            (("circuit", "constant"),): 0.0,
+            (("circuit", "measured"),): pytest.approx((1 - 0.6**2) / 100),
+        }
+
+    def test_cost_variance_is_zero_for_one_constant_and_undefined_for_several(self):
+        env = PipelineEnv(backend=ShotsBackendSpy(shots=100), collect_variance=True)
+        single = meta_with_observable(SparsePauliOp("I", 2.0))
+        pair = replace(
+            single, observable=(SparsePauliOp("I", 1.0), SparsePauliOp("I", 4.0))
+        )
+        pipeline = CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
+
+        result = pipeline.run({"single": single, "pair": pair}, env)
+
+        assert result[()] == [[2.0], [1.0, 4.0]]
+        variance = env.artifacts["cost_variance"]
+        assert variance[(("circuit", "single"),)] == 0.0
+        assert np.isnan(variance[(("circuit", "pair"),)])
+        assert len(variance) == 2
+
+    def test_cost_variance_is_keyed_per_parameter_set(self):
+        env = PipelineEnv(
+            backend=ShotsBackendSpy(shots=100),
+            param_sets=np.array([[0.0], [np.pi]]),
+            collect_variance=True,
+        )
+        single = replace(
+            _parametric_identity_offset_meta(), observable=SparsePauliOp("I", 2.0)
+        )
+        pair = replace(
+            single, observable=(SparsePauliOp("I", 1.0), SparsePauliOp("I", 4.0))
+        )
+        pipeline = CircuitPipeline(
+            stages=[CircuitSpecStage(), MeasurementStage(), ParameterBindingStage()]
+        )
+
+        pipeline.run({"single": single, "pair": pair}, env)
+
+        variance = env.artifacts["cost_variance"]
+        assert len(variance) == 4
+        for index in (0, 1):
+            assert variance[(("circuit", "single"), ("param_set", index))] == 0.0
+            assert np.isnan(variance[(("circuit", "pair"), ("param_set", index))])
+
+    def test_an_empty_observable_tuple_is_rejected(self):
+        meta = replace(meta_with_observable(SparsePauliOp("Z")), observable=())
+        pipeline = build_measurement_pipeline(meta)
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "MeasurementStage (expval path): key '(('spec', 'circ'),)' has an "
+                "empty observable tuple."
+            ),
+        ):
+            pipeline.run("ignored", PipelineEnv(backend=ShotsBackendSpy(shots=100)))
+
+    def test_identity_coefficients_sum_without_cancellation_error(self):
+        observable = SparsePauliOp(["I", "I", "I", "Z"], [1e16, 1.0, -1e16, 0.0])
+        result = build_measurement_pipeline(meta_with_observable(observable)).run(
+            "ignored", PipelineEnv(backend=ShotsBackendSpy(shots=100))
+        )
+
+        assert result.value == pytest.approx(1.0, abs=0)
+
+    def test_dry_run_reports_no_group_and_the_sampling_strategy(self):
+        stage = MeasurementStage()
+        env = PipelineEnv(backend=ShotsBackendSpy(shots=100))
+        trace = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=meta_with_observable(SparsePauliOp("I"))),
+                stage,
+            ]
+        ).run_forward_pass("ignored", env, dry=True)
+
+        info = stage.introspect(trace.final_batch, env, trace.stage_tokens[1])
+
+        assert info == {"strategy": "qwc", "n_groups": 0, "n_pauli_terms": 0}
 
 
 class TestExecuteFnForwardsShotGroups:

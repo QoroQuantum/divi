@@ -5,6 +5,7 @@
 """Pre-split QASM templates for fast parameter substitution."""
 
 from collections.abc import Sequence
+from functools import lru_cache
 from itertools import chain
 from typing import NamedTuple
 
@@ -80,6 +81,10 @@ def build_template(qasm_body: str, symbol_names: Sequence[str]) -> QASMTemplate:
         fragments=tuple(fragments),
         slot_indices=tuple(slot_indices),
     )
+
+
+# Bodies and names are static across an optimizer loop, so splits are reused.
+_template_cached = lru_cache(maxsize=256)(build_template)
 
 
 def render_template(template: QASMTemplate, formatted_values: Sequence[str]) -> str:

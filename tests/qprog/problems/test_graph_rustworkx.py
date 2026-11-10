@@ -108,7 +108,6 @@ def _bitstrings(n: int, count: int = 16, seed: int = 0) -> list[str]:
 def _assert_problems_match(rx_problem, nx_problem) -> None:
     _assert_same_operator(rx_problem.cost_hamiltonian, nx_problem.cost_hamiltonian)
     _assert_same_operator(rx_problem.mixer_hamiltonian, nx_problem.mixer_hamiltonian)
-    assert rx_problem.loss_constant == pytest.approx(nx_problem.loss_constant)
     assert rx_problem.wire_labels == nx_problem.wire_labels
     for bitstring in _bitstrings(len(rx_problem.wire_labels)):
         assert rx_problem.decode_fn(bitstring) == nx_problem.decode_fn(bitstring)
@@ -286,10 +285,12 @@ def test_max_weight_cycle_rejects_self_loops(backend):
         MaxWeightCycleProblem(graph)
 
 
-@pytest.mark.parametrize("graph", [nx.empty_graph(3), rx.generators.empty_graph(3)])
-def test_edgeless_graphs_are_rejected_alike(graph):
-    with pytest.raises(ValueError, match="Hamiltonian contains only constant terms"):
-        MaxCutProblem(graph)
+def test_edgeless_graphs_cut_nothing_alike():
+    rx_problem = MaxCutProblem(rx.generators.empty_graph(3))
+    nx_problem = MaxCutProblem(nx.empty_graph(3))
+
+    _assert_problems_match(rx_problem, nx_problem)
+    assert rx_problem.evaluate_global_solution([1, 0, 1]) == 0.0
 
 
 def test_solution_drawing_highlights_rx_nodes_by_index(mocker):

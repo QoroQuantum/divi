@@ -11,9 +11,8 @@ import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_spo,
-    _require_qiskit_num_qubits,
     _sort_hamiltonian_terms_spo,
+    _split_identity_terms,
 )
 from divi.hamiltonians.trotterization._base import (
     TrotterizationResult,
@@ -64,21 +63,19 @@ class ExactTrotterization(TrotterizationStrategy):
         rng: np.random.Generator | None = None,
     ) -> TrotterizationResult:
         """Truncate the Hamiltonian to its top-magnitude terms."""
-        hamiltonian = spec.hamiltonian
+        hamiltonian = spec.hamiltonian.simplify(atol=0)
         if self.keep_fraction is None and self.keep_top_n is None:
-            return TrotterizationResult(hamiltonian.simplify())
+            return TrotterizationResult(hamiltonian)
 
-        _clean_hamiltonian_spo(hamiltonian, raise_on_constant=True)
-        if _warn_truncation_no_op(
-            self.keep_fraction, self.keep_top_n, hamiltonian.size
-        ):
-            return TrotterizationResult(hamiltonian.simplify())
+        terms, _ = _split_identity_terms(hamiltonian)
+        if _warn_truncation_no_op(self.keep_fraction, self.keep_top_n, terms.size):
+            return TrotterizationResult(hamiltonian)
 
         return TrotterizationResult(self._truncate_spo(hamiltonian))
 
     def _truncate_spo(self, spo: SparsePauliOp) -> SparsePauliOp:
-        """Sort by |coeff|, slice to the kept tail, and re-attach the constant."""
-        non_id_spo, constant = _clean_hamiltonian_spo(spo, raise_on_constant=True)
+        """Keep the largest-magnitude terms of simplified ``spo`` and its constant."""
+        non_id_spo, identity = _split_identity_terms(spo)
         sorted_spo = _sort_hamiltonian_terms_spo(non_id_spo, order="magnitude")
 
         if self.keep_fraction is not None:
@@ -97,10 +94,4 @@ class ExactTrotterization(TrotterizationStrategy):
         kept_spo = SparsePauliOp(
             sorted_spo.paulis[slice_idx:], sorted_spo.coeffs[slice_idx:]
         )
-        if constant != 0:
-            const_spo = SparsePauliOp.from_sparse_list(
-                [("", [], constant)],
-                num_qubits=_require_qiskit_num_qubits(spo.num_qubits),
-            )
-            return (kept_spo + const_spo).simplify()
-        return kept_spo.simplify()
+        return kept_spo + identity

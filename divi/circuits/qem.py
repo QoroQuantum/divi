@@ -26,7 +26,8 @@ QEMContext = dict
 #: replaces the observable on the emitted circuits, so the measurement stage
 #: reports one value per entry instead of one per originally-requested
 #: observable. A protocol that sets it owns the remapping: its ``reduce`` still
-#: returns one value per *requested* observable.
+#: returns one value per *requested* observable. An override that drops an
+#: observable's identity terms loses its constant.
 OBSERVABLE_OVERRIDE = "observable_override"
 
 

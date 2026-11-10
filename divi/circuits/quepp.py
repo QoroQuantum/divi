@@ -27,8 +27,9 @@ dramatically reduce path count.
 """
 
 import copy
+import math
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from numbers import Integral
@@ -59,6 +60,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._types import ResultFormat
 from divi.circuits.qem import OBSERVABLE_OVERRIDE, QEMContext, QEMProtocol
+from divi.hamiltonians._term_ops import _split_identity_terms
 
 __all__ = ["QuEPP", "SymbolicAngleWarning"]
 
@@ -254,6 +256,8 @@ class _ObservableCPT:
     dag_indices: list[int]
     entry_slots: list[int]
     target_slots: list[int]
+    constant: float = 0.0
+    """Sum of the identity terms' coefficients, added exactly after mitigation."""
     eta_rejection: str | None = None
     """Why η was unusable, from :meth:`QuEPP.compute_eta`; ``None`` if it was."""
     eta_amplifying: float | None = None
@@ -1230,8 +1234,11 @@ class QuEPP(QEMProtocol):
         of the estimator needs the same term resolution as the classical side.
         """
         observables = self._validate_observable_tuple(observable)
+        terms_per_obs, identities = zip(
+            *(_split_identity_terms(obs) for obs in observables)
+        )
 
-        preps = self._preprocess(dag, observables)
+        preps = self._preprocess(dag, terms_per_obs)
         working, rotations, symbolic = (
             preps[0].working,
             preps[0].rotations,
@@ -1242,11 +1249,17 @@ class QuEPP(QEMProtocol):
         obs_terms_list = [prep.obs_terms for prep in preps]
         path_rng = self._path_rng(rng)
         obs_paths_list: list[list[_PauliPath]] = [
-            self._select_paths(prep, path_rng) for prep in preps
+            self._select_paths(prep, path_rng) if prep.obs_terms else []
+            for prep in preps
         ]
         self._warn_on_truncation_ratio(len(rotations))
         self._warn_no_diagonal_paths(
-            len(rotations), [len(paths) for paths in obs_paths_list]
+            len(rotations),
+            {
+                obs_idx: len(paths)
+                for obs_idx, (prep, paths) in enumerate(zip(preps, obs_paths_list))
+                if prep.obs_terms
+            },
         )
 
         # ----- Path-DAG dedup across observables ------------------------- #
@@ -1271,13 +1284,13 @@ class QuEPP(QEMProtocol):
         # One declared observable per (requested observable, Pauli term),
         # carrying the original coefficient so the union that drives grouping
         # and shot allocation is identical to declaring the whole observable.
-        declared, term_slots_per_obs = _split_into_single_terms(observables)
+        declared, slots_per_obs = _split_into_single_terms(terms_per_obs)
 
         # ----- Per (term, path) classical sim + weights ------------------- #
         per_obs: list[_ObservableCPT] = []
         for obs_idx, paths in enumerate(obs_paths_list):
             obs_terms = obs_terms_list[obs_idx]
-            obs_slots = term_slots_per_obs[obs_idx]
+            obs_slots = slots_per_obs[obs_idx]
 
             # +1 offset because merged_dags[0] is the shared target.
             path_positions = [branch_to_dag_idx[p.branches] + 1 for p in paths]
@@ -1301,6 +1314,7 @@ class QuEPP(QEMProtocol):
                     dag_indices=[0] + path_positions,
                     entry_slots=[obs_slots[p.term_idx] for p in paths],
                     target_slots=obs_slots,
+                    constant=math.fsum(identities[obs_idx].coeffs.real),
                 )
             )
 
@@ -1310,7 +1324,8 @@ class QuEPP(QEMProtocol):
             "ensemble_start": 1,
             "n_rotations": len(rotations),
             "n_paths": len(merged_path_dags),
-            OBSERVABLE_OVERRIDE: declared,
+            # Identity-only observables are declared whole and run no circuit.
+            OBSERVABLE_OVERRIDE: declared or observables,
         }
         if symbolic:
             all_params: set[Parameter] = set().union(
@@ -1341,8 +1356,9 @@ class QuEPP(QEMProtocol):
         across all observables.
         """
         observables = self._validate_observable_tuple(observable)
+        terms_per_obs = [_split_identity_terms(obs)[0] for obs in observables]
 
-        preps = self._preprocess(dag, observables)
+        preps = self._preprocess(dag, terms_per_obs)
         rotations, symbolic = preps[0].rotations, preps[0].symbolic
 
         # Without a generator, preview from a fixed one so the count is stable.
@@ -1350,21 +1366,23 @@ class QuEPP(QEMProtocol):
         sampled_paths = self._sampling != "exhaustive" and not symbolic
 
         unique_branches: set[tuple[int, ...]] = set()
-        n_paths_per_obs: list[int] = []
-        for prep in preps:
+        n_paths_by_obs: dict[int, int] = {}
+        for obs_idx, prep in enumerate(preps):
+            if not prep.obs_terms:
+                continue
             # The run itself reports any symbolic fallback; keep the preview quiet.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SymbolicAngleWarning)
                 paths = self._select_paths(prep, path_rng)
-            n_paths_per_obs.append(len(paths))
+            n_paths_by_obs[obs_idx] = len(paths)
             for p in paths:
                 unique_branches.add(p.branches)
         # The measurement stage groups whatever ``expand`` would declare, so
         # the preview must declare it too or its fan-out understates the real
         # one.
-        declared, _ = _split_into_single_terms(observables)
+        declared, _ = _split_into_single_terms(terms_per_obs)
         self._warn_on_truncation_ratio(len(rotations))
-        self._warn_no_diagonal_paths(len(rotations), n_paths_per_obs)
+        self._warn_no_diagonal_paths(len(rotations), n_paths_by_obs)
 
         n_paths = len(unique_branches)
         all_dags = (dag,) * (1 + n_paths)
@@ -1374,7 +1392,7 @@ class QuEPP(QEMProtocol):
             # Persisted for introspect(); the dry path skips per_obs
             # construction, so the observable count needs its own slot.
             "n_observables": len(observables),
-            OBSERVABLE_OVERRIDE: declared,
+            OBSERVABLE_OVERRIDE: declared or observables,
         }
         if sampled_paths:
             context["sampled_paths"] = True
@@ -1481,11 +1499,12 @@ class QuEPP(QEMProtocol):
             )
 
     def _warn_no_diagonal_paths(
-        self, n_rotations: int, n_paths_per_obs: Sequence[int]
+        self, n_rotations: int, n_paths_by_obs: Mapping[int, int]
     ) -> None:
         """Warn when one or more observables produce zero diagonal Pauli paths.
 
-        The Heisenberg-DFS enumerator only accepts paths whose final
+        ``n_paths_by_obs`` maps each observable with non-identity terms to its
+        path count. The Heisenberg-DFS enumerator only accepts paths whose final
         back-propagated Pauli is diagonal (composed of ``I`` and ``Z``);
         when the circuit's Clifford structure routes an observable into
         a strictly non-diagonal basis (e.g. a final ``H`` rotates ``Z``
@@ -1503,7 +1522,7 @@ class QuEPP(QEMProtocol):
         # is structurally a no-op and warning would be noise.
         if n_rotations == 0:
             return
-        zero_indices = [i for i, n in enumerate(n_paths_per_obs) if n == 0]
+        zero_indices = [i for i, n in n_paths_by_obs.items() if n == 0]
         if not zero_indices:
             return
         warnings.warn(
@@ -1586,7 +1605,8 @@ class QuEPP(QEMProtocol):
         ``entry_slots`` while the noisy target is summed back over the
         observable's own terms (``target_slots``). The context's ``per_obs``
         list still carries one entry per *requested* observable, and this
-        still returns one value per requested observable.
+        still returns one value per requested observable. Identity terms are
+        added exactly, after mitigation.
         """
         if context.get("symbolic"):
             raise ValueError(
@@ -1607,42 +1627,50 @@ class QuEPP(QEMProtocol):
 
         results = np.asarray(quantum_results, dtype=float)
 
-        out: list[float] = []
-        for entry in per_obs:
-            # Cached traces reuse entries, so clear the previous evaluation's flags.
-            entry.eta_rejection = None
-            entry.eta_amplifying = None
-            dag_indices = entry.dag_indices
-            target_slots = np.asarray(entry.target_slots, dtype=np.intp)
-            target_rows = np.full(len(target_slots), dag_indices[target_idx])
-            target_noisy = sum(_read_slots(results, target_rows, target_slots).tolist())
-            ensemble_noisy = _read_slots(
-                results,
-                np.asarray(dag_indices[ensemble_start:], dtype=np.intp),
-                np.asarray(entry.entry_slots, dtype=np.intp),
+        return [
+            self._mitigate_entry(
+                entry, results, target_idx, ensemble_start, n_rotations
             )
-            classical_values = entry.classical_values
-            weights = entry.weights
+            + entry.constant
+            for entry in per_obs
+        ]
 
-            if n_rotations == 0:
-                out.append(float(weights @ classical_values))
-                continue
+    def _mitigate_entry(
+        self,
+        entry: _ObservableCPT,
+        results: np.ndarray,
+        target_idx: int,
+        ensemble_start: int,
+        n_rotations: int,
+    ) -> float:
+        """Return the mitigated value of ``entry``'s non-identity terms."""
+        # Cached traces reuse entries, so clear the previous evaluation's flags.
+        entry.eta_rejection = None
+        entry.eta_amplifying = None
+        if not entry.target_slots:
+            return 0.0
+        dag_indices = entry.dag_indices
+        target_slots = np.asarray(entry.target_slots, dtype=np.intp)
+        target_rows = np.full(len(target_slots), dag_indices[target_idx])
+        target_noisy = sum(_read_slots(results, target_rows, target_slots).tolist())
+        ensemble_noisy = _read_slots(
+            results,
+            np.asarray(dag_indices[ensemble_start:], dtype=np.intp),
+            np.asarray(entry.entry_slots, dtype=np.intp),
+        )
+        classical_est = float(entry.weights @ entry.classical_values)
+        if n_rotations == 0:
+            return classical_est
 
-            classical_est = float(weights @ classical_values)
-            noisy_est = float(weights @ ensemble_noisy)
+        eta, rejection = self.compute_eta(entry.classical_values, ensemble_noisy)
+        if eta is None:
+            entry.eta_rejection = rejection
+            return float(target_noisy)
 
-            eta, rejection = self.compute_eta(classical_values, ensemble_noisy)
-            if eta is None:
-                entry.eta_rejection = rejection
-                out.append(float(target_noisy))
-                continue
-
-            if 1.0 / eta > _ETA_AMPLIFICATION_LIMIT:
-                entry.eta_amplifying = float(1.0 / eta)
-
-            out.append(classical_est + (target_noisy - noisy_est) / eta)
-
-        return out
+        if 1.0 / eta > _ETA_AMPLIFICATION_LIMIT:
+            entry.eta_amplifying = float(1.0 / eta)
+        noisy_est = float(entry.weights @ ensemble_noisy)
+        return classical_est + (target_noisy - noisy_est) / eta
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
         reasons: set[str] = set()

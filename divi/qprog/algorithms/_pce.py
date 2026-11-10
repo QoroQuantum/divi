@@ -561,7 +561,6 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         self.cost_hamiltonian = sum(
             self._variable_observables[1:], self._variable_observables[0]
         )
-        self.loss_constant = 0.0
 
     @cached_property
     def _counts_cost_preprocessor(self) -> CircuitPreprocessor:

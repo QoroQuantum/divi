@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import warnings
 from collections.abc import Callable, Hashable, Sequence
 from collections.abc import Set as AbstractSet
@@ -14,6 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.backends import CircuitRunner
 from divi.circuits import measurement_qasms_from_groups
 from divi.circuits._conversions import _sparse_pauli_op_to_ham_string
+from divi.hamiltonians._term_ops import _split_identity_terms
 from divi.pipeline._grouping import (
     BACKEND_EXPVAL,
     BACKEND_EXPVAL_GROUPS,
@@ -65,19 +67,6 @@ from divi.pipeline.abc import (
 PROBS_MEAS_AXIS = "meas"
 # ``GroupingStrategy`` is ``Literal[...] | None``; unwrap the literal's names.
 _GROUPING_STRATEGY_NAMES: tuple[str, ...] = get_args(get_args(GroupingStrategy)[0])
-
-
-def _split_identity_offsets(
-    observables: Sequence[SparsePauliOp],
-) -> tuple[tuple[SparsePauliOp, ...], tuple[float, ...]]:
-    """Remove identity terms and return each observable's exact real-valued offset."""
-    stripped: list[SparsePauliOp] = []
-    offsets: list[float] = []
-    for observable in observables:
-        identity = ~(observable.paulis.x | observable.paulis.z).any(axis=1)
-        offsets.append(float(np.asarray(observable.coeffs).real[identity].sum()))
-        stripped.append(observable[np.flatnonzero(~identity)])
-    return tuple(stripped), tuple(offsets)
 
 
 @dataclass(frozen=True)
@@ -356,7 +345,7 @@ class MeasurementToken:
     constant_offsets_by_spec: dict[tuple, tuple[float, ...]] = field(
         default_factory=dict
     )
-    """Exact per-observable identity contributions excluded from random sampling."""
+    """Exact per-observable identity contributions, added to every estimate."""
 
     is_probs: bool = False
     """True when this is a probabilities measurement (no observable grouping)."""
@@ -366,7 +355,7 @@ class MeasurementToken:
     to ``_backend_expval``). ``None`` for the probs path."""
 
     n_observable_terms: int | None = None
-    """Number of distinct Pauli terms the first spec's observables measure,
+    """Number of distinct Pauli terms the first measured spec's observables measure,
     whether or not a measurement group covers each. ``None`` for the probs
     path."""
 
@@ -658,10 +647,16 @@ class MeasurementStage(BundleStage):
             sample_budgets = None
 
         strategy: _ResolvedGroupingStrategy = self._grouping_strategy
-        # The analytic path emits one shared ham_ops for the whole batch.
-        first_obs = next(iter(batch.values())).observable
+        # The analytic path emits one ham_ops shared by every measured node.
+        terms_by_node = [
+            tuple(_split_identity_terms(obs)[0] for obs in meta.observable or ())
+            for meta in batch.values()
+        ]
+        measured_terms = [
+            terms for terms in terms_by_node if any(term.size for term in terms)
+        ]
         if env.backend.supports_expval and all(
-            meta.observable == first_obs for meta in batch.values()
+            terms == measured_terms[0] for terms in measured_terms
         ):
             strategy = BACKEND_EXPVAL
 
@@ -699,7 +694,6 @@ class MeasurementStage(BundleStage):
 
         result: MetaCircuitBatch = {}
         postprocess_fn_by_spec: dict[object, Callable] = {}
-        n_observable_terms: int | None = None
         group_shot_plans_by_spec: dict[tuple, _GroupShotPlan] = {}
         constant_offsets_by_spec: dict[tuple, tuple[float, ...]] = {}
         sample_union: SparsePauliOp | None = None
@@ -725,21 +719,40 @@ class MeasurementStage(BundleStage):
                 if isinstance(meta.observable, tuple)
                 else (meta.observable,)
             )
+            if not observable:
+                raise ValueError(
+                    f"MeasurementStage (expval path): key '{key}' has an empty "
+                    "observable tuple."
+                )
             if sample_budgets is not None and len(observable) != 1:
                 raise ValueError(
                     "estimator_samples requires one scalar observable per circuit."
                 )
-            # Sampling adds identity terms exactly, outside the measured groups.
-            constant_offsets: tuple[float, ...] | None = None
-            if strategy != BACKEND_EXPVAL:
-                stripped, offsets = _split_identity_offsets(observable)
-                if any(len(member) for member in stripped):
-                    observable, constant_offsets = stripped, offsets
-                elif sample_budgets is not None or strategy in _SHADOW_STRATEGIES:
-                    raise ValueError(
-                        "The observable is identity-only, so its expectation is an "
-                        "exact constant and there is nothing to sample."
-                    )
+            # Identity terms are exact offsets, added in reduce.
+            observable, identities = zip(
+                *(_split_identity_terms(member) for member in observable)
+            )
+            constant_offsets = tuple(
+                math.fsum(identity.coeffs.real) for identity in identities
+            )
+            spec_keys = _assign_plan_budgets(key, env, sample_budgets)
+            constant_offsets_by_spec.update(dict.fromkeys(spec_keys, constant_offsets))
+            if all(member.size == 0 for member in observable):
+                # Runs only under a COUNTS/PROBS override, measuring every qubit.
+                (measure_qasm,) = qasm_factory(((),), meta.n_qubits, measure_all=True)
+                result[key] = (
+                    meta.set_observable(observable)
+                    .set_measurement_bodies(((((OBS_GROUP_AXIS, 0),), measure_qasm),))
+                    .set_measurement_groups(((),))
+                    .set_result_format(ResultFormat.EXPVALS)
+                )
+                postprocessing_fn = _create_postprocessing_fn(
+                    observable, [[] for _ in observable], [[]], 0
+                )
+                postprocess_fn_by_spec.update(
+                    dict.fromkeys(spec_keys, postprocessing_fn)
+                )
+                continue
 
             if strategy in _SHADOW_STRATEGIES:
                 union_obs, per_obs_term_indices, labels = _build_observable_union(
@@ -772,9 +785,6 @@ class MeasurementStage(BundleStage):
                     self._shot_distribution,
                     sample_budgets,
                 )
-            if n_observable_terms is None:
-                n_observable_terms = len(union_obs)
-
             if sample_union is None:
                 sample_union = union_obs
             group_shot_plans_by_spec.update(plans)
@@ -806,11 +816,9 @@ class MeasurementStage(BundleStage):
             )
 
             # Keep all groups: results are indexed by their original obs_group tag.
-            measurement_meta = (
-                meta if constant_offsets is None else meta.set_observable(observable)
-            )
             new_meta = (
-                measurement_meta.set_measurement_bodies(tagged_measurement_qasms)
+                meta.set_observable(observable)
+                .set_measurement_bodies(tagged_measurement_qasms)
                 .set_measurement_groups(measurement_groups)
                 .set_result_format(ResultFormat.EXPVALS)
             )
@@ -831,8 +839,6 @@ class MeasurementStage(BundleStage):
                     new_meta = new_meta.set_group_shots(shot_plan.shots_by_group)
             result[key] = new_meta
             postprocess_fn_by_spec.update(dict.fromkeys(plans, postprocessing_fn))
-            if constant_offsets is not None:
-                constant_offsets_by_spec.update(dict.fromkeys(plans, constant_offsets))
 
         if strategy == BACKEND_EXPVAL and sample_union is not None:
             ham_ops = _sparse_pauli_op_to_ham_string(sample_union)
@@ -843,7 +849,7 @@ class MeasurementStage(BundleStage):
         token = MeasurementToken(
             postprocess_fn_by_spec=postprocess_fn_by_spec,
             effective_strategy=strategy,
-            n_observable_terms=n_observable_terms,
+            n_observable_terms=0 if sample_union is None else len(sample_union),
             group_shot_plans_by_spec=group_shot_plans_by_spec,
             constant_offsets_by_spec=constant_offsets_by_spec,
         )
@@ -856,7 +862,14 @@ class MeasurementStage(BundleStage):
         env: PipelineEnv,
         token: StageToken,
     ) -> dict[str, Any]:
-        meta = next(iter(batch.values()), None)
+        spec_key, meta = next(
+            (
+                (key, m)
+                for key, m in batch.items()
+                if m.observable is None or any(obs.size for obs in m.observable)
+            ),
+            (None, None),
+        )
         effective_strategy = getattr(token, "effective_strategy", None)
         strategy = effective_strategy or self._grouping_strategy
         info: dict[str, Any] = {
@@ -865,6 +878,9 @@ class MeasurementStage(BundleStage):
         if self._result_format_override is not None:
             info["result_format_override"] = self._result_format_override.name
         if meta is None:
+            if batch:
+                info["n_groups"] = 0
+                info["n_pauli_terms"] = 0
             return info
 
         # Analytic expval carries sentinel groups; check them too, since the
@@ -890,7 +906,6 @@ class MeasurementStage(BundleStage):
         # The whole observable: shadow bases can leave terms out of every group.
         info["n_pauli_terms"] = getattr(token, "n_observable_terms", None)
         # This spec's plans, one per parameter set under estimator budgets.
-        spec_key = next(iter(batch))
         plans = [
             plan
             for key, plan in getattr(token, "group_shot_plans_by_spec", {}).items()
@@ -1011,15 +1026,11 @@ class MeasurementStage(BundleStage):
         }
         reduced = reduce_postprocess_ordered(grouped, postprocess_fn_by_base)
         return {
-            base_key: (
-                [
-                    obs_value + offset
-                    for obs_value, offset in zip(
-                        value, token.constant_offsets_by_spec[base_key], strict=True
-                    )
-                ]
-                if base_key in token.constant_offsets_by_spec
-                else value
-            )
+            base_key: [
+                obs_value + offset
+                for obs_value, offset in zip(
+                    value, token.constant_offsets_by_spec[base_key], strict=True
+                )
+            ]
             for base_key, value in reduced.items()
         }

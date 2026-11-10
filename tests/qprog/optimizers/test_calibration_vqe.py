@@ -52,9 +52,7 @@ def _run_vqe(backend, molecule, optimizer, ansatz, n_layers, seed, max_iteration
             seed=seed,
         )
         vqe.run()
-    exact = float(np.linalg.eigvalsh(vqe.cost_hamiltonian.to_matrix())[0]) + float(
-        vqe.loss_constant
-    )
+    exact = float(np.linalg.eigvalsh(vqe.cost_hamiltonian.to_matrix())[0])
     return float(vqe.best_loss) - exact
 
 

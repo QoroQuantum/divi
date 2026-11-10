@@ -16,36 +16,34 @@ from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians.trotterization import ExactTrotterization, QDrift, TrotterSpec
 from tests._helpers import equal_up_to_phase, exact_match, unitary
 from tests.hamiltonians.trotterization._helpers import (
+    KEEP_TOP_N_NO_OP,
     SAMPLING_BUDGET_NOT_SET,
     SIMPLE_HAMILTONIAN,
 )
 
+_NO_TERMS_TO_SAMPLE = exact_match("No terms to sample; returning the kept Hamiltonian.")
+
 
 @pytest.mark.parametrize(
-    "strategy",
+    "strategy, warning",
     [
-        ExactTrotterization(keep_fraction=0.5),
-        ExactTrotterization(keep_fraction=1.0),
-        ExactTrotterization(keep_top_n=1),
-        QDrift(keep_fraction=0.5, sampling_budget=2, seed=0),
-        QDrift(keep_fraction=1.0, sampling_budget=2, seed=0),
-        QDrift(keep_top_n=1, sampling_budget=2, seed=0),
+        (ExactTrotterization(keep_fraction=0.5), None),
+        (ExactTrotterization(keep_top_n=1), KEEP_TOP_N_NO_OP),
+        (QDrift(keep_fraction=0.5, sampling_budget=2, seed=0), _NO_TERMS_TO_SAMPLE),
+        (QDrift(sampling_budget=2, seed=0), _NO_TERMS_TO_SAMPLE),
     ],
-    ids=[
-        "exact_partial_fraction",
-        "exact_full_fraction",
-        "exact_top_n_covers_all",
-        "qdrift_partial_fraction",
-        "qdrift_full_fraction",
-        "qdrift_top_n_covers_all",
-    ],
+    ids=["exact_fraction", "exact_top_n", "qdrift_truncating", "qdrift_sampling"],
 )
-def test_truncating_a_constant_only_hamiltonian_raises(strategy):
-    """Every truncation setting rejects a constant-only Hamiltonian."""
-    with pytest.raises(
-        ValueError, match=exact_match("Hamiltonian contains only constant terms.")
-    ):
-        strategy.process_hamiltonian(TrotterSpec(5.0 * SparsePauliOp("I")))
+def test_a_constant_only_hamiltonian_keeps_its_constant(strategy, warning):
+    spec = TrotterSpec(5.0 * SparsePauliOp("II"))
+
+    if warning is None:
+        result = strategy.process_hamiltonian(spec)
+    else:
+        with pytest.warns(UserWarning, match=warning):
+            result = strategy.process_hamiltonian(spec)
+
+    assert result.effective_hamiltonian.equiv(5.0 * SparsePauliOp("II"))
 
 
 @pytest.mark.parametrize(

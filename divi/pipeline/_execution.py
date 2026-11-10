@@ -205,6 +205,19 @@ def _record_submission_resources(
         )
 
 
+def _raise_if_cancelled(env: PipelineEnv) -> None:
+    """Raise :class:`ExecutionCancelledError` if the run was cancelled."""
+    if env.cancellation_event is not None and env.cancellation_event.is_set():
+        raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
+
+
+def _record_no_submission(env: PipelineEnv) -> None:
+    """Record the resources of a run that submits no circuit, unless cancelled."""
+    _raise_if_cancelled(env)
+    env.artifacts.update(circuit_count=0, backend_jobs=0, device_shots=0)
+    env.artifacts.setdefault("run_time", 0.0)
+
+
 def _default_execute_fn(
     trace: PipelineTrace,
     env: PipelineEnv,
@@ -242,7 +255,11 @@ def _execute_vjp(
     vjps: dict[int, np.ndarray],
 ) -> ChildResults:
     """Submit the traced circuits for vector-Jacobian products, filling ``vjps``."""
-    measured = trace.stage_expansions[-2].batch
+    measured = {
+        key: node
+        for key, node in trace.stage_expansions[-2].batch.items()
+        if not node.is_unmeasured
+    }
     artifacts = _measurement_artifacts(measured)
     ham_ops = artifacts.get("ham_ops")
     # Backend expectation values are chosen only when every node shares one.
@@ -306,8 +323,13 @@ def _execute_vjp(
         cancellation_event=env.cancellation_event,
     )
     entries = _await_completed_entries(result, env)
+    # A parameter the circuit does not reference has zero derivative.
+    column_of = {parameter: i for i, parameter in enumerate(node.parameters)}
+    columns = [column_of[parameter] for parameter in payload.parameters]
     for entry in entries:
-        vjps[param_set_of[entry["label"]]] = np.asarray(entry["metadata"]["vjp"])
+        vjp = np.zeros(len(node.parameters))
+        vjp[columns] = entry["metadata"]["vjp"]
+        vjps[param_set_of[entry["label"]]] = vjp
     return _collapse_to_parent_results(
         {entry["label"]: entry["results"] for entry in entries},
         lineage_by_label,
@@ -411,8 +433,7 @@ def _lower_batch(
         ham_ops,
         shot_groups,
     )
-    if env.cancellation_event is not None and env.cancellation_event.is_set():
-        raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
+    _raise_if_cancelled(env)
     return payloads, lineage_by_label, submit_kwargs
 
 

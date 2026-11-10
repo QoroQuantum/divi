@@ -38,11 +38,12 @@ problems (:class:`~divi.qprog.problems.TSPProblem`,
 :class:`~divi.qprog.problems.MaxWeightMatchingProblem` — all described in the
 sections below.
 
-Custom problems must provide ``cost_hamiltonian``, ``loss_constant``, and
-``decode_fn``: the objective operator, its additive offset, and the function
-mapping a measured bitstring to a domain solution. Optional hooks customise the
-mixer, initial state, feasibility, repair, and partitioned aggregation. The cost Hamiltonian is a
-:class:`~qiskit.quantum_info.SparsePauliOp`; two helpers cover common inputs:
+Custom problems must provide ``cost_hamiltonian``, the objective operator with
+any constant as an identity term, and ``decode_fn``, which maps a measured
+bitstring to a domain solution. Optional hooks customise the mixer, initial
+state, feasibility, repair, and partitioned aggregation. The cost Hamiltonian
+is a :class:`~qiskit.quantum_info.SparsePauliOp`; two helpers cover common
+inputs:
 
 * :func:`~divi.hamiltonians.to_spo` accepts a PennyLane operator, an existing
   sparse Pauli operator, or ``{pauli_string: coefficient}``. The leftmost

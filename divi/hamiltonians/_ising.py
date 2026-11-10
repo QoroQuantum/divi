@@ -19,11 +19,7 @@ import scipy.sparse as sps
 from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from ._polynomial import normalize_binary_polynomial_problem
-from ._term_ops import (
-    _clean_hamiltonian_spo,
-    _require_qiskit_num_qubits,
-    generate_empty_spo,
-)
+from ._term_ops import _require_qiskit_num_qubits, generate_empty_spo
 from ._types import BinaryPolynomialProblem
 
 
@@ -255,10 +251,9 @@ def _resolve_ising_converter(
 
 @dataclass(eq=False)
 class IsingResult:
-    """Result of converting a QUBO/HUBO to a cleaned Ising Hamiltonian."""
+    """Result of converting a QUBO/HUBO to an Ising Hamiltonian."""
 
     cost_hamiltonian: SparsePauliOp
-    loss_constant: float
     n_qubits: int
     encoding: IsingEncoding
 
@@ -271,20 +266,9 @@ def qubo_to_spo(
 ) -> SparsePauliOp:
     """Convert a QUBO/HUBO directly to its cost-Hamiltonian ``SparsePauliOp``.
 
-    The Ising encoding's additive loss constant is baked into the returned
-    SPO as an identity term, so the expectation value of the SPO on any
-    computational-basis state equals the QUBO's energy on the corresponding
-    bitstring — no separate offset bookkeeping required at the call site.
-    Downstream consumers that strip identity terms (e.g. VQE,
-    :class:`~divi.qprog.algorithms.CustomVQA`,
-    :class:`~divi.pipeline.stages.TrotterSpecStage`) will recover the
-    constant automatically; consumers that don't (e.g. the QAOA cost
-    pipeline) pick it up via the pipeline's pure-identity expectation-value
-    rule.
-
-    The decoder, encoding metadata, and a separately-addressable loss
-    constant are dropped. If you need any of those, call
-    :func:`qubo_to_ising` directly.
+    Its expectation value on a computational-basis state is the QUBO's energy
+    on that bitstring. Call :func:`qubo_to_ising` for the decoder and encoding
+    metadata.
 
     Args:
         qubo: QUBO dict, HUBO dict, numpy matrix, BQM, or BinaryPolynomial.
@@ -295,23 +279,13 @@ def qubo_to_spo(
             ``hamiltonian_builder="native"``.
 
     Returns:
-        ``SparsePauliOp`` over ``IsingResult.n_qubits`` qubits. Includes a
-        single identity term carrying the Ising-encoding loss constant
-        when that constant is non-zero.
+        ``SparsePauliOp`` over ``IsingResult.n_qubits`` qubits.
     """
-    result = qubo_to_ising(
+    return qubo_to_ising(
         qubo,
         hamiltonian_builder=hamiltonian_builder,
         quadratization_strength=quadratization_strength,
-    )
-    cost = result.cost_hamiltonian
-    if result.loss_constant == 0.0:
-        return cost
-    offset = SparsePauliOp(
-        ["I" * result.n_qubits],
-        coeffs=np.array([result.loss_constant], dtype=complex),
-    )
-    return (cost + offset).simplify()
+    ).cost_hamiltonian
 
 
 def qubo_to_ising(
@@ -320,10 +294,10 @@ def qubo_to_ising(
     hamiltonian_builder: Literal["native", "quadratized"] = "native",
     quadratization_strength: float | None = None,
 ) -> IsingResult:
-    """Convert a QUBO/HUBO to a cleaned Ising Hamiltonian.
+    """Convert a QUBO/HUBO to an Ising Hamiltonian.
 
-    Normalises the input, converts via the selected Ising converter,
-    cleans constant terms, and validates the result.
+    Normalises the input and converts it with the selected converter; the
+    encoding's constant becomes the Hamiltonian's identity term.
 
     Args:
         qubo: QUBO dict, HUBO dict, numpy matrix, BQM, or BinaryPolynomial.
@@ -335,26 +309,21 @@ def qubo_to_ising(
             ``hamiltonian_builder="native"``.
 
     Returns:
-        :class:`IsingResult` with cost Hamiltonian, loss constant,
-        qubit count, and full Ising encoding.
-
-    Raises:
-        ValueError: If the Hamiltonian contains only constant terms.
+        :class:`IsingResult` with cost Hamiltonian, qubit count, and full Ising
+        encoding.
     """
     canonical = normalize_binary_polynomial_problem(qubo)
     converter = _resolve_ising_converter(
         hamiltonian_builder, quadratization_strength=quadratization_strength
     )
     encoding = converter.convert(canonical)
-
-    cleaned_spo, _ = _clean_hamiltonian_spo(encoding.operator)
-    if cleaned_spo.size == 0:
-        raise ValueError("Hamiltonian contains only constant terms.")
-
+    n_qubits = _require_qiskit_num_qubits(encoding.operator.num_qubits)
+    constant = SparsePauliOp.from_sparse_list(
+        [("", [], encoding.constant)], num_qubits=n_qubits
+    )
     return IsingResult(
-        cost_hamiltonian=cleaned_spo,
-        loss_constant=encoding.constant,
-        n_qubits=_require_qiskit_num_qubits(encoding.operator.num_qubits),
+        cost_hamiltonian=(encoding.operator + constant).simplify(atol=0),
+        n_qubits=n_qubits,
         encoding=encoding,
     )
 

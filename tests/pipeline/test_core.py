@@ -21,6 +21,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import (
     AsyncJobBackend,
+    CircuitRunner,
     ExecutionResult,
     JobCancelledError,
     JobFailedError,
@@ -60,7 +61,7 @@ from divi.pipeline._execution import (
     _default_execute_fn,
     _wait_for_async_result,
 )
-from divi.pipeline.abc import BundleStage
+from divi.pipeline.abc import BundleStage, _EstimatorSamplePlan
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
@@ -588,6 +589,37 @@ class TestCompileQasmPayloadBatch:
         entries, _ = _compile_batch(trace.final_batch, self.PARAM_SETS)
         passed = [list(values) for _, values in entries[0].parameter_sets]
         assert passed == self.PARAM_SETS
+
+    def test_drops_parameters_the_body_does_not_reference(self):
+        meta = _parametric_meta_one_body()
+        theta, phi = meta.parameters
+        meta = replace(meta, parameters=(theta, Parameter("unreferenced"), phi))
+        param_sets = [[1.5, 9.0, 2.7], [3.0, 9.0, 4.0]]
+        trace = _run_pipeline_with_deferred_binding(meta, param_sets)
+
+        (entry,), _ = _compile_batch(trace.final_batch, param_sets)
+
+        assert entry.parameter_names == ("theta", "phi")
+        assert [values for _, values in entry.parameter_sets] == [
+            (1.5, 2.7),
+            (3.0, 4.0),
+        ]
+
+    def test_a_body_referencing_no_parameter_gets_rows_without_values(self):
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            parameters=(Parameter("u"), Parameter("v")),
+            observable=SparsePauliOp("Z"),
+        )
+        param_sets = [[1.5, 2.7], [3.0, 4.0]]
+        trace = _run_pipeline_with_deferred_binding(meta, param_sets)
+
+        (entry,), _ = _compile_batch(trace.final_batch, param_sets)
+
+        assert entry.parameters == ()
+        assert [values for _, values in entry.parameter_sets] == [(), ()]
 
     def test_rejects_non_2d_param_sets(self):
         trace = _run_pipeline_with_deferred_binding(
@@ -1841,7 +1873,10 @@ _VJP_PARAM_SETS = np.array([[0.3, -0.712345678912, 1.1], [-1.2, 0.4, -0.25]])
 _COTANGENTS = np.array([[1.0, -0.5], [0.2, 2.0]])
 
 
-def _vjp_meta() -> MetaCircuit:
+def _vjp_meta(
+    parameters: tuple[Parameter, ...] = tuple(_THETA),
+    observable: tuple[SparsePauliOp, ...] = _VJP_OBSERVABLES,
+) -> MetaCircuit:
     qc = QuantumCircuit(2)
     qc.ry(_THETA[0], 0)
     qc.cx(0, 1)
@@ -1850,8 +1885,8 @@ def _vjp_meta() -> MetaCircuit:
     qc.h(0)
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
-        parameters=tuple(_THETA),
-        observable=_VJP_OBSERVABLES,
+        parameters=parameters,
+        observable=observable,
     )
 
 
@@ -1899,10 +1934,72 @@ class TestCircuitPipelineRunVJP:
         terms = ham_ops.split(";")
         for (label, _values), (c0, c1) in zip(payload.parameter_sets, _COTANGENTS):
             assert dict(zip(terms, cotangents[label])) == pytest.approx(
-                {"ZI": c0, "II": 0.5 * c0, "XX": c1, "ZZ": -0.3 * c1}
+                {"ZI": c0, "XX": c1, "ZZ": -0.3 * c1}
             )
         np.testing.assert_array_equal(vjps[0], np.zeros(3))
         np.testing.assert_array_equal(vjps[1], np.ones(3))
+
+    def test_a_parameter_the_circuit_does_not_reference_has_zero_derivative(self):
+        backend = RecordingVJPBackend()
+        unreferenced = Parameter("unreferenced")
+        param_sets = np.insert(_VJP_PARAM_SETS, 1, 9.0, axis=1)
+
+        _values, vjps = _cost_pipeline().run_vjp(
+            _vjp_meta((_THETA[0], unreferenced, _THETA[1], _THETA[2])),
+            PipelineEnv(backend=backend, param_sets=param_sets),
+            _COTANGENTS,
+        )
+
+        ((payloads, _ham_ops, _cotangents),) = backend.calls
+        (payload,) = payloads
+        assert payload.parameters == tuple(_THETA)
+        assert [values for _label, values in payload.parameter_sets] == [
+            (0.3, -0.71234568, 1.1),
+            (-1.2, 0.4, -0.25),
+        ]
+        np.testing.assert_array_equal(vjps[0], np.zeros(4))
+        np.testing.assert_array_equal(vjps[1], [1.0, 0.0, 1.0, 1.0])
+
+    def test_identity_only_observables_give_their_constants_and_zero_derivatives(
+        self,
+    ):
+        backend = RecordingVJPBackend()
+        observable = (SparsePauliOp("II", 2.0), SparsePauliOp("II", -0.5))
+
+        values, vjps = _cost_pipeline().run_vjp(
+            _vjp_meta(observable=observable),
+            PipelineEnv(backend=backend, param_sets=_VJP_PARAM_SETS),
+            _COTANGENTS,
+        )
+
+        assert backend.calls == []
+        np.testing.assert_array_equal(_by_param_set(values), [[2.0, -0.5]] * 2)
+        for idx in range(len(_VJP_PARAM_SETS)):
+            np.testing.assert_array_equal(vjps[idx], np.zeros(3))
+
+    def test_a_constant_node_beside_a_measured_one_leaves_the_derivative_unchanged(
+        self,
+    ):
+        constants = (SparsePauliOp("II", 2.0), SparsePauliOp("II", -0.5))
+        reference_backend, backend = RecordingVJPBackend(), RecordingVJPBackend()
+        reference, expected = _cost_pipeline().run_vjp(
+            _vjp_meta(),
+            PipelineEnv(backend=reference_backend, param_sets=_VJP_PARAM_SETS),
+            _COTANGENTS,
+        )
+
+        values, vjps = _cost_pipeline().run_vjp(
+            {"constant": _vjp_meta(observable=constants), "measured": _vjp_meta()},
+            PipelineEnv(backend=backend, param_sets=_VJP_PARAM_SETS),
+            _COTANGENTS,
+        )
+
+        ((payloads, _ham_ops, _cotangents),) = backend.calls
+        assert len(payloads) == 1
+        for idx in range(len(_VJP_PARAM_SETS)):
+            np.testing.assert_array_equal(vjps[idx], expected[idx])
+            key = (("param_set", idx),)
+            assert values[key] == [[2.0, -0.5], reference[key]]
 
     @pytest.mark.parametrize(
         "stages, message",
@@ -2097,6 +2194,48 @@ class TestCircuitPipelineRunIncremental:
             )
             np.testing.assert_allclose(result.value, alone.value, rtol=0, atol=1e-12)
 
+    def test_identity_only_observables_are_constant_at_every_step(
+        self, default_test_simulator, mocker
+    ):
+        evolve = mocker.spy(default_test_simulator, "submit_incremental_evolution")
+        meta = replace(
+            _build_step_meta(_build_step_body(1, initial=False)),
+            observable=(SparsePauliOp("II", 1.5),),
+        )
+
+        per_step = _cost_pipeline().run_incremental(
+            meta,
+            PipelineEnv(backend=default_test_simulator, param_sets=_NO_PARAMETERS),
+            _build_step_body(0, initial=True),
+            (0, 2),
+        )
+
+        assert [result.value for result in per_step] == [1.5, 1.5]
+        evolve.assert_not_called()
+
+    def test_a_constant_node_beside_a_measured_one_evolves_only_the_measured(
+        self, default_test_simulator
+    ):
+        measured = _build_step_meta(_build_step_body(1, initial=False))
+        constant = replace(measured, observable=(SparsePauliOp("II", 1.5),))
+        env = partial(
+            PipelineEnv, backend=default_test_simulator, param_sets=_NO_PARAMETERS
+        )
+        steps = (0, 2)
+
+        mixed = _cost_pipeline().run_incremental(
+            {"constant": constant, "measured": measured},
+            env(),
+            _build_step_body(0, initial=True),
+            steps,
+        )
+        alone = _cost_pipeline().run_incremental(
+            measured, env(), _build_step_body(0, initial=True), steps
+        )
+
+        for result, expected in zip(mixed, alone, strict=True):
+            assert result[()] == [[1.5], pytest.approx(expected[()], abs=1e-12)]
+
     @pytest.mark.parametrize(
         "backend_fixture, spec, message",
         [
@@ -2139,3 +2278,161 @@ class TestCircuitPipelineRunIncremental:
                 _build_step_body(0, initial=True),
                 (1,),
             )
+
+
+_ANGLE = Parameter("angle")
+_ANGLE_PARAM_SETS = np.array([[0.0], [np.pi]])
+_MIXED_EXPECTED = [[[3.0], [5.0], [0.25]], [[-1.0], [5.0], [-0.75]]]
+
+
+def _build_angle_meta(observable: SparsePauliOp) -> MetaCircuit:
+    qc = QuantumCircuit(1)
+    qc.ry(_ANGLE, 0)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=(_ANGLE,),
+        observable=observable,
+    )
+
+
+def _build_mixed_batch() -> dict[str, MetaCircuit]:
+    """Measured, constant-only, measured: <Z> is +1 at angle 0 and -1 at pi."""
+    return {
+        "first": _build_angle_meta(SparsePauliOp.from_list([("Z", 2.0), ("I", 1.0)])),
+        "constant": _build_angle_meta(SparsePauliOp("I", 5.0)),
+        "last": _build_angle_meta(SparsePauliOp.from_list([("Z", 0.5), ("I", -0.25)])),
+    }
+
+
+def _build_angle_pipeline() -> CircuitPipeline:
+    return CircuitPipeline(
+        stages=[CircuitSpecStage(), MeasurementStage(), ParameterBindingStage()]
+    )
+
+
+class _AngleCountsBackend(CircuitRunner):
+    """Resolves parameters itself and reads |0> at angle 0, |1> otherwise."""
+
+    def __init__(self):
+        super().__init__(shots=100)
+        self.payloads: list = []
+
+    @property
+    def supports_expval(self) -> bool:
+        return False
+
+    @property
+    def resolves_parameters(self) -> bool:
+        return True
+
+    def submit_circuits(self, payloads, **kwargs):
+        self.payloads = list(payloads)
+        return ExecutionResult(
+            results=[
+                {"label": label, "results": {("0" if values[0] == 0.0 else "1"): 100}}
+                for payload in self.payloads
+                for label, values in payload.parameter_sets
+            ]
+        )
+
+
+class TestCircuitPipelineUnmeasuredNodes:
+    """A node whose observables are all identity runs no circuit and reads as its
+    exact constant, wherever it sits in the batch."""
+
+    def test_a_constant_node_between_measured_ones_keeps_batch_order(
+        self, default_test_simulator
+    ):
+        env = PipelineEnv(backend=default_test_simulator, param_sets=_ANGLE_PARAM_SETS)
+
+        result = _build_angle_pipeline().run(_build_mixed_batch(), env)
+
+        assert list(result) == [(("param_set", 0),), (("param_set", 1),)]
+        np.testing.assert_allclose(
+            list(result.values()), _MIXED_EXPECTED, rtol=0, atol=1e-9
+        )
+        assert env.artifacts["circuit_count"] == 4
+
+    def test_deferred_binding_keeps_batch_order_and_submits_only_measured_nodes(self):
+        backend = _AngleCountsBackend()
+        env = PipelineEnv(backend=backend, param_sets=_ANGLE_PARAM_SETS)
+
+        result = _build_angle_pipeline().run(_build_mixed_batch(), env)
+
+        assert list(result) == [(("param_set", 0),), (("param_set", 1),)]
+        np.testing.assert_allclose(
+            list(result.values()), _MIXED_EXPECTED, rtol=0, atol=1e-12
+        )
+        assert [len(payload.parameter_sets) for payload in backend.payloads] == [2, 2]
+        assert all(payload.parameters == (_ANGLE,) for payload in backend.payloads)
+
+    def test_constant_offsets_beside_a_shared_hamiltonian_use_one_backend_expval(
+        self, default_test_simulator, mocker
+    ):
+        submit = mocker.spy(default_test_simulator, "submit_circuits")
+        hamiltonian = SparsePauliOp.from_list([("Z", 0.5), ("X", 0.3)])
+        batch = {
+            "one": _build_angle_meta(hamiltonian + SparsePauliOp("I", 1.0)),
+            "two": _build_angle_meta(hamiltonian + SparsePauliOp("I", 2.0)),
+            "constant": _build_angle_meta(SparsePauliOp("I", 5.0)),
+        }
+        env = PipelineEnv(backend=default_test_simulator, param_sets=np.array([[0.7]]))
+
+        result = _build_angle_pipeline().run(batch, env)
+
+        energy = 0.5 * np.cos(0.7) + 0.3 * np.sin(0.7)
+        np.testing.assert_allclose(
+            result[(("param_set", 0),)],
+            [[energy + 1.0], [energy + 2.0], [5.0]],
+            rtol=0,
+            atol=1e-9,
+        )
+        submit.assert_called_once()
+        assert env.artifacts["circuit_count"] == 2
+        assert submit.call_args.kwargs["ham_ops"] == "Z;X"
+
+    @pytest.mark.parametrize(
+        "estimator_samples",
+        [None, _EstimatorSamplePlan((8,))],
+        ids=["shots", "estimator-samples"],
+    )
+    def test_an_all_constant_run_records_no_submission(
+        self, dummy_simulator, mocker, estimator_samples
+    ):
+        submit = mocker.spy(dummy_simulator, "submit_circuits")
+        env = PipelineEnv(
+            backend=dummy_simulator,
+            param_sets=np.zeros((1, 1)),
+            estimator_samples=estimator_samples,
+        )
+
+        result = _build_angle_pipeline().run(
+            _build_angle_meta(SparsePauliOp("I", 5.0)), env
+        )
+
+        assert result[(("param_set", 0),)] == [5.0]
+        assert env.artifacts["circuit_count"] == 0
+        assert env.artifacts["backend_jobs"] == 0
+        assert env.artifacts["device_shots"] == 0
+        assert "estimator_samples_requested" not in env.artifacts
+        submit.assert_not_called()
+
+    def test_an_all_constant_run_honours_a_prior_cancellation(
+        self, dummy_simulator, mocker
+    ):
+        submit = mocker.spy(dummy_simulator, "submit_circuits")
+        event = Event()
+        event.set()
+        env = PipelineEnv(
+            backend=dummy_simulator,
+            param_sets=np.zeros((1, 1)),
+            cancellation_event=event,
+        )
+
+        with pytest.raises(
+            ExecutionCancelledError,
+            match=exact_match("Pipeline execution cancelled before dispatch"),
+        ):
+            _build_angle_pipeline().run(_build_angle_meta(SparsePauliOp("I", 5.0)), env)
+
+        submit.assert_not_called()

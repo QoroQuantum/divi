@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from pennylane.workflow.qnode import QNode
 else:
     QNode = QuantumScript = Any
-from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
 from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.mixins import DataBindingMixin
@@ -91,7 +90,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         n_layers (int): Layer count (fixed to 1 for this wrapper).
         cost_hamiltonian: Observable being minimised, as a Qiskit
             ``SparsePauliOp``.
-        loss_constant (float): Constant term extracted from the observable.
         measured_wires: For Qiskit input, the qubit indices targeted by
             ``measure`` instructions.
         feature_batch (numpy.ndarray or None): Classical feature batch when
@@ -363,16 +361,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         """Shape of a single parameter set."""
         return self._param_shape
 
-    def _set_cost_hamiltonian(self, observable: SparsePauliOp) -> None:
-        """Clean and store ``cost_hamiltonian`` / ``loss_constant``.
-
-        Raises if the observable reduces to a constant after stripping
-        Identity terms — CustomVQA has nothing to optimize over.
-        """
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
-            observable, raise_on_constant=True
-        )
-
     def _prepare_qiskit_input(self, qc: QuantumCircuit) -> np.ndarray:
         """Set state for a Qiskit ``QuantumCircuit`` input; return base parameters."""
         measured_wires = _measured_wires_of(qc)
@@ -398,7 +386,9 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             )
             else lower_to_basis_gates(self._qiskit_circuit)
         )
-        self._set_cost_hamiltonian(_z_sum_observable(qc.num_qubits, measured_wires))
+        self.cost_hamiltonian = _z_sum_observable(
+            qc.num_qubits, measured_wires
+        ).simplify(atol=0)
         return np.array(list(qc.parameters), dtype=object)
 
     def _prepare_pennylane_input(self, qs: QuantumScript) -> np.ndarray:
@@ -422,7 +412,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         observable = meta.observable
         if observable is None:
             raise ValueError("Converted QuantumScript has no observable to optimize.")
-        self._set_cost_hamiltonian(observable[0])
+        self.cost_hamiltonian = observable[0].simplify(atol=0)
         self._composed_circuit = dag_to_circuit(meta.circuit_bodies[0][1])
         return np.array(meta.parameters, dtype=object)
 
@@ -555,8 +545,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         Uniform across input paths and data-binding mode:
         ``_composed_circuit`` always carries the full operation-parametric
         circuit, ``_base_params`` is the canonical parameter ordering, and
-        ``cost_hamiltonian`` is the cleaned observable (Identity terms
-        already factored into ``loss_constant``). DataBindingStage, when
+        ``cost_hamiltonian`` is the observable. DataBindingStage, when
         active, swaps the data parameters out into per-sample variants
         downstream.
         """

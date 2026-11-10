@@ -27,7 +27,6 @@ from qiskit.circuit import ParameterVector
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
 from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.mixins import DataBindingMixin
@@ -68,7 +67,6 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
             unsupervised objective.
         cost_hamiltonian: The observable being minimised
             (:class:`~qiskit.quantum_info.SparsePauliOp`).
-        loss_constant (float): Constant term extracted from the observable.
         loss_reduction: User-facing aggregation across samples —
             ``"mean"``, ``"sum"``, or a callable ``(n_samples,) → float``.
             The resolved callable is stored privately and forwarded to
@@ -141,8 +139,8 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         Raises:
             TypeError: If ``feature_map`` or ``ansatz`` are not the expected
                 base types, or if ``observable`` is not a ``SparsePauliOp``.
-            ValueError: On shape mismatches, non-positive layer counts,
-                degenerate Hamiltonians, or an unsupported ``fit_bias`` setup.
+            ValueError: On shape mismatches, non-positive layer counts, or an
+                unsupported ``fit_bias`` setup.
         """
         super().__init__(**kwargs)
 
@@ -254,9 +252,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         # The optimizer only ever sees the weight parameters.
         self._param_symbols = np.asarray(weight_params, dtype=object)
 
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
-            observable, raise_on_constant=True
-        )
+        self.cost_hamiltonian = observable.simplify(atol=0)
 
     # ------------------------------------------------------------------ #
     # Shape contracts the VQA base reads

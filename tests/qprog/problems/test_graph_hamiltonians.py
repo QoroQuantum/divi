@@ -417,7 +417,6 @@ def test_max_weight_cycle_problem_reads_rustworkx_dict_payload_weights(constrain
     rx_problem = MaxWeightCycleProblem(rx_graph, use_constrained_mixer=constrained)
 
     assert _spo_equal(rx_problem.cost_hamiltonian, nx_problem.cost_hamiltonian)
-    assert rx_problem.loss_constant == pytest.approx(nx_problem.loss_constant)
 
 
 @pytest.mark.parametrize("constrained", [True, False])

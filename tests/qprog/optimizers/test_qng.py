@@ -17,6 +17,7 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.hamiltonians._term_ops import generate_empty_spo
 from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import CircuitPreprocessor
 from divi.pipeline._result_keys_operations import average_by_param_set
@@ -567,7 +568,7 @@ def test_metric_pipeline_terms_sum_to_energy(toy_vqe):
         result,
         lambda value: np.asarray(value, dtype=np.float64).reshape(-1),
     )
-    reconstructed = float(indexed[0] @ coeffs) + toy_vqe.loss_constant
+    reconstructed = float(indexed[0] @ coeffs)
 
     energy = toy_vqe._evaluate_cost_param_sets(params)[0]
     assert reconstructed == pytest.approx(energy, abs=1e-10)
@@ -935,17 +936,11 @@ def test_prefix_ops_view_indexes_only_its_prefix():
         view[-4]
 
 
-def test_split_into_terms_drops_identity_terms():
+def test_split_into_terms_keeps_every_term_with_its_coefficient():
     hamiltonian = SparsePauliOp.from_list([("ZI", 0.5), ("II", 1.0), ("IZ", -0.3)])
     terms, coeffs = _split_into_terms(hamiltonian)
-    assert [term.paulis.to_labels() for term in terms] == [["ZI"], ["IZ"]]
-    np.testing.assert_allclose(coeffs, [0.5, -0.3])
-
-
-def test_split_into_terms_of_an_identity_only_observable_is_empty():
-    terms, coeffs = _split_into_terms(SparsePauliOp.from_list([("II", 1.0)]))
-    assert terms == ()
-    assert coeffs.shape == (0,)
+    assert [term.paulis.to_labels() for term in terms] == [["ZI"], ["II"], ["IZ"]]
+    np.testing.assert_allclose(coeffs, [0.5, 1.0, -0.3])
 
 
 def test_fubini_study_metric_sums_shared_parameters_and_averages_branches(
@@ -1172,8 +1167,7 @@ def test_term_expectations_rejects_a_loss_gradient_of_the_wrong_length(
 def test_term_expectations_weights_each_observables_terms_by_its_slope(
     mocker, monkeypatch
 ):
-    """Identity terms carry no weight, an identity-only observable contributes
-    no terms, and each remaining term is its coefficient times its
+    """Each term, identity terms included, weighs its coefficient times its
     observable's slope."""
     qc = QuantumCircuit(1)
     qc.rx(Parameter("theta"), 0)
@@ -1187,7 +1181,10 @@ def test_term_expectations_weights_each_observables_terms_by_its_slope(
     )
     program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
     program._post_spec_batch.return_value = {(("ham", 0),): meta}
-    measured = {0: np.array([0.9, -0.2, 0.3]), 1: np.array([0.1, 0.4, -0.6])}
+    measured = {
+        0: np.array([0.9, 1.0, 1.0, -0.2, 0.3]),
+        1: np.array([0.1, 1.0, 1.0, 0.4, -0.6]),
+    }
     monkeypatch.setattr(
         "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda *_: {(("ham", 0),): measured},
@@ -1197,7 +1194,7 @@ def test_term_expectations_weights_each_observables_terms_by_its_slope(
         program, np.zeros((2, 1)), np.array([2.0, 5.0, -3.0])
     ).values()
 
-    np.testing.assert_allclose(weights, [1.0, 1.2, -0.3])
+    np.testing.assert_allclose(weights, [1.0, 1.4, 10.0, 1.2, -0.3])
     np.testing.assert_allclose(rows, [measured[0], measured[1]])
 
 
@@ -1250,26 +1247,35 @@ def test_all_terms_preprocessor_expands_into_a_multi_observable_meta():
     assert [o.paulis.to_labels() for o in expanded.observable] == [["ZI"], ["XX"]]
 
 
-def test_all_terms_preprocessor_skips_an_identity_only_observable():
+def test_all_terms_preprocessor_keeps_identity_terms():
     qc = QuantumCircuit(1)
     qc.rx(Parameter("a"), 0)
     meta = _meta_from(qc, (SparsePauliOp.from_list([("I", 2.0)]), SparsePauliOp("Z")))
 
     expanded = _split_observable_into_terms(meta)
 
-    assert [o.paulis.to_labels() for o in expanded.observable] == [["Z"]]
+    assert [o.paulis.to_labels() for o in expanded.observable] == [["I"], ["Z"]]
 
 
-def test_all_terms_preprocessor_rejects_identity_only_cost_observables():
+def test_all_terms_preprocessor_rejects_cost_observables_without_terms():
     qc = QuantumCircuit(1)
     qc.rx(Parameter("a"), 0)
-    meta = _meta_from(qc, (SparsePauliOp.from_list([("I", 2.0)]),))
+    meta = _meta_from(qc, (generate_empty_spo(1),))
     message = (
         "The pullback metric requires the cost observables to carry at least one "
-        "non-identity Pauli term."
+        "Pauli term."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
         _split_observable_into_terms(meta)
+
+
+def test_pullback_metric_of_an_identity_only_cost_is_zero(toy_vqe):
+    toy_vqe.cost_hamiltonian = SparsePauliOp("II", 2.0)
+    evaluators = PullbackMetricEstimator().bind(toy_vqe)
+    params = np.full(toy_vqe.n_params, 0.4)
+
+    np.testing.assert_allclose(evaluators["jac"](params), 0.0, atol=1e-12)
+    np.testing.assert_allclose(evaluators["metric_fn"](params), 0.0, atol=1e-12)
 
 
 def test_vqe_runs_under_fubini_study_qng(toy_vqe):
@@ -1432,9 +1438,7 @@ def test_qng_vqe_h2_converges(qp, default_test_simulator):
     vqe.run()
 
     hartree_fock_energy = vqe.losses_history[0]["0"]
-    exact_energy = (
-        np.linalg.eigvalsh(vqe.cost_hamiltonian.to_matrix()).min() + vqe.loss_constant
-    )
+    exact_energy = np.linalg.eigvalsh(vqe.cost_hamiltonian.to_matrix()).min()
     assert len(vqe.losses_history) == 15
     assert vqe.best_loss < hartree_fock_energy - 0.01
     assert vqe.best_loss == pytest.approx(exact_energy, abs=1e-6)

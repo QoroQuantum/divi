@@ -17,6 +17,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._term_ops import (
+    _split_identity_terms,
     _spo_to_qiskit_basis_gates,
     _spo_wires,
     to_spo,
@@ -45,8 +46,8 @@ def _hamiltonian_parameter_frequency(
     hamiltonian: SparsePauliOp,
 ) -> tuple[float, int]:
     """Return a harmonic frequency superset for one shared evolution angle."""
-    active_terms = np.any(hamiltonian.paulis.x | hamiltonian.paulis.z, axis=1)
-    frequencies = 2 * np.abs(hamiltonian.coeffs.real[active_terms])
+    terms, _ = _split_identity_terms(hamiltonian)
+    frequencies = 2 * np.abs(terms.coeffs.real)
     frequencies = frequencies[frequencies > 1e-12]
     if frequencies.size == 0:
         return 1.0, 1
@@ -82,8 +83,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     (encoding the problem) and a mixer Hamiltonian (enabling exploration).
 
     The problem is provided as a :class:`~divi.qprog.problems.QAOAProblem` instance that supplies the
-    cost Hamiltonian, mixer Hamiltonian, initial state, loss constant, and
-    decode function.
+    cost Hamiltonian, mixer Hamiltonian, initial state and decode function.
 
     **Warm-starting via** ``run(initial_params=...)``: each parameter set is a
     flat row of length ``2 * n_layers``, ordered **per layer, cost angle then
@@ -129,8 +129,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         Args:
             problem: A :class:`~divi.qprog.problems.QAOAProblem` instance that provides cost/mixer
-                Hamiltonians, loss constant, decode function, and
-                recommended initial state.
+                Hamiltonians, decode function, and recommended initial state.
             initial_state: Override the problem's recommended initial state.
                 If ``None``, uses ``problem.recommended_initial_state``.
             trotterization_strategy: Strategy for Hamiltonian evolution.
@@ -171,7 +170,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.mixer_hamiltonian: SparsePauliOp = to_spo(problem.mixer_hamiltonian)
         self._trotter_spec = TrotterSpec(self.cost_hamiltonian)
         self._decode_solution_fn = problem.decode_fn
-        self.loss_constant = problem.loss_constant
         self.initial_state = initial_state or problem.recommended_initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
         self.max_shift_evaluations_per_parameter = max_shift_evaluations_per_parameter
@@ -261,7 +259,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         state = {
             **super()._save_subclass_state(),
             "problem_metadata": _to_jsonable(self.problem_metadata),
-            "loss_constant": self.loss_constant,
             "max_shift_evaluations_per_parameter": (
                 self.max_shift_evaluations_per_parameter
             ),
@@ -277,7 +274,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             KeyError: If any required state key is missing (indicates checkpoint corruption).
         """
         super()._load_subclass_state(state)
-        required_keys = ["problem_metadata", "loss_constant"]
+        required_keys = ["problem_metadata"]
         missing_keys = [key for key in required_keys if key not in state]
         if missing_keys:
             raise KeyError(
@@ -290,7 +287,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             self._results["solution_bitstring"] = bitstring
             # Decoded by this program's problem, whose labels may differ.
             self._results["decoded_solution"] = self._decode_solution_fn(bitstring)
-        self.loss_constant = state["loss_constant"]
         self.max_shift_evaluations_per_parameter = state.get(
             "max_shift_evaluations_per_parameter",
             self.max_shift_evaluations_per_parameter,

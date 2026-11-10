@@ -495,11 +495,6 @@ class BinaryOptimizationProblem(QAOAProblem):
         return self._mixer_cache
 
     @property
-    def loss_constant(self) -> float:
-        """Constant offset from Ising conversion, added back to expectation values."""
-        return self._ising.loss_constant
-
-    @property
     def decode_fn(self) -> Callable[[str], Any]:
         """Decode a measurement bitstring to the original variable assignment.
 

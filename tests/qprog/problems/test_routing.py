@@ -109,10 +109,10 @@ def extend_with_tours(problem, choose_tour):
 
 
 def compute_diagonal_energies(problem, bits):
-    """Cost-Hamiltonian energy, loss constant included, of each row of ``bits``."""
+    """Cost-Hamiltonian energy of each row of ``bits``."""
     hamiltonian = problem.cost_hamiltonian
     z = 1 - 2 * bits
-    energies = np.full(len(bits), problem.loss_constant)
+    energies = np.zeros(len(bits))
     for pauli, coeff in zip(hamiltonian.paulis, hamiltonian.coeffs):
         energies += coeff.real * np.prod(z[:, pauli.z], axis=1)
     return energies
@@ -1095,7 +1095,6 @@ class TestTSPProblem:
         reduced = qubo_to_ising(create_tsp_qubo(*args))
         full = qubo_to_ising(create_tsp_qubo(*args, reduced=False))
         assert problem.cost_hamiltonian == reduced.cost_hamiltonian
-        assert problem.loss_constant == reduced.loss_constant
         assert count_zz_terms(problem.cost_hamiltonian) < count_zz_terms(
             full.cost_hamiltonian
         )
@@ -1174,7 +1173,7 @@ class TestTSPLazyHamiltonians:
     ):
         problem = TSPProblem(four_city_cost)
         for _ in range(2):
-            _ = problem.cost_hamiltonian, problem.loss_constant
+            _ = problem.cost_hamiltonian
         spies.reduced.assert_called_once()
         spies.full.assert_not_called()
 
@@ -1188,7 +1187,7 @@ class TestTSPLazyHamiltonians:
     def test_binary_cost_builds_the_full_ising_once(self, four_city_cost, spies):
         problem = TSPProblem(four_city_cost, encoding="binary")
         for _ in range(2):
-            _ = problem.cost_hamiltonian, problem.loss_constant
+            _ = problem.cost_hamiltonian
         spies.full.assert_called_once()
         spies.reduced.assert_not_called()
 
@@ -2101,7 +2100,7 @@ class TestCVRPProblem:
         )
         spy_ising.assert_not_called()
         for _ in range(2):
-            _ = problem.cost_hamiltonian, problem.loss_constant
+            _ = problem.cost_hamiltonian
             _ = problem.mixer_hamiltonian
         spy_ising.assert_called_once()
         spy_mixer.assert_called_once()
@@ -2517,11 +2516,9 @@ def _expected_ising(kind, encoding, **kwargs):
 def _assert_same_ising(problem, expected, *, exact=True):
     if exact:
         assert problem.cost_hamiltonian == expected.cost_hamiltonian
-        assert problem.loss_constant == expected.loss_constant
         return
     difference = (problem.cost_hamiltonian - expected.cost_hamiltonian).simplify()
     np.testing.assert_allclose(difference.coeffs, 0.0, atol=1e-9)
-    assert problem.loss_constant == pytest.approx(expected.loss_constant)
 
 
 _KINDS = pytest.mark.parametrize("kind", ["tsp", "cvrp"])

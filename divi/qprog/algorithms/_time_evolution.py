@@ -15,11 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2
-from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_spo,
-    _require_qiskit_num_qubits,
-    to_spo,
-)
+from divi.hamiltonians._term_ops import _require_qiskit_num_qubits, to_spo
 from divi.hamiltonians.trotterization import (
     ExactTrotterization,
     TrotterizationResult,
@@ -81,9 +77,6 @@ class _EvolutionProgram(ObservableMeasuringMixin, QuantumProgram):
             trotterization_strategy = ExactTrotterization()
 
         hamiltonian_spo = to_spo(hamiltonian)
-        hamiltonian_clean, _ = _clean_hamiltonian_spo(hamiltonian_spo)
-        if hamiltonian_clean.size == 0:
-            raise ValueError("Hamiltonian contains only constant terms.")
 
         self.trotterization_strategy = trotterization_strategy
         self.time = time
@@ -93,7 +86,7 @@ class _EvolutionProgram(ObservableMeasuringMixin, QuantumProgram):
             observable, tuple
         ):
             observable = tuple(observable)
-        self.n_qubits = _require_qiskit_num_qubits(hamiltonian_clean.num_qubits)
+        self.n_qubits = _require_qiskit_num_qubits(hamiltonian_spo.num_qubits)
         self._circuit_wires = tuple(range(self.n_qubits))
         # Normalise observables to SparsePauliOp at the input boundary, aligning
         # qubit count with the cost circuit (a 1-qubit ``Z`` on qubit 0 against
@@ -108,7 +101,7 @@ class _EvolutionProgram(ObservableMeasuringMixin, QuantumProgram):
             )
         self.initial_state = initial_state
         self._trotter_spec = TrotterSpec(
-            hamiltonian_clean,
+            hamiltonian_spo,
             initial_state=self.initial_state,
             observable=self.observable,
             time=self.time,

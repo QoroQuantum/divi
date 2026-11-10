@@ -4,6 +4,8 @@
 
 """Tests for divi.pipeline.stages._parameter_binding_stage."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -11,7 +13,7 @@ from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, dag_to_qasm_body
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE
 from divi.pipeline import (
@@ -230,6 +232,31 @@ class TestParameterBindingStage:
                 # Bodies derived from the DAG retain rx / rz instructions.
                 assert "rx(" in body
                 assert "rz(" in body
+
+    @pytest.mark.parametrize("path", ["fast", "slow"])
+    def test_binds_around_a_parameter_the_body_does_not_reference(
+        self, dummy_pipeline_env, path
+    ):
+        meta = _parametric_meta()
+        theta, phi = meta.parameters
+        meta = replace(meta, parameters=(theta, Parameter("unreferenced"), phi))
+        pipeline = _binding_pipeline(
+            DummySpecStage(meta=meta),
+            {"fast": _FAST_STAGES, "slow": _SLOW_STAGES}[path],
+        )
+        env = PipelineEnv(
+            backend=dummy_pipeline_env.backend, param_sets=[[1.5, 9.0, 2.7]]
+        )
+
+        (node,) = pipeline.run_forward_pass("x", env).final_batch.values()
+
+        assert node.parameters == ()
+        bodies = node.qasm_bodies or tuple(
+            (tag, dag_to_qasm_body(dag)) for tag, dag in node.circuit_bodies
+        )
+        for _tag, body in bodies:
+            assert "rx(1.5) q[0];" in body
+            assert "rz(2.7) q[0];" in body
 
     def test_param_count_mismatch_raises(self, dummy_pipeline_env):
         """Providing wrong number of parameters for a circuit raises ValueError."""

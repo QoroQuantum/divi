@@ -165,14 +165,16 @@ class TestTimeEvolutionInitialization:
         with pytest.raises(ValueError, match="requires a backend"):
             TimeEvolution(hamiltonian=two_qubit_hamiltonian, backend=None)
 
-    def test_initialization_constant_hamiltonian_fails(self, default_test_simulator):
-        with pytest.raises(
-            ValueError, match=exact_match("Hamiltonian contains only constant terms.")
-        ):
-            TimeEvolution(
-                hamiltonian=SparsePauliOp("I"),
-                backend=default_test_simulator,
-            )
+    def test_a_constant_hamiltonian_leaves_the_state_unchanged(
+        self, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=2.0 * SparsePauliOp("II"),
+            observable=SparsePauliOp("ZI"),
+            backend=default_test_simulator,
+        ).run()
+
+        assert te.results == pytest.approx(1.0)
 
     def test_initialization_invalid_initial_state(
         self, two_qubit_hamiltonian, default_test_simulator

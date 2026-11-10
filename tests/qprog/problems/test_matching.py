@@ -152,15 +152,12 @@ class TestConstructMatchingQubo:
             x = np.array(bits, dtype=float)
             assert _term_energy(terms, bits) == pytest.approx(x @ dense @ x)
 
-    @pytest.mark.parametrize(
-        "make_graph", [p for p in _QUBO_GRAPHS if p.id != "edgeless_no_terms"]
-    )
+    @pytest.mark.parametrize("make_graph", _QUBO_GRAPHS)
     def test_hamiltonian_equals_dense_reference(self, make_graph):
         edges, weights, terms = _graph_qubo(make_graph())
         sparse = BinaryOptimizationProblem(terms)
         dense = BinaryOptimizationProblem(_dense_matching_qubo(edges, weights, 10.0))
         assert sparse.cost_hamiltonian.equiv(dense.cost_hamiltonian)
-        assert sparse.loss_constant == pytest.approx(dense.loss_constant)
 
     def test_problem_hamiltonian_equals_dense_reference_on_a_larger_graph(self):
         graph = _weighted_gnm(30, 80, seed=5)
@@ -169,7 +166,6 @@ class TestConstructMatchingQubo:
             _dense_matching_qubo(problem._edges, problem._weights, 3.0)
         )
         assert problem.cost_hamiltonian.equiv(dense.cost_hamiltonian)
-        assert problem.loss_constant == pytest.approx(dense.loss_constant)
 
 
 @pytest.mark.parametrize(
@@ -552,7 +548,7 @@ class TestMaxWeightMatchingProblem:
         single heaviest edge (1, 2) of weight 5, at QUBO energy -5."""
         p = MaxWeightMatchingProblem(triangle_graph)
         diagonal = np.real(np.diag(p.cost_hamiltonian.to_matrix()))
-        assert diagonal.min() + p.loss_constant == pytest.approx(-5.0)
+        assert diagonal.min() == pytest.approx(-5.0)
 
     def test_mixer_is_x_on_every_edge_qubit(self, triangle_graph):
         p = MaxWeightMatchingProblem(triangle_graph)
@@ -931,7 +927,6 @@ def test_rx_matching_qubo_and_energies_match_nx_twin(make_graph):
         tuple(sorted(e)) for e in graph.edge_list()
     }
     assert rx_problem.cost_hamiltonian == nx_problem.cost_hamiltonian
-    assert rx_problem.loss_constant == pytest.approx(nx_problem.loss_constant)
     for bitstring in _all_bitstrings(len(rx_problem._edges)):
         assert rx_problem.decode_fn(bitstring) == nx_problem.decode_fn(bitstring)
         assert rx_problem.compute_energy(bitstring) == nx_problem.compute_energy(

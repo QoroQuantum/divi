@@ -211,7 +211,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     current_iteration: int
     max_iterations: int
     n_layers: int
-    loss_constant: float
     cost_hamiltonian: SparsePauliOp
     """The cost Hamiltonian for the variational problem."""
 
@@ -949,16 +948,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return super()._build_pipeline_env(**overrides)
 
     @property
-    def _loss_constant_consumed(self) -> bool:
-        """Whether a cost-pipeline component already folds ``loss_constant`` in.
-
-        When ``True``, :meth:`_evaluate_cost_param_sets` skips its post-reduction
-        add to avoid double-counting. ``False`` for vanilla VQE/QAOA/CustomVQA;
-        data-binding subclasses override it.
-        """
-        return False
-
-    @property
     def _binds_parameters(self) -> bool:
         return True
 
@@ -1089,8 +1078,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 estimator_samples=estimator_samples,
             )
 
-        constant = 0.0 if self._loss_constant_consumed else self.loss_constant
-        return {idx: float(value[0]) + constant for idx, value in result.items()}
+        return {idx: float(value[0]) for idx, value in result.items()}
 
     def _parameter_frequencies(self) -> Sequence[tuple[float, int]] | None:
         """Per-parameter ``(omega, order)`` for the shift rule, or ``None``.
@@ -1107,10 +1095,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         The loss is a function of the expectation values :meth:`cost_preprocessor`
         measures, and every gradient is these slopes times their Jacobian. By
-        default the loss is the first observable's expectation value plus
-        ``loss_constant``, so the slopes are ``[1, 0, ...]`` whatever ``params``
-        is. Programs whose loss is a non-linear function of the expectations
-        override this; branches share the returned slopes.
+        default the loss is the first observable's expectation value, so the
+        slopes are ``[1, 0, ...]`` whatever ``params`` is. Programs whose loss is
+        a non-linear function of the expectations override this; branches share
+        the returned slopes.
         """
         slopes = np.zeros(len(self.cost_circuit.observable or ()), dtype=np.float64)
         slopes[:1] = 1.0

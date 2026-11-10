@@ -48,7 +48,10 @@ def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
 
 def format_pipeline_tree(trace: PipelineTrace) -> None:
     """Print the full pipeline expansion tree to the terminal."""
-    keys = list(batch_lineage(trace.final_batch).values())
+    measured = {
+        key: node for key, node in trace.final_batch.items() if not node.is_unmeasured
+    }
+    keys = list(batch_lineage(measured).values())
     if not keys:
         print("(empty)")
         return

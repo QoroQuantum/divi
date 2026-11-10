@@ -30,7 +30,6 @@ from divi.hamiltonians._ising import (
 )
 from tests._helpers import exact_match
 
-_CONSTANT_ONLY = exact_match("Hamiltonian contains only constant terms.")
 _ASYMMETRIC_WARNING = exact_match(
     "The QUBO matrix is neither symmetric nor upper triangular. "
     "Symmetrising it for the Ising Hamiltonian creation."
@@ -599,7 +598,6 @@ class TestQuboToIsing:
         result = qubo_to_ising(qubo_factory())
         assert isinstance(result, IsingResult)
         assert result.n_qubits == expected_n_qubits
-        assert np.isfinite(result.loss_constant)
 
     def test_decode_fn_returns_binary_array(self):
         qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
@@ -621,13 +619,21 @@ class TestQuboToIsing:
         result = qubo_to_ising(hubo, hamiltonian_builder=hamiltonian_builder, **kwargs)
         assert result.n_qubits >= 3
 
-    def test_cost_hamiltonian_has_no_identity(self):
-        """Pure-identity rows fold into ``loss_constant``, never the SPO."""
-        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
-        result = qubo_to_ising(qubo)
-        assert all(
-            set(label) != {"I"} for label in result.cost_hamiltonian.paulis.to_labels()
-        )
+    def test_cost_hamiltonian_carries_the_encoding_constant(self):
+        result = qubo_to_ising({(0,): -1.0, (1,): -1.0, (0, 1): 2.0})
+        identity = "I" * result.n_qubits
+        (coeff,) = [
+            c for label, c in result.cost_hamiltonian.to_list() if label == identity
+        ]
+        assert coeff == pytest.approx(result.encoding.constant)
+
+    def test_a_tiny_scale_qubo_keeps_its_terms_and_constant(self):
+        result = qubo_to_ising({(0,): -1e-9, (1,): -1e-9, (0, 1): 2e-9})
+
+        coeffs = _label_coeffs(result.cost_hamiltonian)
+        assert coeffs.keys() == {"II", "ZZ"}
+        assert coeffs["II"] == pytest.approx(-0.5e-9, rel=1e-9)
+        assert coeffs["ZZ"] == pytest.approx(0.5e-9, rel=1e-9)
 
     def test_n_qubits_matches_wires(self):
         qubo = {(0,): -1.0, (1,): -1.0, (2,): -1.0, (0, 1): 1.0, (1, 2): 1.0}
@@ -635,14 +641,23 @@ class TestQuboToIsing:
         assert result.n_qubits == result.cost_hamiltonian.num_qubits
 
     @pytest.mark.parametrize(
-        "qubo",
-        [{}, {(0,): 0.0}, np.zeros((2, 2))],
-        ids=["empty", "zero_coefficient", "zero_matrix"],
+        "qubo, n_qubits, constant",
+        [
+            ({}, 0, 0.0),
+            ({(0,): 0.0}, 1, 0.0),
+            (np.zeros((2, 2)), 2, 0.0),
+            ({(0,): 0.0, (): 3.0}, 1, 3.0),
+        ],
+        ids=["empty", "zero_coefficient", "zero_matrix", "nonzero_constant"],
     )
-    def test_constant_only_raises(self, qubo):
-        """A QUBO that normalises to constant-only terms must raise."""
-        with pytest.raises(ValueError, match=_CONSTANT_ONLY):
-            qubo_to_ising(qubo)
+    def test_constant_only_qubo_has_a_constant_hamiltonian(
+        self, qubo, n_qubits, constant
+    ):
+        result = qubo_to_ising(qubo)
+        assert result.n_qubits == n_qubits
+        assert np.allclose(
+            result.cost_hamiltonian.to_matrix(), constant * np.eye(2**n_qubits)
+        )
 
     def test_invalid_hamiltonian_builder_raises(self):
         qubo = {(0,): -1.0}
@@ -656,7 +671,7 @@ class TestQuboToSpo:
     @pytest.mark.parametrize(
         "qubo",
         [{(0,): -1.0, (1,): -1.0, (0, 1): 2.0}, {(0,): 2.0}],
-        ids=["two_variables", "unit_loss_constant"],
+        ids=["two_variables", "unit_constant"],
     )
     def test_z_basis_eigenvalues_equal_qubo_energies(self, qubo):
         """SPO computational-basis eigenvalues match the QUBO objective.
@@ -679,18 +694,6 @@ class TestQuboToSpo:
             assert np.isclose(energy, qubo_energy), (
                 f"state {bits}: SPO={energy}, QUBO={qubo_energy}"
             )
-
-    def test_bakes_loss_constant_as_identity_term(self):
-        """The Ising-encoding loss constant appears as a pure-identity row."""
-        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
-        ising = qubo_to_ising(qubo)
-        spo = qubo_to_spo(qubo)
-        identity_label = "I" * spo.num_qubits
-        identity_rows = [
-            (label, coeff) for label, coeff in spo.to_list() if label == identity_label
-        ]
-        assert len(identity_rows) == 1
-        assert np.isclose(identity_rows[0][1], ising.loss_constant)
 
     def test_round_trip_through_to_spo_pauli_dict(self):
         """``qubo_to_spo`` agrees with ``to_spo`` of the equivalent Pauli dict.
@@ -723,5 +726,4 @@ class TestQuboToSpo:
         ising = qubo_to_ising(
             hubo, hamiltonian_builder="quadratized", quadratization_strength=5.0
         )
-        identity = SparsePauliOp(["I" * ising.n_qubits], [ising.loss_constant])
-        assert spo.equiv(ising.cost_hamiltonian + identity)
+        assert spo.equiv(ising.cost_hamiltonian)

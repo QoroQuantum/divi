@@ -163,44 +163,39 @@ def test_excitation_ansatze_start_at_the_hartree_fock_point(
     assert bool(np.all(params == 0.0)) is starts_at_reference
 
 
-def test_vqe_clean_hamiltonian_logic(
-    four_qubit_hamiltonian, dummy_simulator, default_optimizer
+def test_vqe_cost_includes_the_hamiltonian_constant(
+    four_qubit_hamiltonian, default_test_simulator, default_optimizer
 ):
-    """Test that the Hamiltonian is cleaned correctly, separating the constant."""
-    constant_value = 5.0
-    hamiltonian_with_constant = four_qubit_hamiltonian + SparsePauliOp.from_list(
-        [("IIII", constant_value)]
-    )
-
-    vqe_problem = VQE(
-        HamiltonianProblem(hamiltonian_with_constant, n_electrons=2),
-        ansatz=HartreeFockAnsatz(),
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
-    )
-
-    # The fixture carries no identity row, so the whole constant is the one added.
-    assert np.isclose(vqe_problem.loss_constant, constant_value)
-
-    # ``_clean_hamiltonian_spo`` partitions identity rows out of the SPO and
-    # accumulates them into ``loss_constant``; verify no surviving identity
-    # row remains.
-    labels = vqe_problem.cost_hamiltonian.paulis.to_labels()
-    assert not any(set(label) == {"I"} for label in labels), (
-        "Identity operator should have been removed"
-    )
-
-
-def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimizer):
-    """Test VQE initialization fails with a constant-only Hamiltonian."""
-    hamiltonian = 5.0 * SparsePauliOp("I")
-    with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
-        VQE(
+    def evaluate_cost(hamiltonian):
+        vqe = VQE(
             HamiltonianProblem(hamiltonian, n_electrons=2),
             ansatz=HartreeFockAnsatz(),
-            backend=dummy_simulator,
+            backend=default_test_simulator,
             optimizer=default_optimizer,
         )
+        params = np.full((1, vqe.n_params), 0.3)
+        (value,) = vqe.evaluate(params, vqe.cost_preprocessor()).values()
+        return value[0]
+
+    shifted = four_qubit_hamiltonian + SparsePauliOp("IIII", 5.0)
+
+    assert evaluate_cost(shifted) - evaluate_cost(four_qubit_hamiltonian) == (
+        pytest.approx(5.0, abs=1e-12)
+    )
+
+
+def test_vqe_with_a_constant_only_hamiltonian_trains_to_the_constant(
+    default_test_simulator, default_optimizer
+):
+    vqe = VQE(
+        HamiltonianProblem(5.0 * SparsePauliOp("IIII"), n_electrons=2),
+        ansatz=HartreeFockAnsatz(),
+        backend=default_test_simulator,
+        optimizer=default_optimizer,
+        max_iterations=1,
+    ).run()
+
+    assert vqe.best_loss == 5.0
 
 
 def test_vqe_fail_with_bare_hamiltonian(dummy_simulator, default_optimizer):

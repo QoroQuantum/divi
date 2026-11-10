@@ -90,15 +90,20 @@ class TestExpand:
         batch, _ = stage.expand(TrotterSpec(_Z0_Z1), env)
         assert len(batch) == 1
 
-    def test_raises_empty_hamiltonian(self, dummy_expval_backend):
+    def test_expands_a_constant_only_hamiltonian(self, dummy_expval_backend):
         stage = TrotterSpecStage(
-            ExactTrotterization(), meta_circuit_factory=_meta_factory
+            ExactTrotterization(),
+            meta_circuit_factory=lambda result, _ham_id: meta_with_observable(
+                result.effective_hamiltonian
+            ),
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        with pytest.raises(
-            ValueError, match=exact_match("Hamiltonian contains only constant terms.")
-        ):
-            stage.expand(TrotterSpec(_I0), env)
+        batch, token = stage.expand(TrotterSpec(2.5 * _I0), env)
+        assert len(batch) == 1
+        assert token["n_terms"] == 0
+        (meta,) = batch.values()
+        (observable,) = meta.observable
+        assert observable == 2.5 * _I0
 
     def test_raises_non_operator_input(self, dummy_expval_backend):
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
@@ -121,7 +126,7 @@ class TestExpand:
             stage.expand(_Z0, env)
 
     @_EXPAND_METHODS
-    def test_strategy_gets_the_spec_with_the_constant_removed(self, mocker, method):
+    def test_strategy_gets_the_spec_unchanged(self, mocker, method):
         spy = mocker.spy(_DummyStrategy, "process_hamiltonian")
         spec = TrotterSpec(
             SparsePauliOp.from_list([("ZI", 1.0), ("II", 2.0)]),
@@ -134,11 +139,7 @@ class TestExpand:
         )
         getattr(stage, method)(spec, PipelineEnv(backend=None))
 
-        received = spy.call_args.args[1]
-        assert received.hamiltonian == SparsePauliOp("ZI")
-        assert received.initial_state is spec.initial_state
-        assert received.observable is spec.observable
-        assert received.time == 0.3
+        assert spy.call_args.args[1] is spec
 
     def test_rejects_non_hermitian_sparse_pauli_op(self, dummy_expval_backend):
         stage = TrotterSpecStage(

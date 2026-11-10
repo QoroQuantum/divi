@@ -105,8 +105,8 @@ class DataBindingMixin(_MixinBase):
 
     @property
     def fitted_bias(self) -> float:
-        """The bias ``mean(labels - (⟨H⟩ + loss_constant))`` over the training
-        batch at ``best_params``.
+        """The bias ``mean(labels - ⟨H⟩)`` over the training batch at
+        ``best_params``.
 
         ``run()`` fits it when it finishes. A program restored from an
         iteration checkpoint, which does not store it, fits it on first read:
@@ -173,12 +173,6 @@ class DataBindingMixin(_MixinBase):
                 f"assemble_pipeline and silently disables data binding."
             )
 
-    @property
-    def _loss_constant_consumed(self) -> bool:
-        # DataBindingStage folds loss_constant into each per-sample value, so
-        # the base cost path must not re-add it.
-        return self.feature_batch is not None
-
     def _build_data_binding_stage(self) -> DataBindingStage:
         """Build the :class:`DataBindingStage` for this program's data axis.
 
@@ -190,7 +184,6 @@ class DataBindingMixin(_MixinBase):
         return DataBindingStage(
             data_params=self._data_symbols,
             loss_reduction=self._loss_reduction_fn,
-            loss_constant=self.loss_constant,
             sample_loss=self._sample_loss_fn,
             fit_bias=self._fit_bias,
         )
@@ -375,8 +368,7 @@ class DataBindingMixin(_MixinBase):
 
         Each row of ``features`` is bound into the composed circuit alongside the
         weights and the cost observable's expectation is estimated from shots —
-        the same score the loss optimises, including ``loss_constant`` so it
-        matches the full observable. By default the sign of that score is the
+        the same score the loss optimises. By default the sign of that score is the
         class label: ``+1`` for a non-negative score, ``-1`` otherwise. Pass
         ``return_scores=True`` to get the continuous scores instead (e.g. for a
         custom decision threshold or a regression-style output). The sign rule
@@ -394,7 +386,7 @@ class DataBindingMixin(_MixinBase):
             params: Trained weights of shape ``(n_layers * n_params_per_layer,)``.
                 Defaults to ``self.best_params``.
             return_scores: When ``True``, return the continuous per-sample score
-                ``⟨H⟩ + loss_constant`` (plus :attr:`fitted_bias` when
+                ``⟨H⟩`` (plus :attr:`fitted_bias` when
                 :attr:`fit_bias` is set) instead of the sign-thresholded label.
                 The bias is always the one fitted at ``best_params``, even
                 when ``params`` is given.
@@ -430,7 +422,7 @@ class DataBindingMixin(_MixinBase):
     def _scores(
         self, features: npt.ArrayLike, params: npt.NDArray[np.float64] | None
     ) -> np.ndarray:
-        """Per-row ``⟨H⟩ + loss_constant``, without any fitted bias."""
+        """Per-row ``⟨H⟩``, without any fitted bias."""
         if not self._data_symbols:
             raise RuntimeError(
                 "predict() requires a data axis, but this program was created "
@@ -466,7 +458,7 @@ class DataBindingMixin(_MixinBase):
         # Each sample binds as one (data + weights) param-set row, data first —
         # no DataBindingStage, no reduction.
         joined = np.hstack([feature_arr, np.tile(weights, (feature_arr.shape[0], 1))])
-        return self._measure_observable_for(joined) + self.loss_constant
+        return self._measure_observable_for(joined)
 
     def _measure_observable_for(
         self, param_sets: npt.NDArray[np.float64]

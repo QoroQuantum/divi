@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
+from dataclasses import replace
 from functools import partial
 from threading import Event
 from typing import Any
@@ -20,12 +21,17 @@ from divi.exceptions import VJPUnavailableError
 from divi.hamiltonians.trotterization import ExactTrotterization
 from divi.reporting._events import ProgressEvent
 
-from ._compilation import reject_colliding_body_tags
+from ._compilation import (
+    _insert_unmeasured_rows,
+    batch_lineage,
+    reject_colliding_body_tags,
+)
 from ._execution import (
     _default_execute_fn,
     _execute_incremental,
     _execute_vjp,
     _measurement_artifacts,
+    _record_no_submission,
 )
 from ._postprocessing import (
     _counts_to_cost_variance,
@@ -34,7 +40,11 @@ from ._postprocessing import (
     _expval_dicts_to_indexed,
     _to_big_endian_histogram,
 )
-from ._result_keys_operations import FOREIGN_KEY_ATTR
+from ._result_keys_operations import (
+    FOREIGN_KEY_ATTR,
+    OBS_GROUP_AXIS,
+    strip_axis_from_label,
+)
 from .abc import (
     BundleStage,
     ChildResults,
@@ -203,6 +213,31 @@ def _measurement_cost_variance(
     )
 
 
+def _execute_measured(
+    plan: PipelineTrace,
+    env: PipelineEnv,
+    execute_fn: Callable[[PipelineTrace, PipelineEnv], Any],
+    no_submission: Any,
+) -> Any:
+    """Run ``execute_fn`` on ``plan``'s measured nodes.
+
+    Returns ``no_submission`` when every node is unmeasured.
+    """
+    measured = replace(
+        plan,
+        final_batch={
+            key: node
+            for key, node in plan.final_batch.items()
+            if not node.is_unmeasured
+        },
+    )
+    if not measured.final_batch:
+        _record_no_submission(env)
+        return no_submission
+    with _sigint_to_cancellation(env):
+        return execute_fn(measured, env)
+
+
 class CircuitPipeline:
     """
     Single ordered pipeline: one spec stage, then bundle stages.
@@ -279,8 +314,7 @@ class CircuitPipeline:
             # the spinner shows only execution/polling state from here on.
             _report_pipeline_stage(env, None)
 
-            with _sigint_to_cancellation(env):
-                raw = execute_fn(plan, env)
+            raw = _execute_measured(plan, env, execute_fn, {})
             return self._build_result(raw, env, plan)
         finally:
             # A pipeline run owns only its transient stage/polling phase;
@@ -309,8 +343,8 @@ class CircuitPipeline:
         Raises:
             VJPUnavailableError: Before the forward pass, if a stage has no
                 vector-Jacobian product (stochastic Trotterization has none);
-                after it, if the run does not measure
-                one expectation-value circuit per parameter set, or the backend
+                after it, if the circuits it submits are not one
+                expectation-value circuit per parameter set, or the backend
                 refuses.
         """
         foreign = [
@@ -335,7 +369,12 @@ class CircuitPipeline:
         execute = partial(
             _execute_vjp, binding=binding, cotangents=cotangents, vjps=vjps
         )
-        return self.run(initial_spec, env, execute_fn=execute), vjps
+        result = self.run(initial_spec, env, execute_fn=execute)
+        # Identity-only observables run no circuit and have zero derivatives.
+        n_params = len(env.param_sets[0])
+        for idx in range(len(cotangents)):
+            vjps.setdefault(idx, np.zeros(n_params))
+        return result, vjps
 
     def run_incremental(
         self,
@@ -360,15 +399,17 @@ class CircuitPipeline:
             One result per entry of ``steps``, each as :meth:`run` gives it.
 
         Raises:
-            IncrementalEvolutionUnavailableError: If the run does not measure
-                backend expectation values of exactly one bound circuit, or the
-                backend refuses.
+            IncrementalEvolutionUnavailableError: If the circuits it submits are
+                not backend expectation values of exactly one bound circuit, or
+                the backend refuses.
         """
         try:
             plan = self.run_forward_pass(initial_spec, env)
             _report_pipeline_stage(env, None)
-            with _sigint_to_cancellation(env):
-                per_step = _execute_incremental(plan, env, initial_state, list(steps))
+            execute = partial(
+                _execute_incremental, initial_state=initial_state, steps=list(steps)
+            )
+            per_step = _execute_measured(plan, env, execute, [{} for _ in steps])
             return [self._build_result(raw, env, plan) for raw in per_step]
         finally:
             _report_pipeline_stage(env, None)
@@ -377,6 +418,9 @@ class CircuitPipeline:
         self, raw: ChildResults, env: PipelineEnv, plan: PipelineTrace
     ) -> PipelineResult:
         """Convert ``raw`` to the recorded result format and reduce it."""
+        unmeasured = {
+            key: node for key, node in plan.final_batch.items() if node.is_unmeasured
+        }
         result_format = next(
             (
                 meta.result_format
@@ -401,10 +445,21 @@ class CircuitPipeline:
                 raw = _expval_dicts_to_indexed(raw, ham_ops)
             else:
                 if env.collect_variance:
+                    # Constants have no shot noise; several observables, no scalar.
                     env.artifacts["cost_variance"] = _measurement_cost_variance(
                         self._stages, raw, plan
-                    )
+                    ) | {
+                        strip_axis_from_label(branch_key, OBS_GROUP_AXIS): (
+                            0.0 if len(node.observable or ()) == 1 else float("nan")
+                        )
+                        for key, node in unmeasured.items()
+                        for branch_key in batch_lineage(
+                            {key: node}, len(env.param_sets)
+                        ).values()
+                    }
                 raw = _counts_to_expvals(raw, plan.final_batch)
+        if unmeasured:
+            raw = _insert_unmeasured_rows(raw, plan.final_batch, len(env.param_sets))
 
         result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))
         if any(meta._was_multi_obs for meta in plan.initial_batch.values()):

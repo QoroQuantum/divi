@@ -39,6 +39,7 @@ from divi.circuits._conversions import (
     _real_float_array,
     bind_parameters_in_dag,
 )
+from divi.circuits._qasm_template import _template_cached
 from divi.pipeline._result_keys_operations import (
     group_by_base_key,
     reduce_postprocess_ordered,
@@ -52,7 +53,7 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
+from divi.pipeline.stages._qasm_cache import _qasm_body_cached
 
 DATA_AXIS = "data_sample"
 
@@ -146,7 +147,6 @@ class DataBindingStage(BundleStage):
     Args:
         data_params: Parameters corresponding to feature-batch columns.
         loss_reduction: Aggregation across per-sample results.
-        loss_constant: Constant added before reduction.
         sample_loss: Optional supervised loss applied per prediction and label.
         fit_bias: Shift predictions by ``mean(labels - predictions)`` before
             ``sample_loss``.
@@ -164,7 +164,6 @@ class DataBindingStage(BundleStage):
         self,
         data_params: tuple[Parameter, ...],
         loss_reduction: Callable[[npt.NDArray[np.float64]], float],
-        loss_constant: float = 0.0,
         sample_loss: Callable[[float, float], float] | None = None,
         fit_bias: bool = False,
     ) -> None:
@@ -172,7 +171,6 @@ class DataBindingStage(BundleStage):
         self.data_params = tuple(data_params)
         self._data_param_names = tuple(p.name for p in self.data_params)
         self.loss_reduction = loss_reduction
-        self.loss_constant = float(loss_constant)
         self.sample_loss = sample_loss
         self.fit_bias = fit_bias
 
@@ -361,16 +359,10 @@ class DataBindingStage(BundleStage):
         independently so the multi-observable shape is preserved end-to-end.
         Scalar inputs (rare upstream path) are handled symmetrically.
 
-        ``loss_constant`` is added to each per-sample value *before* the
-        reduction so non-affine reductions (``"sum"``, custom callables)
-        see the unshifted loss — adding the constant after the reduction
-        would be correct only for ``"mean"``.
-
-        When ``labels`` is given, each per-sample prediction (expectation value
-        plus ``loss_constant``) is first mapped through ``sample_loss`` against
-        its label, so the reduction aggregates a supervised training loss.
+        When ``labels`` is given, each per-sample prediction is first mapped
+        through ``sample_loss`` against its label, so the reduction aggregates a
+        supervised training loss.
         """
-        const = self.loss_constant
         # Per-observable values (a sequence of observables) have ndim >= 1;
         # scalars — Python float, numpy scalar, or 0-d array — have ndim 0
         # and take the scalar branch.
@@ -390,12 +382,12 @@ class DataBindingStage(BundleStage):
             return [
                 float(
                     self.loss_reduction(
-                        self._compute_per_sample_loss(values[:, i] + const, labels)
+                        self._compute_per_sample_loss(values[:, i], labels)
                     )
                 )
                 for i in range(n_obs)
             ]
-        predictions = np.asarray(samples, dtype=np.float64) + const
+        predictions = np.asarray(samples, dtype=np.float64)
         return float(
             self.loss_reduction(self._compute_per_sample_loss(predictions, labels))
         )

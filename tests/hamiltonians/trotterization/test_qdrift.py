@@ -215,6 +215,20 @@ class TestQDrift:
             expected.to_matrix(), _STATE_DRIFT_HAMILTONIAN.to_matrix(), atol=1e-12
         )
 
+    def test_state_drift_keeps_the_constant_and_fits_only_the_other_terms(self, mocker):
+        spec = replace(
+            _state_drift_spec(CustomPerQubitState("+0-")),
+            hamiltonian=_STATE_DRIFT_HAMILTONIAN + SparsePauliOp("III", 1.2),
+        )
+
+        expected = _exact_expected_step(
+            QDrift(sampling_budget=2, sampling_strategy="state_drift"), spec, mocker
+        )
+
+        np.testing.assert_allclose(
+            expected.to_matrix(), spec.hamiltonian.to_matrix(), atol=1e-12
+        )
+
     @pytest.mark.parametrize("n_steps", [1, 3])
     def test_state_drift_samples_by_the_distribution_for_its_time(
         self, mocker, n_steps
@@ -494,6 +508,30 @@ class TestQDrift:
             if label == "ZZ"
         ]
         assert kept == [3.0]
+
+    @pytest.mark.parametrize(
+        "strategy",
+        [
+            QDrift(sampling_budget=4, seed=0),
+            QDrift(sampling_budget=4, sampling_strategy="weighted", seed=0),
+            QDrift(keep_top_n=1, sampling_budget=4, seed=0),
+        ],
+        ids=["uniform", "weighted", "keep_top_n"],
+    )
+    def test_every_draw_carries_the_identity_terms_once(self, strategy):
+        hamiltonian = SparsePauliOp.from_list(
+            [("ZZ", 3.0), ("II", 0.1), ("ZI", 1.0), ("II", 0.2), ("IZ", 0.5)]
+        )
+
+        for result in strategy.process_hamiltonian_batch(TrotterSpec(hamiltonian), 5):
+            step_terms = _only_step(result)
+            identity = [
+                coeff.real
+                for label, coeff in step_terms.to_list()
+                if set(label) == {"I"}
+            ]
+            assert sum(identity) == pytest.approx(0.3)
+            assert step_terms.size - len(identity) == 4 + (strategy.keep_top_n or 0)
 
     def test_tiny_terms_stay_in_the_sampling_pool(self):
         hamiltonian = SparsePauliOp.from_list([("ZZ", 3.0), ("IZ", 1e-9)])

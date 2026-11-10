@@ -422,14 +422,15 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match=match):
             make_custom_vqa(qscript=qscript)
 
-    def test_constant_only_hamiltonian_fails(self, qp, make_custom_vqa):
-        """Test that constant-only Hamiltonian fails."""
+    def test_constant_only_hamiltonian_costs_its_constant(
+        self, qp, default_test_simulator, make_custom_vqa
+    ):
         ops = [qp.RX(0.0, wires=0)]
         measurements = [qp.expval(qp.Identity(0) * 5.0)]
         qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
+        program = make_custom_vqa(qscript=qscript, backend=default_test_simulator)
 
-        with pytest.raises(ValueError, match="only constant terms"):
-            make_custom_vqa(qscript=qscript)
+        assert program._evaluate_cost_param_sets(np.array([[0.3]]))[0] == 5.0
 
     def test_pennylane_observable_with_coefficients_does_not_crash(
         self, qp, make_custom_vqa
@@ -451,10 +452,7 @@ class TestConstructionValidation:
         self, qp, default_test_simulator, make_custom_vqa
     ):
         """An observable like ``0.5 * Z(0) + 5.0 * Identity`` must yield
-        the loss ``0.5 * <Z> + 5.0`` (constant added once), not
-        ``0.5 * <Z> + 10.0`` (constant double-counted by including it
-        in both the measured observable and ``loss_constant``).
-        """
+        the loss ``0.5 * <Z> + 5.0``, with the constant added once."""
         default_test_simulator.set_seed(1997)
         ops = [qp.RX(0.0, wires=0)]  # theta=0 → state stays |0> → <Z>=1
         obs = 0.5 * qp.Z(0) + 5.0 * qp.Identity(0)

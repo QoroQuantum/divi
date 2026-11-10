@@ -5,14 +5,19 @@
 """Batch compilation: lower MetaCircuit batches to executable QASM payloads."""
 
 from collections.abc import Mapping, Sequence
-from itertools import product
 from typing import Any
 
 import numpy as np
+from qiskit.circuit import Parameter
 
 from divi.circuits import CircuitPayload, MetaCircuit, dag_to_qasm_body
 from divi.circuits._conversions import _real_float_array
-from divi.pipeline._result_keys_operations import OBS_GROUP_AXIS, PARAM_SET_AXIS
+from divi.circuits._qasm_template import _template_cached
+from divi.pipeline._result_keys_operations import (
+    OBS_GROUP_AXIS,
+    PARAM_SET_AXIS,
+    _find_batch_key,
+)
 from divi.pipeline.abc import BranchKey, ContractViolation
 
 
@@ -108,22 +113,25 @@ def _has_param_group_allocation(
     return allocation.get(param_idx, {}).get(group_idx, 0) > 0
 
 
-def batch_lineage(batch: Mapping[Any, MetaCircuit]) -> dict[str, BranchKey]:
+def batch_lineage(
+    batch: Mapping[Any, MetaCircuit], n_param_sets: int = 1
+) -> dict[str, BranchKey]:
     """The ``label -> branch key`` map the batch would submit under.
 
     Enumerates labels without rendering circuits or binding values, for
     callers that need the expansion shape rather than an executable payload.
 
-    Deferred-binding nodes report a single ``param_set`` branch: the count
-    lives in ``env.param_sets``, which describes one run rather than the
-    pipeline's structure.
+    Deferred-binding nodes report ``n_param_sets`` ``param_set`` branches: the
+    count belongs to a run (``env.param_sets``), not to the pipeline.
     """
     return {
         _format_branch_label(branch_key): branch_key
         for batch_key, node in batch.items()
         for body_tag, _ in _effective_bodies(node)
         for meas_tag, _ in node.measurement_qasms
-        for branch_key, _ in _row_keys(batch_key, body_tag, meas_tag, node, 1)
+        for branch_key, _ in _row_keys(
+            batch_key, body_tag, meas_tag, node, n_param_sets
+        )
     }
 
 
@@ -137,6 +145,36 @@ def _batch_has_free_parameters(batch: Mapping[Any, MetaCircuit]) -> bool:
     and submit payloads rather than bound circuits.
     """
     return any(node.parameters for node in batch.values())
+
+
+def _select_present_columns(parameters: Sequence[Parameter], body: str) -> list[int]:
+    """Return the indices of the ``parameters`` that ``body`` references."""
+    if not parameters:
+        return []
+    names = tuple(parameter.name for parameter in parameters)
+    return sorted(set(_template_cached(body, names).slot_indices))
+
+
+def _insert_unmeasured_rows(
+    raw: Mapping[BranchKey, Any],
+    batch: Mapping[Any, MetaCircuit],
+    n_param_sets: int,
+) -> dict[BranchKey, Any]:
+    """Return ``raw`` plus a ``0.0`` row per branch of each unmeasured node.
+
+    Every node's rows keep ``batch`` order.
+    """
+    rows_by_node: dict[Any, dict[BranchKey, Any]] = {
+        key: (
+            dict.fromkeys(batch_lineage({key: node}, n_param_sets).values(), 0.0)
+            if node.is_unmeasured
+            else {}
+        )
+        for key, node in batch.items()
+    }
+    for branch_key, value in raw.items():
+        rows_by_node[_find_batch_key(branch_key, batch.keys())][branch_key] = value
+    return {key: value for rows in rows_by_node.values() for key, value in rows.items()}
 
 
 def _compile_batch(
@@ -168,26 +206,28 @@ def _compile_batch(
             for tag, dag in node.circuit_bodies
         )
 
-        for (body_tag, body), (meas_tag, meas_qasm) in product(
-            bodies, node.measurement_qasms
-        ):
-            if not _has_param_group_allocation(node, body_tag, meas_tag):
-                continue
-            param_set_rows: list[tuple[str, tuple[float, ...]]] = []
-            for branch_key, i in _row_keys(
-                batch_key, body_tag, meas_tag, node, len(param_array)
-            ):
-                label = _format_branch_label(branch_key)
-                values = () if i is None else tuple(param_array[i].tolist())
-                param_set_rows.append((label, values))
-                lineage_by_label[label] = branch_key
+        for body_tag, body in bodies:
+            columns = _select_present_columns(node.parameters, body)
+            parameters = tuple(node.parameters[i] for i in columns)
+            present_values = param_array[:, columns]
+            for meas_tag, meas_qasm in node.measurement_qasms:
+                if not _has_param_group_allocation(node, body_tag, meas_tag):
+                    continue
+                param_set_rows: list[tuple[str, tuple[float, ...]]] = []
+                for branch_key, i in _row_keys(
+                    batch_key, body_tag, meas_tag, node, len(param_array)
+                ):
+                    label = _format_branch_label(branch_key)
+                    values = () if i is None else tuple(present_values[i].tolist())
+                    param_set_rows.append((label, values))
+                    lineage_by_label[label] = branch_key
 
-            payloads.append(
-                CircuitPayload(
-                    circuit=_build_preamble(node.n_qubits) + body + meas_qasm,
-                    parameters=node.parameters,
-                    parameter_sets=tuple(param_set_rows),
+                payloads.append(
+                    CircuitPayload(
+                        circuit=_build_preamble(node.n_qubits) + body + meas_qasm,
+                        parameters=parameters,
+                        parameter_sets=tuple(param_set_rows),
+                    )
                 )
-            )
 
     return payloads, lineage_by_label

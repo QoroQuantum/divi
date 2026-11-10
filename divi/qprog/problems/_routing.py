@@ -1651,10 +1651,6 @@ class _RoutingProblemBase(QAOAProblem):
         )
         return xy_mixer(graph, n_qubits=n_qubits)
 
-    @property
-    def loss_constant(self) -> float:
-        return self._ising.loss_constant
-
 
 # --- TSP decomposition ---
 
@@ -1919,12 +1915,6 @@ class TSPProblem(BinaryOptimizationProblem):
         if self._encoding == "binary":
             return super().cost_hamiltonian
         return self._reduced_ising.cost_hamiltonian
-
-    @property
-    def loss_constant(self) -> float:
-        if self._encoding == "binary":
-            return super().loss_constant
-        return self._reduced_ising.loss_constant
 
     @property
     def mixer_hamiltonian(self) -> SparsePauliOp:

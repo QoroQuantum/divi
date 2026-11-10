@@ -15,9 +15,9 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import _term_ops as term_ops_module
 from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_spo,
     _observable_to_sparse_pauli_op,
     _sort_hamiltonian_terms_spo,
+    _split_identity_terms,
     _spo_to_qiskit_basis_gates,
     _spo_to_qiskit_basis_gates_numeric,
     _spo_to_qiskit_basis_gates_symbolic,
@@ -128,7 +128,7 @@ class TestSpoConversion:
         assert _spo_wires(simple_spo) == (0, 1)
 
 
-class TestCleanHamiltonianSpo:
+class TestSplitIdentityTerms:
     @pytest.mark.parametrize(
         "spo, expected_constant, expected_remaining",
         [
@@ -167,43 +167,18 @@ class TestCleanHamiltonianSpo:
             "empty_input",
         ],
     )
-    def test_clean_partitions_identity_constant(
+    def test_partitions_identity_terms_from_the_rest(
         self, spo, expected_constant, expected_remaining
     ):
-        """``_clean_hamiltonian_spo`` splits identity contributions into a
-        real constant and a non-identity remainder."""
-        cleaned, constant = _clean_hamiltonian_spo(spo)
-        assert constant == pytest.approx(expected_constant)
+        terms, identity = _split_identity_terms(spo)
+        assert terms.num_qubits == identity.num_qubits == spo.num_qubits
+        assert (terms + identity).simplify().sort() == spo.simplify().sort()
+        assert not np.any(identity.paulis.x | identity.paulis.z)
+        assert identity.coeffs.real.sum() == pytest.approx(expected_constant)
         if expected_remaining is None:
-            assert cleaned.size == 0
+            assert terms.size == 0
         else:
-            assert cleaned.simplify() == expected_remaining.simplify()
-
-    @pytest.mark.parametrize(
-        "const_only",
-        [SparsePauliOp.from_list([("II", 2.5), ("II", 1.5)]), generate_empty_spo(2)],
-        ids=["identity_rows", "empty"],
-    )
-    def test_raise_on_constant_rejects_constant_only(self, const_only):
-        """``raise_on_constant=True`` rejects an operator with no non-identity terms."""
-        with pytest.raises(
-            ValueError, match=exact_match("Hamiltonian contains only constant terms.")
-        ):
-            _clean_hamiltonian_spo(const_only, raise_on_constant=True)
-
-    def test_raise_on_constant_passes_through_when_terms_remain(self):
-        """With non-identity terms present, the flag is a no-op on the result."""
-        spo = SparsePauliOp.from_list([("II", 3.0), ("ZI", 1.0)])
-        cleaned, constant = _clean_hamiltonian_spo(spo, raise_on_constant=True)
-        assert constant == pytest.approx(3.0)
-        assert cleaned.simplify() == SparsePauliOp.from_list([("ZI", 1.0)]).simplify()
-
-    def test_default_tolerates_constant_only(self):
-        """The default (no flag) returns an empty SPO for a constant-only operator."""
-        const_only = SparsePauliOp.from_list([("II", 4.0)])
-        cleaned, constant = _clean_hamiltonian_spo(const_only)
-        assert cleaned.size == 0
-        assert constant == pytest.approx(4.0)
+            assert terms.simplify() == expected_remaining.simplify()
 
 
 class TestSortHamiltonianTermsSpo:

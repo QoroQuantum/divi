@@ -24,6 +24,7 @@ from divi.pipeline import (
     CircuitPreprocessor,
     PipelineCadence,
     dry_run_pipeline,
+    format_pipeline_tree,
 )
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._dry_run import (
@@ -43,6 +44,7 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import (
+    CircuitSpecStage,
     MeasurementStage,
     ParameterBindingStage,
     PauliTwirlStage,
@@ -497,6 +499,78 @@ class TestMeasurementStageReduction:
         assert meas.factor == 0.5  # 2 terms -> 1 group
         assert meas.metadata["n_groups"] == 1
         assert report.total_circuits == 1
+
+    def test_an_identity_only_observable_submits_no_circuit(self, dummy_pipeline_env):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=SparsePauliOp("II", 3.0),
+        )
+
+        _, report = dry_run_stages(
+            [DummySpecStage(meta=meta), MeasurementStage()], dummy_pipeline_env
+        )
+
+        assert report.total_circuits == 0
+        assert report.circuit_stats == {}
+
+    def test_a_leading_constant_node_does_not_make_a_raw_readout_analytic(
+        self, make_sampling_env
+    ):
+        env = make_sampling_env(100)
+        pipeline = CircuitPipeline(
+            stages=[
+                CircuitSpecStage(),
+                MeasurementStage(result_format_override=ResultFormat.COUNTS),
+            ]
+        )
+        trace = pipeline.run_forward_pass(
+            {
+                "constant": meta_with_observable(SparsePauliOp("III", 1.0)),
+                "measured": two_group_meta(),
+            },
+            env,
+            dry=True,
+        )
+
+        report = dry_run_pipeline(
+            "test", trace, pipeline.stages, env, PipelineCadence.PER_EVALUATION
+        )
+
+        metadata = report.stages[-1].metadata
+        assert metadata["strategy"] != "analytic"
+        assert metadata["n_groups"] == 2
+        assert metadata["n_pauli_terms"] == 2
+
+    def test_a_leading_constant_node_leaves_the_measured_nodes_reporting_intact(
+        self, make_sampling_env, capsys
+    ):
+        env = make_sampling_env(100)
+        pipeline = CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
+        trace = pipeline.run_forward_pass(
+            {
+                "constant": meta_with_observable(SparsePauliOp("III", 1.0)),
+                "measured": two_group_meta(),
+            },
+            env,
+            dry=True,
+        )
+
+        report = dry_run_pipeline(
+            "test", trace, pipeline.stages, env, PipelineCadence.PER_EVALUATION
+        )
+        format_pipeline_tree(trace)
+        tree = [line.lstrip("│├└─ ") for line in capsys.readouterr().out.splitlines()]
+
+        assert report.stages[-1].metadata["n_groups"] == 2
+        assert report.stages[-1].metadata["n_pauli_terms"] == 2
+        assert report.total_circuits == 2
+        assert (
+            report.circuit_stats["min_width"] == report.circuit_stats["max_width"] == 1
+        )
+        assert tree[:3] == ["circuit:measured", "obs_group:0", "obs_group:1"]
+        assert "constant" not in "".join(tree)
 
     def test_reduction_scales_with_upstream_fanout(self, dummy_pipeline_env):
         """Upstream body fan-out (e.g. ParameterBindingStage) scales the logical

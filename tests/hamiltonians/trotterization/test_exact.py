@@ -143,6 +143,52 @@ class TestExactTrotterization:
             SparsePauliOp.from_list([("ZZ", 3.0), ("II", 1.0)])
         )
 
+    @pytest.mark.parametrize(
+        "strategy_kwargs, expected",
+        [
+            ({}, {"ZZ": 3e-9, "IZ": 1e-9, "II": 2e-9}),
+            ({"keep_top_n": 1}, {"ZZ": 3e-9, "II": 2e-9}),
+        ],
+        ids=["no_truncation", "keep_top_n"],
+    )
+    def test_a_tiny_scale_hamiltonian_keeps_its_terms(self, strategy_kwargs, expected):
+        hamiltonian = SparsePauliOp.from_list(
+            [("ZZ", 3e-9), ("IZ", 1e-9), ("II", 2e-9)]
+        )
+
+        result = ExactTrotterization(**strategy_kwargs).process_hamiltonian(
+            TrotterSpec(hamiltonian)
+        )
+
+        coefficients = {
+            label: coeff.real for label, coeff in result.effective_hamiltonian.to_list()
+        }
+        assert coefficients == pytest.approx(expected, rel=1e-12, abs=0)
+
+    def test_duplicate_terms_are_merged_before_truncating(self):
+        hamiltonian = SparsePauliOp.from_list(
+            [("ZZ", 1.0), ("ZZ", 2.0), ("IZ", 0.5), ("II", 0.5), ("II", 0.5)]
+        )
+
+        result = ExactTrotterization(keep_top_n=1).process_hamiltonian(
+            TrotterSpec(hamiltonian)
+        )
+
+        assert result.effective_hamiltonian.equiv(
+            SparsePauliOp.from_list([("ZZ", 3.0), ("II", 1.0)])
+        )
+        assert result.effective_hamiltonian.size == 2
+
+    def test_identity_terms_do_not_count_towards_keep_top_n(self):
+        hamiltonian = SIMPLE_HAMILTONIAN + SparsePauliOp("II", 1.0)
+
+        with pytest.warns(UserWarning, match=KEEP_TOP_N_NO_OP):
+            result = ExactTrotterization(keep_top_n=3).process_hamiltonian(
+                TrotterSpec(hamiltonian)
+            )
+
+        assert result.effective_hamiltonian.equiv(hamiltonian)
+
     def test_exact_trotterization_has_no_mutable_call_state(self, simple_hamiltonian):
         strategy = ExactTrotterization(keep_top_n=1)
         ham2 = SparsePauliOp.from_list([("IZ", 4.0), ("ZI", 5.0)])

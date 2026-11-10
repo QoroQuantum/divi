@@ -14,6 +14,7 @@ from divi.backends import MaestroConfig
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensembles import (
+    BatchConfig,
     MoleculeTransformer,
     VQEHyperparameterSweep,
     _vqe_sweep,
@@ -752,27 +753,56 @@ class TestVQEHyperparameterSweep:
             for ansatz, p_id in product(vqe_sweep_ansatze, problems.keys())
         )
 
-    def test_hamiltonian_constant_only_raises(
-        self,
-        qp,
-        default_test_simulator,
-        vqe_sweep_optimizer,
-        vqe_sweep_max_iterations,
+    def test_a_constant_only_hamiltonian_trains_to_its_constant(
+        self, default_test_simulator, vqe_sweep_optimizer
     ):
-        """Test that constant-only Hamiltonians are rejected during program creation."""
         vqe_sweep = VQEHyperparameterSweep(
             ansatze=[HartreeFockAnsatz()],
             molecule_transformer=None,
-            problems=[HamiltonianProblem(qp.Identity(0))],
+            problems=[HamiltonianProblem(SparsePauliOp("IIII", 2.0), n_electrons=2)],
             optimizer=vqe_sweep_optimizer,
-            max_iterations=vqe_sweep_max_iterations,
+            max_iterations=1,
             backend=default_test_simulator,
         )
+        vqe_sweep.create_programs()
+        vqe_sweep.run()
 
-        with pytest.raises(
-            ValueError, match="Hamiltonian contains only constant terms"
-        ):
-            vqe_sweep.create_programs()
+        assert [program.best_loss for program in vqe_sweep.programs.values()] == [2.0]
+
+    def test_a_constant_only_program_merges_beside_a_measured_one(
+        self, default_test_simulator
+    ):
+        measured = HamiltonianProblem(
+            SparsePauliOp.from_sparse_list(
+                [("ZZ", [q, q + 1], 1.0) for q in range(3)]
+                + [("X", [q], 0.5) for q in range(4)],
+                num_qubits=4,
+            ),
+            n_electrons=2,
+        )
+        constant = HamiltonianProblem(SparsePauliOp("IIII", 2.0), n_electrons=2)
+
+        def run_sweep(problems):
+            sweep = VQEHyperparameterSweep(
+                ansatze=[HartreeFockAnsatz()],
+                molecule_transformer=None,
+                problems=problems,
+                optimizer=MonteCarloOptimizer(population_size=3, n_best_sets=1),
+                max_iterations=2,
+                backend=default_test_simulator,
+                seed=7,
+            )
+            sweep.create_programs()
+            sweep.run(batch_config=BatchConfig())
+            return {
+                key[1]: program.best_loss for key, program in sweep.programs.items()
+            }
+
+        merged = run_sweep({"measured": measured, "constant": constant})
+        alone = run_sweep({"measured": measured})
+
+        assert merged["constant"] == 2.0
+        assert merged["measured"] == alone["measured"]
 
     def test_molecule_transformer_and_problems_rejected(
         self,

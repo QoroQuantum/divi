@@ -13,11 +13,10 @@ cache shared by both stages.
 
 import threading
 from collections import OrderedDict
-from functools import lru_cache
 
 from qiskit.dagcircuit import DAGCircuit
 
-from divi.circuits import build_template, dag_to_qasm_body
+from divi.circuits import dag_to_qasm_body
 
 # Bounded LRU memo for ``dag_to_qasm_body``. Keyed on ``id(dag)`` because
 # ``DAGCircuit`` is unhashable; the tuple's DAG ref pins the object so
@@ -42,8 +41,3 @@ def _qasm_body_cached(dag: DAGCircuit, precision: int) -> str:
         if len(_FAST_QASM_CACHE) > _FAST_QASM_CACHE_MAXSIZE:
             _FAST_QASM_CACHE.popitem(last=False)
     return body
-
-
-# The body and symbol names are static across an optimizer loop, so the regex
-# split in ``build_template`` is reused across stages and iterations.
-_template_cached = lru_cache(maxsize=256)(build_template)

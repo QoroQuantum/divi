@@ -45,11 +45,6 @@ class QAOAProblem(ABC):
 
     @property
     @abstractmethod
-    def loss_constant(self) -> float:
-        """Constant offset added back to the expectation value."""
-
-    @property
-    @abstractmethod
     def decode_fn(self) -> Callable[[str], Any]:
         """Map a measurement bitstring to a domain-level solution.
 

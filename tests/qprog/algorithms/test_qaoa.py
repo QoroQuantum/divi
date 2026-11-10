@@ -20,7 +20,7 @@ from divi.pipeline.stages import TrotterSpecStage, _trotter_spec_stage
 from divi.qprog.algorithms import QAOA, IterativeQAOA
 from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.initial_states import SuperpositionState
+from divi.qprog.initial_states import SuperpositionState, ZerosState
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
@@ -87,6 +87,32 @@ class TestGeneralQAOA:
         )
 
         assert qaoa_problem._initial_spec().hamiltonian is qaoa_problem.cost_hamiltonian
+
+    @pytest.mark.parametrize(
+        "initial_state, expected",
+        [(ZerosState(), 1.25), (SuperpositionState(), 0.75)],
+        ids=["energy-of-all-zeros", "mean-energy"],
+    )
+    @pytest.mark.parametrize("scale", [1.0, 1e-9], ids=["unit-scale", "tiny-scale"])
+    def test_loss_at_known_params_includes_the_qubo_constant(
+        self, default_test_simulator, default_optimizer, initial_state, expected, scale
+    ):
+        qubo = {
+            (0,): -scale,
+            (1,): -scale,
+            (0, 1): 2.0 * scale,
+            (): 1.25 * scale,
+        }
+        qaoa = QAOA(
+            BinaryOptimizationProblem(qubo),
+            initial_state=initial_state,
+            optimizer=default_optimizer,
+            backend=default_test_simulator,
+        )
+
+        (loss,) = qaoa.evaluate(np.zeros((1, 2)), qaoa.cost_preprocessor()).values()
+
+        assert loss[0] == pytest.approx(expected * scale, rel=1e-9, abs=0)
 
     def test_qaoa_final_computation_runs_sample_preprocessor(
         self, mocker, optimizer, default_test_simulator
@@ -677,11 +703,26 @@ def test_load_rejects_a_state_missing_required_keys(
 
     verify_load_state_rejects_missing_state_key(
         tmp_path,
-        "loss_constant",
+        "problem_metadata",
         lambda: QAOA.load_state(
             tmp_path, backend=dummy_simulator, problem=MaxCutProblem(nx.path_graph(3))
         ),
     )
+
+
+def test_load_ignores_a_loss_constant_saved_by_an_earlier_version(
+    dummy_simulator, default_optimizer, tmp_path
+):
+    source = _checkpointed_path_qaoa(dummy_simulator, default_optimizer, tmp_path)
+    edit_checkpointed_subclass_state(
+        tmp_path, lambda data: data.update(loss_constant=1.5)
+    )
+
+    target = QAOA.load_state(
+        tmp_path, backend=dummy_simulator, problem=MaxCutProblem(nx.path_graph(3))
+    )
+
+    assert target.cost_hamiltonian == source.cost_hamiltonian
 
 
 def test_qaoa_defaults(dummy_simulator, default_optimizer):
@@ -1040,10 +1081,6 @@ def _make_problem(cost: SparsePauliOp, mixer: SparsePauliOp, wire_labels=None):
         @property
         def mixer_hamiltonian(self):
             return mixer
-
-        @property
-        def loss_constant(self):
-            return 0.0
 
         @property
         def decode_fn(self):

@@ -12,10 +12,7 @@ import numpy as np
 import numpy.typing as npt
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_spo,
-    _require_qiskit_num_qubits,
-)
+from divi.hamiltonians._term_ops import _require_qiskit_num_qubits
 from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.initial_states import InitialState, ZerosState
 from divi.qprog.mixins import LayeredAnsatzMixin, SolutionSamplingMixin
@@ -50,7 +47,6 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         n_layers (int): Number of ansatz layers.
         n_qubits (int): Number of qubits in the system.
         cost_hamiltonian: The Hamiltonian to minimise.
-        loss_constant (float): Constant term extracted from the Hamiltonian.
         optimizer: Classical optimizer for parameter updates.
         max_iterations (int): Maximum number of optimisation iterations.
         current_iteration (int): Current optimisation iteration.
@@ -86,8 +82,6 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         Raises:
             TypeError: If ``problem`` is not a
                 :class:`~divi.qprog.problems.HamiltonianProblem`.
-            ValueError: If the problem's Hamiltonian contains only constant
-                terms.
         """
         if not isinstance(problem, HamiltonianProblem):
             raise TypeError(
@@ -105,11 +99,8 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         self.current_iteration = 0
 
         self._problem = problem
-        cost_spo = problem.hamiltonian
-        self.n_qubits = _require_qiskit_num_qubits(cost_spo.num_qubits)
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
-            cost_spo, raise_on_constant=True
-        )
+        self.cost_hamiltonian = problem.hamiltonian.simplify(atol=0)
+        self.n_qubits = _require_qiskit_num_qubits(self.cost_hamiltonian.num_qubits)
 
         # Resolve & store initial state (n_qubits is now set)
         if initial_state is None:

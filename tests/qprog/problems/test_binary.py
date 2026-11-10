@@ -170,7 +170,6 @@ class TestLazyIsingInit:
         problem = BinaryOptimizationProblem(QUBO_MATRIX)
 
         _ = problem.cost_hamiltonian
-        _ = problem.loss_constant
         _ = problem.metadata
         _ = problem.decode_fn
         _ = problem.mixer_hamiltonian  # also touches Ising for n_qubits
@@ -601,13 +600,33 @@ class TestQUBOInput:
         }
 
         cost_spo = to_spo(qaoa_problem.cost_hamiltonian)
-        assert cost_spo.size == 4
+        assert cost_spo.size == 5
         assert all(set(label) <= {"I", "Z"} for label in cost_spo.paulis.to_labels())
         mixer_spo = to_spo(qaoa_problem.problem.mixer_hamiltonian)
         assert mixer_spo.size == 3
         assert set(mixer_spo.paulis.to_labels()) == {"IIX", "IXI", "XII"}
 
         verify_cost_circuit(qaoa_problem)
+
+    @pytest.mark.parametrize("constant", [3.0, -2.5])
+    def test_a_constant_only_problem_trains_to_its_constant(
+        self, constant, default_test_simulator, default_optimizer
+    ):
+        problem = make_decomposed_problem(
+            dimod.BinaryQuadraticModel({0: 0.0}, {}, constant, dimod.Vartype.BINARY)
+        )
+
+        qaoa = QAOA(
+            problem,
+            optimizer=default_optimizer,
+            backend=default_test_simulator,
+            max_iterations=1,
+        ).run()
+
+        assert qaoa.best_loss == pytest.approx(constant, abs=1e-12)
+        assert problem.evaluate_global_solution(qaoa.solution) == pytest.approx(
+            constant
+        )
 
     def test_hubo_dict_initialization_native_builder(self, dummy_simulator):
         hubo = {

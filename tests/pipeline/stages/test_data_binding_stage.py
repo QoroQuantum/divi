@@ -255,63 +255,6 @@ def test_reduce_applies_reduction_to_each_observable(composed, reduction, expect
     assert reduced[(("param_set", 0),)] == [expected]
 
 
-@pytest.mark.parametrize(
-    "reduction,expected",
-    [
-        # mean([1, 2, 3] + 0.5) = 2.5
-        (lambda a: float(np.mean(a)), 2.5),
-        # sum([1, 2, 3] + 0.5) = 7.5   — would be 6.5 if constant added post-reduce
-        (lambda a: float(np.sum(a)), 7.5),
-        # rms = sqrt(mean((x+c)^2)) — a non-affine reduction with a clear signature
-        (
-            lambda a: float(np.sqrt(np.mean(a**2))),
-            float(np.sqrt(np.mean(np.array([1.5, 2.5, 3.5]) ** 2))),
-        ),
-    ],
-)
-def test_reduce_folds_loss_constant_per_sample_before_reduction(
-    composed, reduction, expected
-):
-    """Regression for identity-constant double-count under non-mean reductions.
-
-    ``DataBindingStage`` owns ``loss_constant`` and must add it to each
-    per-sample value *before* applying ``loss_reduction``. Adding it after
-    would be correct only for mean (affine); ``sum`` would be off by
-    ``(n_samples - 1) * const`` and arbitrary non-affine callables (rms,
-    log-sum-exp, ...) would be silently wrong.
-    """
-    qc, data_params, weight_params = composed
-    stage = DataBindingStage(
-        data_params=data_params, loss_reduction=reduction, loss_constant=0.5
-    )
-    results = {
-        ((DATA_AXIS, 0), ("param_set", 0)): [1.0],
-        ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
-        ((DATA_AXIS, 2), ("param_set", 0)): [3.0],
-    }
-    reduced = stage.reduce(results, env=_env(), token=None)
-    assert reduced[(("param_set", 0),)] == [pytest.approx(expected)]
-
-
-def test_reduce_folds_loss_constant_for_scalar_inputs(composed):
-    """Scalar-input branch of ``_reduce_one`` also folds the constant."""
-    qc, data_params, weight_params = composed
-    stage = DataBindingStage(
-        data_params=data_params,
-        loss_reduction=lambda a: float(np.sum(a)),
-        loss_constant=0.5,
-    )
-    # Bare scalars (not lists) — exercise the non-list path in _reduce_one.
-    results = {
-        ((DATA_AXIS, 0), ("param_set", 0)): 1.0,
-        ((DATA_AXIS, 1), ("param_set", 0)): 2.0,
-        ((DATA_AXIS, 2), ("param_set", 0)): 3.0,
-    }
-    reduced = stage.reduce(results, env=_env(), token=None)
-    # sum([1, 2, 3] + 0.5) = 7.5
-    assert reduced[(("param_set", 0),)] == pytest.approx(7.5)
-
-
 def test_reduce_handles_multiple_observables(composed):
     """``loss_reduction`` runs independently per observable in a multi-obs list."""
     qc, data_params, weight_params = composed
@@ -347,25 +290,6 @@ def test_reduce_applies_supervised_sample_loss_before_reduction(composed):
     reduced = stage.reduce(results, env=_env(labels=[1.0, 0.0, 0.0]), token=None)
     # errors = [(1-1)^2, (2-0)^2, (3-0)^2] = [0, 4, 9]; mean = 13/3.
     assert reduced[(("param_set", 0),)] == [pytest.approx(13.0 / 3.0)]
-
-
-def test_supervised_loss_compares_after_loss_constant(composed):
-    """``loss_constant`` shifts the prediction *before* the label comparison."""
-    qc, data_params, weight_params = composed
-    stage = DataBindingStage(
-        data_params=data_params,
-        loss_reduction=lambda a: float(np.sum(a)),
-        loss_constant=0.5,
-        sample_loss=resolve_sample_loss("squared_error"),
-    )
-    results = {
-        ((DATA_AXIS, 0), ("param_set", 0)): [1.0],
-        ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
-        ((DATA_AXIS, 2), ("param_set", 0)): [3.0],
-    }
-    reduced = stage.reduce(results, env=_env(labels=[1.5, 0.0, 0.0]), token=None)
-    # preds = [1.5, 2.5, 3.5]; errors vs [1.5, 0, 0] = [0, 6.25, 12.25]; sum = 18.5.
-    assert reduced[(("param_set", 0),)] == [pytest.approx(18.5)]
 
 
 def test_supervised_scalar_input_branch(composed):

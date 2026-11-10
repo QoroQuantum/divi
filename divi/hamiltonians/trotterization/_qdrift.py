@@ -14,11 +14,7 @@ import numpy as np
 import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._term_ops import (
-    _clean_hamiltonian_spo,
-    _require_qiskit_num_qubits,
-    generate_empty_spo,
-)
+from divi.hamiltonians._term_ops import _split_identity_terms
 from divi.hamiltonians.trotterization._allocation import fit_state_drift_distribution
 from divi.hamiltonians.trotterization._base import (
     TrotterizationResult,
@@ -35,7 +31,7 @@ class _QDriftSamplingPlan:
     """Deterministic QDrift keep/sample split, reused across one batch's draws."""
 
     to_sample_spo: SparsePauliOp
-    keep_spo: SparsePauliOp | None
+    keep_spo: SparsePauliOp
     absolute_coeffs: npt.NDArray[np.floating]
     coeff_sum: float
     probs: npt.NDArray[np.floating] | None
@@ -216,9 +212,9 @@ class QDrift(TrotterizationStrategy):
         return [self._sample(prepared, rng, n_steps) for _ in range(n_samples)]
 
     def _state_drift_probabilities(
-        self, spec: TrotterSpec, n_steps: int
+        self, spec: TrotterSpec, terms: SparsePauliOp, n_steps: int
     ) -> dict[str, float]:
-        """StateDRIFT probabilities for the evolution ``spec`` describes."""
+        """StateDRIFT probabilities of ``terms`` in the evolution ``spec`` describes."""
         if spec.initial_state is None or spec.time is None:
             raise ValueError(
                 "sampling_strategy='state_drift' needs the initial state and "
@@ -252,9 +248,7 @@ class QDrift(TrotterizationStrategy):
         if budget is None:
             raise RuntimeError("sampling_budget is not set.")
         return fit_state_drift_distribution(
-            self._state_drift_cache.expansion(
-                spec.hamiltonian, observable, spec.initial_state
-            ),
+            self._state_drift_cache.expansion(terms, observable, spec.initial_state),
             time=float(time),
             n_samples=n_steps * budget,
             n_trajectories=self.n_hamiltonians_per_iteration,
@@ -269,7 +263,7 @@ class QDrift(TrotterizationStrategy):
 
         Returns a finished :class:`TrotterizationResult` for the cases needing
         no random draw, otherwise a :class:`_QDriftSamplingPlan` for
-        :meth:`_sample`.
+        :meth:`_sample`. Identity terms are never sampled: they are kept.
         """
         hamiltonian = spec.hamiltonian
         if (
@@ -277,31 +271,22 @@ class QDrift(TrotterizationStrategy):
             and self.keep_top_n is None
             and self.sampling_budget is None
         ):
-            return TrotterizationResult(hamiltonian.simplify())
+            return TrotterizationResult(hamiltonian.simplify(atol=0))
 
-        if hamiltonian.size == 0:
+        terms, identity = _split_identity_terms(hamiltonian)
+        if terms.size == 0:
             warn(
                 "No terms to sample; returning the kept Hamiltonian.",
                 UserWarning,
             )
-            return TrotterizationResult(
-                generate_empty_spo(_require_qiskit_num_qubits(hamiltonian.num_qubits))
-            )
+            return TrotterizationResult(identity)
 
-        triggered_exact_trotterization = (
-            self.keep_fraction is not None or self.keep_top_n is not None
-        )
-
-        keep_spo = None
-        if triggered_exact_trotterization:
-            _clean_hamiltonian_spo(hamiltonian, raise_on_constant=True)
+        if self.keep_fraction is not None or self.keep_top_n is not None:
             all_kept = (
                 self.keep_fraction is not None and self.keep_fraction == 1.0
-            ) or (self.keep_top_n is not None and self.keep_top_n >= hamiltonian.size)
+            ) or (self.keep_top_n is not None and self.keep_top_n >= terms.size)
             if all_kept:
-                _warn_truncation_no_op(
-                    self.keep_fraction, self.keep_top_n, hamiltonian.size
-                )
+                _warn_truncation_no_op(self.keep_fraction, self.keep_top_n, terms.size)
                 warn(
                     "All terms were kept; there are no terms left to sample. "
                     "Returning the full Hamiltonian.",
@@ -311,12 +296,13 @@ class QDrift(TrotterizationStrategy):
 
             keep_spo = ExactTrotterization(
                 keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
-            )._truncate_spo(hamiltonian)
+            )._truncate_spo(hamiltonian.simplify(atol=0))
             if self.sampling_budget is None:
                 return TrotterizationResult(keep_spo)
-            to_sample_spo = (hamiltonian - keep_spo).simplify(atol=0)
+            kept_terms, _ = _split_identity_terms(keep_spo)
+            to_sample_spo = (terms - kept_terms).simplify(atol=0)
         else:
-            to_sample_spo = hamiltonian.simplify()
+            keep_spo, to_sample_spo = identity, terms.simplify(atol=0)
 
         absolute_coeffs = np.abs(to_sample_spo.coeffs)
         coeff_sum = absolute_coeffs.sum()
@@ -325,16 +311,10 @@ class QDrift(TrotterizationStrategy):
                 "All term coefficients are zero; returning the kept Hamiltonian.",
                 UserWarning,
             )
-            if keep_spo is None:
-                return TrotterizationResult(
-                    generate_empty_spo(
-                        _require_qiskit_num_qubits(hamiltonian.num_qubits)
-                    )
-                )
             return TrotterizationResult(keep_spo)
         distribution = self.sampling_strategy
         if distribution == "state_drift":
-            distribution = self._state_drift_probabilities(spec, n_steps)
+            distribution = self._state_drift_probabilities(spec, to_sample_spo, n_steps)
         if isinstance(distribution, Mapping):
             labels = to_sample_spo.paulis.to_labels()
             missing = sorted(set(labels) - distribution.keys())
@@ -397,6 +377,4 @@ class QDrift(TrotterizationStrategy):
             raise RuntimeError("A mapping sampling_strategy requires plan.probs.")
         sampled_coeffs = scale * to_sample_spo.coeffs[indices]
         sampled_spo = SparsePauliOp(to_sample_spo.paulis[indices], sampled_coeffs)
-        if plan.keep_spo is not None:
-            return sampled_spo + plan.keep_spo
-        return sampled_spo
+        return sampled_spo + plan.keep_spo
