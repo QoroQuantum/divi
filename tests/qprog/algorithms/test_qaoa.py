@@ -928,6 +928,16 @@ class TestSampleSolution:
         assert qaoa.best_probs  # measurement probs were populated
         assert qaoa.total_circuit_count > 0
 
+    def test_a_sampled_untrained_program_has_results(
+        self, default_test_simulator, default_optimizer
+    ):
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
+        assert qaoa.has_results() is False
+
+        qaoa.sample_solution(np.array([0.1, 0.2]))
+
+        assert qaoa.has_results() is True
+
     def test_standalone_sampling_uses_one_direct_progress_session(
         self, default_test_simulator, default_optimizer, recording_direct_sessions
     ):

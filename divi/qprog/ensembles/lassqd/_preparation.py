@@ -138,10 +138,6 @@ class LUCJFragmentProgram(QuantumProgram):
     def _show_progress(self, message: str) -> None:
         self._progress_emitter(ProgressEvent.show(self._progress_key, message))
 
-    def has_results(self) -> bool:
-        """Return whether final sampling probabilities are available."""
-        return bool(self._results.get("best_probs"))
-
     @property
     def best_params(self) -> np.ndarray:
         """The sampled circuit's ffsim LUCJ parameter vector."""

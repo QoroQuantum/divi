@@ -16,7 +16,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
 from threading import Event, Lock, Thread
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from divi.backends import (
     CircuitBatch,
@@ -815,12 +815,23 @@ class _BatchCoordinator:
 
 
 class _ProxyBackend(CircuitRunner):
-    """Transparent backend proxy that routes submissions through a coordinator.
+    """Routes ``submit_circuits`` through a coordinator; every other attribute,
+    read or written, is the real backend's.
 
     From the program's perspective this behaves like a synchronous backend:
     ``submit_circuits`` blocks until the coordinator has flushed the merged
     job and demultiplexed results back.
     """
+
+    _OWN = frozenset(
+        {
+            "submit_circuits",
+            "resolves_parameters",
+            "_real",
+            "_coordinator",
+            "_program_key",
+        }
+    )
 
     def __init__(
         self,
@@ -828,34 +839,26 @@ class _ProxyBackend(CircuitRunner):
         coordinator: _BatchCoordinator,
         program_key: Hashable,
     ):
-        super().__init__(shots=real_backend.shots)
         self._real = real_backend
         self._coordinator = coordinator
         self._program_key = program_key
 
-    # --- Delegated properties ---
+    def __getattribute__(self, name: str) -> Any:
+        if name in _ProxyBackend._OWN or name.startswith("__"):
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_real"), name)
 
-    @property
-    def supports_expval(self) -> bool:
-        return self._real.supports_expval
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _ProxyBackend._OWN:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(object.__getattribute__(self, "_real"), name, value)
 
     @property
     def resolves_parameters(self) -> bool:
         # Merged submissions are always bound: submit() carries a label -> qasm
         # mapping, so parameters must be resolved before they reach the proxy.
         return False
-
-    @property
-    def supports_vjp(self) -> bool:
-        return self._real.supports_vjp
-
-    def submit_vjp(
-        self, payloads: Sequence[CircuitPayload], **kwargs
-    ) -> ExecutionResult:
-        """Run vector-Jacobian products on the real backend, unmerged."""
-        return self._real.submit_vjp(payloads, **kwargs)
-
-    # --- Intercepted methods ---
 
     def submit_circuits(
         self, payloads: Sequence[CircuitPayload] | CircuitBatch, **kwargs

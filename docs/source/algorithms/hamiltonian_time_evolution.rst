@@ -279,7 +279,7 @@ Time Evolution Trajectory
 -------------------------
 
 :class:`~divi.qprog.ensembles.TimeEvolutionTrajectory` simulates dynamics at
-multiple time points.  It creates one ``TimeEvolution`` program
+multiple time points.  By default it creates one ``TimeEvolution`` program
 per time point, runs them via
 :class:`~divi.qprog.ensembles.ProgramEnsemble` (with optional circuit batching), and
 collects results into a time-ordered mapping.
@@ -310,11 +310,66 @@ collects results into a time-ordered mapping.
    trajectory.visualize_results()   # plots ⟨Z⟩ vs time
 
 The trajectory supports all the same options as ``TimeEvolution``
-(``trotterization_strategy``, ``n_steps``, ``order``, ``initial_state``).
+(``trotterization_strategy``, ``n_steps``, ``order``, ``initial_state``),
+plus a fixed time step ``dt``.
+
+**Fixed time step**
+
+With ``n_steps``, every time point ``t`` is split into the same number of
+Trotter steps, so each time point has its own step size ``t / n_steps`` and the
+circuits have nothing in common.  Passing ``dt`` instead fixes the step size:
+every time point must be a non-negative whole multiple of ``dt``, and the time
+point ``k · dt`` is reached by ``k`` steps.  Each time point's circuit is then
+the previous one with more steps added.
+
+A backend that supports it uses this structure: it prepares the initial state
+once, applies the same step over and over, and reads the observables whenever
+it reaches a time point.  The trajectory then costs about as much as
+simulating its last time point, instead of simulating every time point from
+the start.  On :class:`~divi.backends.MaestroSimulator` this happens when:
+
+- an ``observable`` is set; the results are exact expectation values, with no
+  shot noise;
+- no ``qem_protocol`` is set;
+- the simulator estimates natively and has no noise model, i.e.
+  ``force_sampling`` is off and its ``MaestroConfig`` has no ``noise_model``.
+
+Otherwise each time point runs as its own program, still with steps of
+``dt``.  ``dt`` requires ``ExactTrotterization`` and cannot be combined with
+``n_steps``.
+
+.. code-block:: python
+
+   from qiskit.quantum_info import SparsePauliOp
+   from divi.backends import MaestroSimulator
+   from divi.qprog.ensembles import TimeEvolutionTrajectory
+
+   hamiltonian = SparsePauliOp.from_sparse_list(
+       [("ZZ", [0, 1], 1.0), ("ZZ", [1, 2], 1.0)]
+       + [("X", [q], 0.7) for q in range(3)],
+       num_qubits=3,
+   )
+   trajectory = TimeEvolutionTrajectory(
+       hamiltonian=hamiltonian,
+       time_points=[0.1 * k for k in range(1, 51)],
+       dt=0.1,
+       observable=SparsePauliOp.from_sparse_list([("Z", [1], 1.0)], num_qubits=3),
+       backend=MaestroSimulator(),
+   )
+   trajectory.run()
+   results = trajectory.aggregate_results()   # ⟨Z₁⟩ at t = 0.1, 0.2, ..., 5.0
+
+Because the whole trajectory is then a single simulation, it cannot be
+cancelled part-way, shows no progress between time points, and is
+checkpointed only once it has finished.  Whether it evolves incrementally is
+decided when its programs are created, so a checkpoint only restores onto a
+backend that makes the same choice.  A fixed step also gives more Trotter
+error at early times than splitting each short time into ``n_steps`` steps.
 
 **Batching across time points**
 
-Each time point becomes its own program in a
+Unless the trajectory evolves incrementally as above, each time point becomes
+its own program in a
 :class:`~divi.qprog.ensembles.ProgramEnsemble`, so the trajectory inherits
 the ensemble's circuit-batching machinery — the default ``BatchConfig()``
 already merges every program's submission into a single backend call.  On

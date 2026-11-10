@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from abc import abstractmethod
 from collections.abc import Sequence
 from numbers import Integral
 from pathlib import Path
@@ -43,6 +44,10 @@ class _TimeEvolutionCheckpoint(ProgramCheckpoint):
     results: dict[str, float] | float | list[float]
 
 
+class _IncrementalTrajectoryCheckpoint(ProgramCheckpoint):
+    results: list[float] | list[list[float]]
+
+
 def _validate_trotter_settings(n_steps: int, order: int) -> tuple[int, int]:
     """Check the Trotter step count and order, returning them as plain ``int``."""
     if isinstance(n_steps, bool) or not isinstance(n_steps, Integral) or n_steps < 1:
@@ -54,7 +59,174 @@ def _validate_trotter_settings(n_steps: int, order: int) -> tuple[int, int]:
     return int(n_steps), int(order)
 
 
-class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
+class _EvolutionProgram(ObservableMeasuringMixin, QuantumProgram):
+    """Inputs and circuit construction shared by the Trotterized evolution programs."""
+
+    def __init__(
+        self,
+        hamiltonian: SparsePauliOp,
+        trotterization_strategy: TrotterizationStrategy | None = None,
+        time: float = 1.0,
+        n_steps: int = 1,
+        order: int = 1,
+        initial_state: InitialState | None = None,
+        observable: SparsePauliOp | Sequence[SparsePauliOp] | None = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        n_steps, order = _validate_trotter_settings(n_steps, order)
+
+        if trotterization_strategy is None:
+            trotterization_strategy = ExactTrotterization()
+
+        hamiltonian_spo = to_spo(hamiltonian)
+        hamiltonian_clean, _ = _clean_hamiltonian_spo(hamiltonian_spo)
+        if hamiltonian_clean.size == 0:
+            raise ValueError("Hamiltonian contains only constant terms.")
+
+        self.trotterization_strategy = trotterization_strategy
+        self.time = time
+        self.n_steps = n_steps
+        self.order = order
+        if isinstance(observable, (Sequence, np.ndarray)) and not isinstance(
+            observable, tuple
+        ):
+            observable = tuple(observable)
+        self.n_qubits = _require_qiskit_num_qubits(hamiltonian_clean.num_qubits)
+        self._circuit_wires = tuple(range(self.n_qubits))
+        # Normalise observables to SparsePauliOp at the input boundary, aligning
+        # qubit count with the cost circuit (a 1-qubit ``Z`` on qubit 0 against
+        # a multi-qubit evolution must lift to ``Z ⊗ I ⊗ … ⊗ I``).
+        self.observable = self._normalise_observable(observable)
+
+        if initial_state is None:
+            initial_state = ZerosState()
+        if not isinstance(initial_state, InitialState):
+            raise TypeError(
+                f"initial_state must be an InitialState instance, got {type(initial_state).__name__}"
+            )
+        self.initial_state = initial_state
+        self._trotter_spec = TrotterSpec(
+            hamiltonian_clean,
+            initial_state=self.initial_state,
+            observable=self.observable,
+            time=self.time,
+        )
+
+    @abstractmethod
+    def _build_meta_circuit(
+        self, result: TrotterizationResult, ham_id: int
+    ) -> MetaCircuit:
+        """Build the program's MetaCircuit from one trotterization result."""
+
+    def _spec_stage(self) -> Stage:
+        # The program trotterizes the Hamiltonian into its evolution circuit.
+        return TrotterSpecStage(
+            trotterization_strategy=self.trotterization_strategy,
+            meta_circuit_factory=self._build_meta_circuit,
+            n_steps=self.n_steps,
+        )
+
+    def _initial_spec(self) -> TrotterSpec:
+        return self._trotter_spec
+
+    def _evolution_preprocessor(self) -> CircuitPreprocessor:
+        """Measure the evolved state — expectation values when an observable was
+        given, otherwise the computational-basis distribution."""
+        result_format = (
+            ResultFormat.EXPVALS if self.observable is not None else ResultFormat.PROBS
+        )
+        return CircuitPreprocessor(
+            "evolution",
+            # ``run()`` measures the evolved state a single time; there is no
+            # optimizer re-evaluating it.
+            cadence=PipelineCadence.ONCE,
+            result_format=result_format,
+            cache_key="evolution",
+        )
+
+    def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
+        return (*super()._preprocessors(), self._evolution_preprocessor())
+
+    def _build_initial_state_circuit(self) -> QuantumCircuit:
+        """Build the ``initial_state`` preparation on the program's register."""
+        qc = QuantumCircuit(self.n_qubits)
+        qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
+        return qc
+
+    def _build_evolution_meta_circuit(
+        self, result: TrotterizationResult, start: QuantumCircuit
+    ) -> MetaCircuit:
+        """Build a MetaCircuit of ``start`` followed by ``result``'s evolution,
+        read out as ``observable`` asks: probabilities when it is None,
+        otherwise its expectation values."""
+        dag = circuit_to_dag(
+            result.synthesize_evolution(
+                start,
+                time=self.time,
+                n_steps=self.n_steps,
+                order=self.order,
+                qubits=list(range(self.n_qubits)),
+                basis_gates=list(_QISKIT_TO_QASM2.keys()),
+            )
+        )
+
+        readout: dict[str, Any]
+        if self.observable is None:
+            readout = {"measured_wires": tuple(range(self.n_qubits))}
+        elif isinstance(self.observable, tuple):
+            readout = {"observable": self.observable, "_was_multi_obs": True}
+        else:
+            readout = {"observable": (self.observable,)}
+
+        return MetaCircuit(
+            circuit_bodies=(((), dag),), precision=self._precision, **readout
+        )
+
+    def _convert_measurement(self, raw) -> dict[str, float] | float | list[float]:
+        """Convert one pipeline result to a distribution, a ``float`` or a
+        ``list[float]``, for no, one or several observables."""
+        if self.observable is None:
+            return raw
+        if isinstance(self.observable, tuple):
+            return [float(v) for v in raw]
+        (single,) = raw
+        return float(single)
+
+    def _emit_finished(self) -> None:
+        """Advance the progress bar and mark the run successful."""
+        self._progress_emitter(ProgressEvent.advance(self._progress_key))
+        self._progress_emitter(
+            ProgressEvent.finish(
+                self._progress_key,
+                TerminalStatus.SUCCESS,
+                detail="Finished successfully!",
+            )
+        )
+
+    def _normalise_observable(self, observable):
+        """Convert observables to ``SparsePauliOp`` on the cost-circuit wires."""
+        if observable is None:
+            return None
+        if isinstance(observable, tuple):
+            return tuple(self._lift_observable(o) for o in observable)
+        return self._lift_observable(observable)
+
+    def _lift_observable(self, op) -> SparsePauliOp:
+        # ``to_spo`` lifts PL-operator / dict inputs onto the cost wires and
+        # validates Hermiticity (a ``SparsePauliOp`` passes through unchanged);
+        # the width guard then rejects an SPO that targets the wrong register.
+        spo = to_spo(op, wires=self._circuit_wires)
+        if spo.num_qubits != self.n_qubits:
+            raise ValueError(
+                f"Observable has {spo.num_qubits} qubits but the cost circuit "
+                f"has {self.n_qubits}."
+            )
+        return spo
+
+
+class TimeEvolution(_EvolutionProgram):
     """Quantum program for Hamiltonian time evolution.
 
     Simulates the evolution of a quantum state under a Hamiltonian using
@@ -123,45 +295,15 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
                 Accepts ``qem_protocol`` for quantum error mitigation (requires
                 ``observable`` to be set, since QEM operates on expectation values).
         """
-        super().__init__(**kwargs)
-
-        n_steps, order = _validate_trotter_settings(n_steps, order)
-
-        if trotterization_strategy is None:
-            trotterization_strategy = ExactTrotterization()
-
-        hamiltonian_spo = to_spo(hamiltonian)
-        hamiltonian_clean, _ = _clean_hamiltonian_spo(hamiltonian_spo)
-        if hamiltonian_clean.size == 0:
-            raise ValueError("Hamiltonian contains only constant terms.")
-
-        self.trotterization_strategy = trotterization_strategy
-        self.time = time
-        self.n_steps = n_steps
-        self.order = order
-        if isinstance(observable, (Sequence, np.ndarray)) and not isinstance(
-            observable, tuple
-        ):
-            observable = tuple(observable)
-        self.n_qubits = _require_qiskit_num_qubits(hamiltonian_clean.num_qubits)
-        self._circuit_wires = tuple(range(self.n_qubits))
-        # Normalise observables to SparsePauliOp at the input boundary, aligning
-        # qubit count with the cost circuit (a 1-qubit ``Z`` on qubit 0 against
-        # a multi-qubit evolution must lift to ``Z ⊗ I ⊗ … ⊗ I``).
-        self.observable = self._normalise_observable(observable)
-
-        if initial_state is None:
-            initial_state = ZerosState()
-        if not isinstance(initial_state, InitialState):
-            raise TypeError(
-                f"initial_state must be an InitialState instance, got {type(initial_state).__name__}"
-            )
-        self.initial_state = initial_state
-        self._trotter_spec = TrotterSpec(
-            hamiltonian_clean,
-            initial_state=self.initial_state,
-            observable=self.observable,
-            time=self.time,
+        super().__init__(
+            hamiltonian,
+            trotterization_strategy=trotterization_strategy,
+            time=time,
+            n_steps=n_steps,
+            order=order,
+            initial_state=initial_state,
+            observable=observable,
+            **kwargs,
         )
 
         if (_template_meta is None) != (_template_param is None):
@@ -174,9 +316,6 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             )
         self._template_meta = _template_meta
         self._template_param = _template_param
-
-    def has_results(self) -> bool:
-        return "evolved_state_measurement" in self._results
 
     @property
     def results(self) -> dict[str, float] | float | list[float]:
@@ -235,35 +374,6 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             )
         return results
 
-    def _spec_stage(self) -> Stage:
-        # TimeEvolution trotterizes the Hamiltonian into the evolution circuit.
-        return TrotterSpecStage(
-            trotterization_strategy=self.trotterization_strategy,
-            meta_circuit_factory=self._build_meta_circuit,
-            n_steps=self.n_steps,
-        )
-
-    def _initial_spec(self) -> TrotterSpec:
-        return self._trotter_spec
-
-    def _evolution_preprocessor(self) -> CircuitPreprocessor:
-        """Measure the evolved state — expectation values when an observable was
-        given, otherwise the computational-basis distribution."""
-        result_format = (
-            ResultFormat.EXPVALS if self.observable is not None else ResultFormat.PROBS
-        )
-        return CircuitPreprocessor(
-            "evolution",
-            # ``run()`` measures the evolved state a single time; there is no
-            # optimizer re-evaluating it.
-            cadence=PipelineCadence.ONCE,
-            result_format=result_format,
-            cache_key="evolution",
-        )
-
-    def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
-        return (*super()._preprocessors(), self._evolution_preprocessor())
-
     def _evolution_params(self) -> np.ndarray:
         """One parameter set: the trajectory template binds ``t`` to ``self.time``;
         the direct path has no free parameters."""
@@ -286,30 +396,8 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         """Build a MetaCircuit from one explicit trotterization result."""
         if self._template_meta is not None:
             return self._template_meta
-
-        qc = QuantumCircuit(self.n_qubits)
-        qc.compose(self.initial_state.build(self._circuit_wires), inplace=True)
-        dag = circuit_to_dag(
-            result.synthesize_evolution(
-                qc,
-                time=self.time,
-                n_steps=self.n_steps,
-                order=self.order,
-                qubits=list(range(self.n_qubits)),
-                basis_gates=list(_QISKIT_TO_QASM2.keys()),
-            )
-        )
-
-        readout: dict[str, Any]
-        if self.observable is None:
-            readout = {"measured_wires": tuple(range(self.n_qubits))}
-        elif isinstance(self.observable, tuple):
-            readout = {"observable": self.observable, "_was_multi_obs": True}
-        else:
-            readout = {"observable": (self.observable,)}
-
-        return MetaCircuit(
-            circuit_bodies=(((), dag),), precision=self._precision, **readout
+        return self._build_evolution_meta_circuit(
+            result, self._build_initial_state_circuit()
         )
 
     def run(self, **kwargs) -> Self:
@@ -329,41 +417,88 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
                     f"Expected exactly 1 pipeline result, got {len(result)}."
                 )
             (raw,) = result.values()
-            if self.observable is None:
-                self._results["evolved_state_measurement"] = raw
-            elif isinstance(self.observable, tuple):
-                self._results["evolved_state_measurement"] = [float(v) for v in raw]
-            else:
-                (single,) = raw
-                self._results["evolved_state_measurement"] = float(single)
-
-            self._progress_emitter(ProgressEvent.advance(self._progress_key))
-            self._progress_emitter(
-                ProgressEvent.finish(
-                    self._progress_key,
-                    TerminalStatus.SUCCESS,
-                    detail="Finished successfully!",
-                )
-            )
-
+            self._results["evolved_state_measurement"] = self._convert_measurement(raw)
+            self._emit_finished()
             return self
 
-    def _normalise_observable(self, observable):
-        """Convert observables to ``SparsePauliOp`` on the cost-circuit wires."""
-        if observable is None:
-            return None
-        if isinstance(observable, tuple):
-            return tuple(self._lift_observable(o) for o in observable)
-        return self._lift_observable(observable)
 
-    def _lift_observable(self, op) -> SparsePauliOp:
-        # ``to_spo`` lifts PL-operator / dict inputs onto the cost wires and
-        # validates Hermiticity (a ``SparsePauliOp`` passes through unchanged);
-        # the width guard then rejects an SPO that targets the wrong register.
-        spo = to_spo(op, wires=self._circuit_wires)
-        if spo.num_qubits != self.n_qubits:
-            raise ValueError(
-                f"Observable has {spo.num_qubits} qubits but the cost circuit "
-                f"has {self.n_qubits}."
+class _IncrementalTrajectory(_EvolutionProgram):
+    """A fixed-step trajectory in one backend call: ``time`` is the step,
+    repeated from ``initial_state`` and measured at each of ``steps``."""
+
+    def __init__(self, *, steps: Sequence[int], **kwargs):
+        """Initialise the trajectory.
+
+        Args:
+            steps: Step counts to measure at, in any order; :attr:`results`
+                follows it.
+            **kwargs: Passed to the shared evolution inputs, with ``time`` the
+                length of one step.
+        """
+        super().__init__(n_steps=1, **kwargs)
+        self._steps = tuple(steps)
+
+    def _make_checkpoint(
+        self, checkpoint_dir: Path
+    ) -> _IncrementalTrajectoryCheckpoint:
+        if not self.has_results():
+            raise RuntimeError(
+                "_IncrementalTrajectory has no completed results to checkpoint."
             )
-        return spo
+        return _IncrementalTrajectoryCheckpoint._from_program(self)
+
+    def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
+        checkpoint = _IncrementalTrajectoryCheckpoint.model_validate_json(
+            checkpoint_json
+        )
+        if checkpoint.program_type != type(self).__name__:
+            raise ValueError("Checkpoint is for a different program type.")
+        self._results["evolved_state_measurement"] = checkpoint.results
+        return True
+
+    @property
+    def results(self) -> list[float] | list[list[float]]:
+        """Get the final results, one per entry of ``steps``.
+
+        Each is a ``float`` for a single ``observable``, or a ``list[float]``
+        with one value per observable for a sequence.
+
+        Raises:
+            RuntimeError: If ``.run()`` has not yet been called.
+        """
+        if not self.has_results():
+            raise RuntimeError(
+                "_IncrementalTrajectory.results is not available. Call .run() first."
+            )
+        return self._results["evolved_state_measurement"]
+
+    def _build_meta_circuit(
+        self, result: TrotterizationResult, ham_id: int
+    ) -> MetaCircuit:
+        """Build one Trotter step on an empty register; the initial state is
+        submitted separately."""
+        return self._build_evolution_meta_circuit(result, QuantumCircuit(self.n_qubits))
+
+    def run(self, **kwargs) -> Self:
+        """Evolve through every entry of ``steps`` in one incremental submission.
+
+        Returns:
+            _IncrementalTrajectory: Returns ``self`` for method chaining.
+        """
+        with self._ensure_progress_session(label="Time evolution", total=1):
+            self._reject_unclaimed_run_kwargs(kwargs)
+            steps = sorted(self._steps)
+            env = self._build_pipeline_env(param_sets=np.empty((1, 0)))
+            pipeline = self._build_preprocessor_pipeline(self._evolution_preprocessor())
+            per_step = pipeline.run_incremental(
+                self._initial_spec(), env, self._build_initial_state_circuit(), steps
+            )
+            self._record_execution(env)
+            by_step = dict(zip(steps, per_step, strict=True))
+            values = []
+            for k in self._steps:
+                (raw,) = by_step[k].values()
+                values.append(self._convert_measurement(raw))
+            self._results["evolved_state_measurement"] = values
+            self._emit_finished()
+            return self

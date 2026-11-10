@@ -17,7 +17,7 @@ from divi.backends import (
 from divi.circuits import DEFAULT_PRECISION
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPipeline, PipelineEnv
-from divi.pipeline._core import _wait_for_async_result
+from divi.pipeline._execution import _wait_for_async_result
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import (

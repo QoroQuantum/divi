@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rendering for dry-run reports.
+"""Rendering for dry-run reports and pipeline expansion trees.
 
 Turns the :class:`~divi.pipeline.DryRunReport` objects produced by
 :mod:`divi.pipeline._dry_run` into rich trees: one program's routines, or a whole
@@ -22,6 +22,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.tree import Tree
 
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._dry_run import (
     DryRunReport,
     EnsembleReports,
@@ -31,8 +32,41 @@ from divi.pipeline._dry_run import (
     _stage_metadata_value_in,
 )
 from divi.pipeline._preprocessor import PipelineCadence
+from divi.pipeline.abc import PipelineTrace
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
+    children: dict[str, set[str]] = defaultdict(set)
+    for key in keys:
+        parts = "/".join(f"{axis}:{value}" for axis, value in key).split("/")
+        for i in range(1, len(parts) + 1):
+            children["/".join(parts[: i - 1])].add("/".join(parts[:i]))
+    return {p: sorted(c) for p, c in children.items()}
+
+
+def format_pipeline_tree(trace: PipelineTrace) -> None:
+    """Print the full pipeline expansion tree to the terminal."""
+    keys = list(batch_lineage(trace.final_batch).values())
+    if not keys:
+        print("(empty)")
+        return
+    children = _path_children(keys)
+    roots = children.get("", [])
+
+    def s(p: str) -> str:
+        return p.split("/")[-1]
+
+    def add(tree: Tree, path: str) -> None:
+        for c in children.get(path, []):
+            add(tree.add(s(c)), c)
+
+    root = Tree(s(roots[0])) if len(roots) == 1 else Tree("")
+    for r in roots:
+        add(root if len(roots) == 1 else root.add(s(r)), r)
+
+    Console(no_color=True).print(root)
 
 
 def _render_safe_text(value: Any) -> str:

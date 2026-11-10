@@ -1429,13 +1429,59 @@ def test_partial_subbatch_failure_keeps_the_successful_share(mocker):
 
 
 class TestProxyBackend:
-    def test_delegates_properties(self):
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "shots",
+            "supports_expval",
+            "supports_vjp",
+            "supports_incremental_evolution",
+            "per_circuit_kwargs",
+            "track_depth",
+        ],
+    )
+    def test_forwards_every_attribute_it_does_not_intercept(self, mocker, name):
+        real = mocker.Mock(spec=CircuitRunner, **{name: mocker.sentinel.value})
+        proxy = _ProxyBackend(real, mocker.Mock(spec=_BatchCoordinator), "prog_1")
+
+        assert getattr(proxy, name) is mocker.sentinel.value
+
+    def test_writes_land_on_the_real_backend(self):
         real = FakeSyncBackend(shots=200)
-        coord = _BatchCoordinator(real)
+        proxy = _ProxyBackend(real, _BatchCoordinator(real), "prog_1")
+
+        proxy.track_depth = True
+
+        assert real.track_depth is True
+
+    @pytest.mark.parametrize(
+        "method, args, kwargs",
+        [
+            pytest.param(
+                "submit_vjp",
+                (["payload"],),
+                {"ham_ops": "Z", "cotangents": {"row": [1.0]}},
+                id="vjp",
+            ),
+            pytest.param(
+                "submit_incremental_evolution",
+                ("initial", "step"),
+                {"steps": [1, 2], "ham_ops": "Z"},
+                id="incremental-evolution",
+            ),
+            pytest.param("set_seed", (7,), {}, id="seed"),
+        ],
+    )
+    def test_calls_the_real_backend_unmerged(self, mocker, method, args, kwargs):
+        real = mocker.Mock(spec=CircuitRunner)
+        coord = mocker.Mock(spec=_BatchCoordinator)
         proxy = _ProxyBackend(real, coord, "prog_1")
 
-        assert proxy.shots == 200
-        assert proxy.supports_expval == real.supports_expval
+        result = getattr(proxy, method)(*args, **kwargs)
+
+        assert result is getattr(real, method).return_value
+        getattr(real, method).assert_called_once_with(*args, **kwargs)
+        coord.submit.assert_not_called()
 
     def test_never_defers_parameter_binding(self):
         """The proxy submits a bound label -> qasm mapping, so it must report
@@ -1447,25 +1493,6 @@ class TestProxyBackend:
 
         assert real.resolves_parameters is True
         assert proxy.resolves_parameters is False
-
-    def test_proxy_delegates_vjp_to_the_real_backend(self, mocker):
-        real = mocker.Mock(spec=CircuitRunner, shots=100, supports_vjp=True)
-        coord = mocker.Mock(spec=_BatchCoordinator)
-        proxy = _ProxyBackend(real, coord, "prog_1")
-        payloads = [mocker.sentinel.payload]
-        cotangents = {"row": [1.0]}
-        event = Event()
-
-        result = proxy.submit_vjp(
-            payloads, ham_ops="Z", cotangents=cotangents, cancellation_event=event
-        )
-
-        assert proxy.supports_vjp is True
-        assert result is real.submit_vjp.return_value
-        real.submit_vjp.assert_called_once_with(
-            payloads, ham_ops="Z", cotangents=cotangents, cancellation_event=event
-        )
-        coord.submit.assert_not_called()
 
     def test_proxy_integrates_with_coordinator_barrier(self, mocker):
         """Two proxies submit through the coordinator and each gets its own

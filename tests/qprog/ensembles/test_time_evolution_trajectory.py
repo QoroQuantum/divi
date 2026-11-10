@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import logging
 import math
+import threading
 import warnings
 
 import matplotlib.pyplot as plt
@@ -19,10 +21,12 @@ from divi.hamiltonians.trotterization import ExactTrotterization, QDrift
 from divi.hamiltonians.trotterization._state_drift import StateDriftExpansion
 from divi.pipeline import DiviPerformanceWarning
 from divi.qprog.algorithms import TimeEvolution
-from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.algorithms._time_evolution import _IncrementalTrajectory
+from divi.qprog.checkpointing import CheckpointConfig, CheckpointCorruptedError
 from divi.qprog.ensembles import (
     BatchConfig,
     BatchMode,
+    ProgramEnsemble,
     ReportingLevel,
     TimeEvolutionTrajectory,
 )
@@ -44,11 +48,46 @@ _STATE_DRIFT_HAMILTONIAN = SparsePauliOp.from_sparse_list(
 _STATE_DRIFT_OBSERVABLE = SparsePauliOp.from_sparse_list(
     [("Z", [0], 1.0), ("Z", [1], 0.5)], num_qubits=2
 )
+_CHAIN_QUBITS = 8
+_ISING_CHAIN = SparsePauliOp.from_sparse_list(
+    [("ZZ", [q, q + 1], 1.0) for q in range(_CHAIN_QUBITS - 1)]
+    + [("X", [q], 0.7) for q in range(_CHAIN_QUBITS)]
+    + [("Z", [q], 0.2) for q in range(_CHAIN_QUBITS)],
+    num_qubits=_CHAIN_QUBITS,
+)
+_CHAIN_Z0 = SparsePauliOp.from_sparse_list([("Z", [0], 1.0)], _CHAIN_QUBITS)
+_CHAIN_XX_WITH_CONSTANT = SparsePauliOp.from_sparse_list(
+    [("XX", [3, 4], 0.5), ("", [], 0.25)], _CHAIN_QUBITS
+)
+_CHAIN_Z0_PLUS_X1 = SparsePauliOp.from_sparse_list(
+    [("Z", [0], 1.0), ("X", [1], 0.5)], _CHAIN_QUBITS
+)
+_FIXED_STEP_TIMES = (0.0, 0.3, 0.1, 1.0)
+_FIXED_STEP_DT = 0.1
 
 
 @pytest.fixture
 def two_qubit_hamiltonian():
     return _H_Z0_Z1
+
+
+class _IncrementalTrajectoriesEnsemble(ProgramEnsemble):
+    """One incremental trajectory per entry of ``settings``, run side by side."""
+
+    def __init__(self, backend, settings: dict[str, dict]):
+        super().__init__(backend)
+        self._settings = settings
+
+    def create_programs(self, state=None):
+        super().create_programs()
+        self.programs = {
+            key: _IncrementalTrajectory(backend=self.backend, **kwargs)
+            for key, kwargs in self._settings.items()
+        }
+
+    def aggregate_results(self):
+        super().aggregate_results()
+        return {key: program.results for key, program in self.programs.items()}
 
 
 class TestTimeEvolutionTrajectoryInit:
@@ -96,6 +135,85 @@ class TestTimeEvolutionTrajectoryInit:
                 backend=dummy_simulator,
                 **kwargs,
             )
+
+    @pytest.mark.parametrize(
+        "time_points, kwargs, message",
+        [
+            pytest.param(
+                [0.5],
+                {"dt": 0.1, "n_steps": 2},
+                "Pass either n_steps or dt, not both.",
+                id="dt-and-n-steps",
+            ),
+            pytest.param(
+                [0.5],
+                {"dt": 0.1, "trotterization_strategy": QDrift(sampling_budget=2)},
+                "dt requires ExactTrotterization.",
+                id="qdrift",
+            ),
+            *(
+                pytest.param(
+                    [0.5],
+                    {"dt": dt},
+                    f"dt must be a positive finite number, got {dt!r}.",
+                    id=f"{name}-dt",
+                )
+                for name, dt in (
+                    ("zero", 0.0),
+                    ("negative", -0.1),
+                    ("nan", float("nan")),
+                    ("infinite", float("inf")),
+                    ("bool", True),
+                    ("string", "0.1"),
+                )
+            ),
+            *(
+                pytest.param(
+                    [t],
+                    {"dt": dt},
+                    f"Time point {t!r} is not a non-negative whole multiple "
+                    f"of dt={dt!r}.",
+                    id=name,
+                )
+                for name, t, dt in (
+                    ("not-a-multiple", 0.5, 0.3),
+                    ("negative-time", -0.2, 0.1),
+                    ("just-off-a-multiple", 0.2 + 1e-5, 0.1),
+                    ("nan-time", float("nan"), 0.1),
+                    ("overflowing-ratio", 1e300, 1e-10),
+                )
+            ),
+            pytest.param(
+                [0.2, 0.2 + 1e-13],
+                {"dt": 0.1},
+                "Several time points fall on the same step of dt=0.1.",
+                id="same-step",
+            ),
+        ],
+    )
+    def test_bad_fixed_step_settings_fail_at_construction(
+        self, two_qubit_hamiltonian, dummy_simulator, time_points, kwargs, message
+    ):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            TimeEvolutionTrajectory(
+                hamiltonian=two_qubit_hamiltonian,
+                time_points=time_points,
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+    def test_single_precision_time_points_fall_on_their_steps(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=np.array([0.1, 0.3, 0.7], dtype=np.float32),
+            backend=dummy_simulator,
+            dt=0.1,
+        )
+        traj.create_programs()
+
+        assert [p.n_steps for p in traj.programs.values()] == [1, 3, 7]
 
     def test_numpy_trotter_settings_reach_every_program_as_plain_ints(
         self, two_qubit_hamiltonian, dummy_simulator
@@ -194,6 +312,32 @@ class TestTimeEvolutionTrajectoryKwargForwarding:
             assert prog.trotterization_strategy == strategy
             assert prog.trotterization_strategy is not strategy
 
+    def test_trajectory_settings_reach_the_incremental_program(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        strategy = ExactTrotterization(keep_top_n=1)
+        initial_state = SuperpositionState()
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.2, 0.1],
+            dt=0.1,
+            backend=default_test_simulator,
+            trotterization_strategy=strategy,
+            order=2,
+            initial_state=initial_state,
+            observable=_Z0_2Q,
+            seed=9,
+            precision=4,
+        )
+        traj.create_programs()
+
+        (program,) = traj.programs.values()
+        assert (program.time, program.order) == (0.1, 2)
+        assert program.trotterization_strategy == strategy
+        assert program.trotterization_strategy is not strategy
+        assert program.initial_state is initial_state
+        assert (program._seed, program.precision) == (9, 4)
+
     def test_invalid_kwarg_rejected_at_program_construction(
         self, two_qubit_hamiltonian, dummy_simulator
     ):
@@ -255,6 +399,60 @@ class TestTimeEvolutionTrajectoryCreatePrograms:
         traj.create_programs()
         with pytest.raises(RuntimeError, match="Some programs already exist"):
             traj.create_programs()
+
+    @pytest.mark.parametrize(
+        "backend_fixture, kwargs",
+        [
+            pytest.param("default_test_simulator", {}, id="probabilities"),
+            pytest.param(
+                "sampling_test_simulator",
+                {"observable": _Z0_2Q},
+                id="backend-samples",
+            ),
+            pytest.param(
+                "default_test_simulator",
+                {"observable": _Z0_2Q, "qem_protocol": ZNE(scale_factors=[1.0, 3.0])},
+                id="error-mitigation",
+            ),
+        ],
+    )
+    def test_fixed_step_creates_one_program_per_time_point_when_not_incremental(
+        self, request, backend_fixture, kwargs
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=_H_Z0_Z1,
+            time_points=[0.0, 0.4, 0.2, 0.6],
+            dt=0.2,
+            backend=request.getfixturevalue(backend_fixture),
+            **kwargs,
+        )
+        traj.create_programs()
+
+        assert {
+            key: (program.time, program.n_steps)
+            for key, program in traj.programs.items()
+        } == {
+            "t=0.0": (0.0, 1),
+            "t=0.4": (0.4, 2),
+            "t=0.2": (0.2, 1),
+            "t=0.6": (0.6, 3),
+        }
+
+    def test_incremental_trajectory_is_one_program_previewed_as_its_step(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.2, 0.1],
+            dt=0.1,
+            backend=default_test_simulator,
+            observable=_Z0_2Q,
+        )
+        traj.create_programs()
+
+        assert list(traj.programs) == ["trajectory"]
+        (report,) = traj.dry_run()["trajectory"].values()
+        assert report.total_circuits == 1
 
 
 _QDRIFT_TIME_POINTS = (0.2, 0.5, 0.9)
@@ -392,6 +590,161 @@ class TestTimeEvolutionTrajectoryRun:
         )
         restored.restore_state(tmp_path).run()
         assert restored.stop_reason.value == "complete"
+
+    @pytest.mark.parametrize("order", [1, 2])
+    @pytest.mark.parametrize(
+        "strategy",
+        [None, ExactTrotterization(keep_top_n=10)],
+        ids=["all-terms", "truncated"],
+    )
+    @pytest.mark.parametrize(
+        "observable",
+        [
+            _CHAIN_Z0,
+            [_CHAIN_Z0, _CHAIN_XX_WITH_CONSTANT],
+            [_CHAIN_Z0, _CHAIN_Z0_PLUS_X1],
+        ],
+        ids=["one-observable", "with-constant", "shared-term"],
+    )
+    def test_fixed_step_evolves_once_and_matches_each_time_point_alone(
+        self, default_test_simulator, mocker, order, strategy, observable
+    ):
+        initial_state = CustomPerQubitState("+0-0+0-0")
+        common = dict(
+            hamiltonian=_ISING_CHAIN,
+            order=order,
+            initial_state=initial_state,
+            observable=observable,
+            backend=default_test_simulator,
+        )
+        submit = mocker.spy(default_test_simulator, "submit_incremental_evolution")
+        traj = TimeEvolutionTrajectory(
+            time_points=_FIXED_STEP_TIMES,
+            dt=_FIXED_STEP_DT,
+            trotterization_strategy=strategy,
+            **common,
+        )
+        traj.run()
+
+        steps = (0, 3, 1, 10)
+        submit.assert_called_once()
+        assert submit.call_args.kwargs["steps"] == [0, 1, 3, 10]
+        results = traj.aggregate_results()
+        assert list(results) == list(_FIXED_STEP_TIMES)
+        for t, k in zip(_FIXED_STEP_TIMES, steps, strict=True):
+            alone = TimeEvolution(
+                time=t,
+                n_steps=max(k, 1),
+                trotterization_strategy=copy.deepcopy(strategy),
+                **common,
+            ).run()
+            assert results[t] == pytest.approx(alone.results, abs=1e-12)
+
+    @pytest.mark.parametrize(
+        "observable", [_Z0_2Q, [_Z0_2Q, _H_Z0_Z1]], ids=["one", "several"]
+    )
+    def test_restored_incremental_trajectory_keeps_its_results(
+        self, default_test_simulator, tmp_path, mocker, observable
+    ):
+        settings = dict(
+            hamiltonian=SparsePauliOp.from_sparse_list(
+                [("Z", [0], 0.5), ("X", [1], 0.3), ("XX", [0, 1], 0.2)], num_qubits=2
+            ),
+            time_points=[0.1, 0.3],
+            dt=0.1,
+            observable=observable,
+            backend=default_test_simulator,
+        )
+        submit = mocker.spy(default_test_simulator, "submit_incremental_evolution")
+        original = TimeEvolutionTrajectory(**settings).run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+        )
+
+        restored = TimeEvolutionTrajectory(**settings).restore_state(tmp_path)
+
+        assert list(restored.programs) == ["trajectory"]
+        assert restored.aggregate_results() == original.aggregate_results()
+        assert submit.call_count == 1
+
+    def test_incremental_checkpoint_does_not_restore_onto_a_sampling_backend(
+        self, default_test_simulator, sampling_test_simulator, tmp_path
+    ):
+        settings = dict(
+            hamiltonian=_H_Z0_Z1, time_points=[0.1, 0.2], dt=0.1, observable=_Z0_2Q
+        )
+        TimeEvolutionTrajectory(backend=default_test_simulator, **settings).run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+        )
+
+        with pytest.raises(
+            CheckpointCorruptedError,
+            match="written by a _IncrementalTrajectory, not a TimeEvolution",
+        ):
+            TimeEvolutionTrajectory(
+                backend=sampling_test_simulator, **settings
+            ).restore_state(tmp_path)
+
+    @pytest.mark.parametrize(
+        "batch_config",
+        [BatchConfig(), BatchConfig(mode=BatchMode.OFF)],
+        ids=["merged", "off"],
+    )
+    def test_concurrent_incremental_trajectories_keep_their_own_results(
+        self, default_test_simulator, mocker, batch_config
+    ):
+        steps = (1, 3, 2)
+        settings = {
+            "a": dict(
+                hamiltonian=SparsePauliOp.from_sparse_list(
+                    [("Z", [0], 1.0), ("X", [1], 0.7), ("XX", [0, 1], 0.5)],
+                    num_qubits=2,
+                ),
+                initial_state=CustomPerQubitState("+0"),
+                observable=_Z0_2Q,
+            ),
+            "b": dict(
+                hamiltonian=SparsePauliOp.from_sparse_list(
+                    [("ZZ", [0, 1], 1.0), ("X", [0], 0.4)], num_qubits=2
+                ),
+                initial_state=CustomPerQubitState("0-"),
+                observable=[_Z0_2Q, _H_Z0_Z1],
+            ),
+        }
+        both_submitted = threading.Barrier(2, timeout=10)
+        submit = default_test_simulator.submit_incremental_evolution
+
+        def submit_together(*args, **kwargs):
+            both_submitted.wait()
+            return submit(*args, **kwargs)
+
+        mocker.patch.object(
+            default_test_simulator,
+            "submit_incremental_evolution",
+            side_effect=submit_together,
+        )
+
+        results = (
+            _IncrementalTrajectoriesEnsemble(
+                default_test_simulator,
+                {
+                    key: dict(kwargs, time=0.1, steps=steps)
+                    for key, kwargs in settings.items()
+                },
+            )
+            .run(batch_config=batch_config)
+            .aggregate_results()
+        )
+
+        for key, kwargs in settings.items():
+            alone = [
+                TimeEvolution(
+                    time=0.1 * k, n_steps=k, backend=default_test_simulator, **kwargs
+                )
+                .run()
+                .results
+                for k in steps
+            ]
+            np.testing.assert_allclose(results[key], alone, rtol=0, atol=1e-12)
 
     def test_run_probs_mode(self, two_qubit_hamiltonian, default_test_simulator):
         traj = TimeEvolutionTrajectory(
@@ -819,6 +1172,19 @@ class TestCacheGating:
             time_points=[0.1, 0.2, 0.3, 0.4, 0.5],
             trotterization_strategy=QDrift(sampling_budget=4),
             backend=dummy_simulator,
+        )
+        traj.create_programs()
+        for prog in traj.programs.values():
+            assert prog._template_meta is None
+
+    def test_cache_skipped_for_a_fixed_step(
+        self, cache_test_hamiltonian, sampling_test_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=cache_test_hamiltonian,
+            time_points=[0.1, 0.2, 0.3, 0.4, 0.5],
+            dt=0.1,
+            backend=sampling_test_simulator,
         )
         traj.create_programs()
         for prog in traj.programs.values():

@@ -33,7 +33,7 @@ from divi.backends._cancellation import _cancel_job_on_abort
 from divi.circuits._payloads import flatten_bound_payloads
 from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
 from divi.pipeline import PipelineEnv
-from divi.pipeline._core import _wait_for_async_result
+from divi.pipeline._execution import _wait_for_async_result
 from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
 from divi.qprog.algorithms import QAOA
 from divi.qprog.checkpointing import CheckpointConfig, CheckpointCorruptedError

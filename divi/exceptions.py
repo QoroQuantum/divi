@@ -11,6 +11,7 @@ __all__ = [
     "CharacterizationSubmitError",
     "CircuitTooWideError",
     "ExecutionCancelledError",
+    "IncrementalEvolutionUnavailableError",
     "VJPUnavailableError",
 ]
 
@@ -21,6 +22,10 @@ class ExecutionCancelledError(Exception):
 
 class VJPUnavailableError(Exception):
     """A vector-Jacobian product cannot be computed; the message says why."""
+
+
+class IncrementalEvolutionUnavailableError(Exception):
+    """A state cannot be evolved incrementally; the message says why."""
 
 
 class CircuitTooWideError(requests.HTTPError):

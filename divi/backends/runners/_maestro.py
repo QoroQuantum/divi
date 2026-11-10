@@ -11,7 +11,9 @@ import time
 import warnings
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from itertools import pairwise
+from numbers import Integral
 from threading import Event, Lock
 from typing import Any
 
@@ -33,7 +35,7 @@ from divi.circuits._conversions import (
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
 from divi.circuits._qasm_template import build_template, render_template
-from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.exceptions import IncrementalEvolutionUnavailableError, VJPUnavailableError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
 from divi.qasm import count_clbits, count_qubits
 
@@ -44,30 +46,25 @@ def _run_with_cancellation(
     items: Iterable[Any],
     cancellation_event: Event | None,
 ) -> list:
-    """Run ``fn`` over ``items`` in order via ``executor`` with cancellation support.
+    """Run ``fn`` over ``items`` via ``executor``, returning results in item order.
 
-    When ``cancellation_event`` is set between completed items, ``Future.cancel()``
-    is called on every remaining future so unstarted ones never run — the
-    shared per-instance ThreadPoolExecutor doesn't keep draining orphan work
-    behind subsequent ``submit_circuits`` calls. Workers already in maestro's
-    native call cannot be interrupted.
+    On a worker error or a set ``cancellation_event``, unstarted items are
+    cancelled; running ones finish.
     """
-    if cancellation_event is None:
-        return list(executor.map(fn, items))
-    futures = [executor.submit(fn, item) for item in items]
-    out: list = []
-    for fut in futures:
-        if cancellation_event.is_set():
-            # Inline the cleanup so a worker exception (any type — including
-            # a hypothetical ExecutionCancelledError from a future Python
-            # callable) propagates from ``fut.result()`` below without being
-            # confused with our event-driven cancel.
-            for f in futures:
-                f.cancel()
-            raise ExecutionCancelledError(
-                "Maestro batch cancelled after partial completion"
+    items = list(items)
+    futures: dict[Future, int] = {}
+    out: list = [None] * len(items)
+    try:
+        for i, item in enumerate(items):
+            futures[executor.submit(fn, item)] = i
+        for future in as_completed(futures):
+            raise_if_cancelled(
+                cancellation_event, "Maestro batch cancelled after partial completion"
             )
-        out.append(fut.result())
+            out[futures[future]] = future.result()
+    finally:
+        for future in futures:
+            future.cancel()
     return out
 
 
@@ -584,13 +581,7 @@ class MaestroSimulator(CircuitRunner):
         )
         self._force_sampling = force_sampling
 
-        # Per-instance circuit fan-out pool, lazy-initialised on first
-        # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
-        # GIL and use internal OpenMP threads, so we cap workers at cores/2
-        # to leave headroom for that internal parallelism rather than
-        # oversubscribing.  ``ThreadPoolExecutor.map`` is thread-safe across
-        # concurrent submit calls — overlapping submissions multiplex
-        # through the same worker pool instead of each spawning their own.
+        # Shared by concurrent submissions; each native call also runs its own OpenMP team.
         self._executor: ThreadPoolExecutor | None = None
         self._executor_lock = Lock()
 
@@ -678,6 +669,73 @@ class MaestroSimulator(CircuitRunner):
             run_time=sum(entry["metadata"]["time_taken"] for entry in results),
         )
 
+    @property
+    def supports_incremental_evolution(self) -> bool:
+        """Whether estimation is native and noiseless, as incremental evolution needs."""
+        return self.supports_expval and self.maestro_config.noise_model is None
+
+    def submit_incremental_evolution(
+        self,
+        initial_circuit: str,
+        step_circuit: str,
+        *,
+        steps: Sequence[int],
+        ham_ops: str,
+        cancellation_event: Event | None = None,
+    ) -> ExecutionResult:
+        """Expectation values at each step count from one native evolution.
+
+        See :meth:`~divi.backends.CircuitRunner.submit_incremental_evolution`.
+        Terms shorter than the register are padded onto its first qubits, as in
+        :meth:`submit_circuits`.
+
+        Raises:
+            IncrementalEvolutionUnavailableError: If
+                :attr:`supports_incremental_evolution` is False.
+            ValueError: If ``steps`` is not a non-empty, strictly increasing
+                list of non-negative integers.
+        """
+        if not self.supports_incremental_evolution:
+            raise IncrementalEvolutionUnavailableError(
+                "MaestroSimulator evolves incrementally only with native, "
+                "noiseless estimation."
+            )
+        steps = list(steps)
+        if not (
+            steps
+            and all(isinstance(s, Integral) and not isinstance(s, bool) for s in steps)
+            and steps[0] >= 0
+            and all(a < b for a, b in pairwise(steps))
+        ):
+            raise ValueError(
+                "steps must be non-empty, non-negative and strictly increasing "
+                f"integers; got {steps}."
+            )
+        raise_if_cancelled(
+            cancellation_event,
+            "Maestro incremental evolution cancelled before dispatch",
+        )
+        width = max(count_qubits(initial_circuit), count_qubits(step_circuit))
+        ham_ops = pad_ham_ops(ham_ops, None, [width])
+        self._record_qasm_depths([initial_circuit, step_circuit])
+        parser = maestro.QasmToCirc()
+        raw = maestro.incremental_evolve(
+            parser.parse_and_translate(initial_circuit),
+            parser.parse_and_translate(step_circuit),
+            [int(step) for step in steps],
+            ham_ops,
+            config=self.maestro_config._simulator_config(),
+        )
+
+        terms = ham_ops.split(";")
+        results = [
+            {"label": str(step), "results": dict(zip(terms, values, strict=True))}
+            for step, values in zip(
+                raw["steps"], raw["expectation_values"], strict=True
+            )
+        ]
+        return ExecutionResult(results=results, run_time=raw["time_taken"])
+
     def set_seed(self, seed: int) -> None:
         """Seed maestro's simulation RNG.
 
@@ -735,7 +793,8 @@ class MaestroSimulator(CircuitRunner):
         cancellation_event: Event | None = None,
         **kwargs,
     ) -> ExecutionResult:
-        """Submit quantum circuits for execution on the maestro simulator.
+        """Submit quantum circuits for execution on the maestro simulator,
+        longest first.
 
         Args:
             payloads: Bound QASM payloads, one resolved circuit per parameter-set
@@ -841,13 +900,23 @@ class MaestroSimulator(CircuitRunner):
             expvals = dict(zip(terms, raw["expectation_values"]))
             return _result_entry(label, expvals, raw, "expectation_values")
 
-        items = [
-            (i, label, qasm)
-            for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
-        ]
-        results = _run_with_cancellation(
+        # Statement count stands in for runtime: the longest circuits start first.
+        cost_proxy = [qasm.count(";") for qasm in qasm_strings]
+        items = sorted(
+            (
+                (i, label, qasm)
+                for i, (label, qasm) in enumerate(zip(circuit_labels, qasm_strings))
+            ),
+            key=lambda item: cost_proxy[item[0]],
+            reverse=True,
+        )
+        out = _run_with_cancellation(
             self._get_executor(), _run, items, cancellation_event
         )
+        entry_by_index = {
+            i: entry for (i, _label, _qasm), entry in zip(items, out, strict=True)
+        }
+        results = [entry_by_index[i] for i in range(len(items))]
         return ExecutionResult(
             results=results,
             run_time=sum(entry["metadata"]["time_taken"] for entry in results),

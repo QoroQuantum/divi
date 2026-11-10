@@ -4,8 +4,10 @@
 
 import copy
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import replace
+from numbers import Real
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,7 +23,10 @@ from divi.hamiltonians.trotterization import (
     TrotterizationStrategy,
 )
 from divi.qprog.algorithms import TimeEvolution
-from divi.qprog.algorithms._time_evolution import _validate_trotter_settings
+from divi.qprog.algorithms._time_evolution import (
+    _IncrementalTrajectory,
+    _validate_trotter_settings,
+)
 from divi.qprog.initial_states import InitialState
 
 from ._base import ProgramEnsemble, ReportingLevel, _child_seed
@@ -32,6 +37,33 @@ logger = logging.getLogger(__name__)
 # (one symbolic ``_build_meta_circuit`` call) outweighs the savings from
 # sharing it across programs.
 _CACHE_MIN_TIME_POINTS = 4
+
+_INCREMENTAL_PROGRAM_KEY = "trajectory"
+
+
+def _count_steps(time_points: Sequence[float], dt: float) -> list[int]:
+    """Count the steps of ``dt`` that reach each time point.
+
+    Raises:
+        ValueError: If ``dt`` is not a positive finite number, or a time point
+            is not a non-negative whole multiple of it.
+    """
+    if isinstance(dt, bool) or not isinstance(dt, Real) or not 0 < dt < math.inf:
+        raise ValueError(f"dt must be a positive finite number, got {dt!r}.")
+    steps = []
+    for t in time_points:
+        ratio = t / dt
+        if not (
+            0 <= ratio < math.inf
+            and math.isclose(round(ratio) * dt, t, rel_tol=1e-6, abs_tol=1e-12)
+        ):
+            raise ValueError(
+                f"Time point {t!r} is not a non-negative whole multiple of dt={dt!r}."
+            )
+        steps.append(round(ratio))
+    if len(set(steps)) != len(steps):
+        raise ValueError(f"Several time points fall on the same step of dt={dt!r}.")
+    return steps
 
 
 def _time_point_seed(seed: int | None, time: float) -> int | None:
@@ -66,7 +98,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         *,
         backend: CircuitRunner,
         trotterization_strategy: TrotterizationStrategy | None = None,
-        n_steps: int = 1,
+        n_steps: int | None = None,
+        dt: float | None = None,
         order: int = 1,
         initial_state: InitialState | None = None,
         observable: SparsePauliOp | Sequence[SparsePauliOp] | None = None,
@@ -78,14 +111,23 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         Args:
             hamiltonian: Hamiltonian to evolve under.
             time_points: List of evolution times. One program is created per
-                time point.
+                time point, unless the trajectory evolves incrementally.
             backend: Quantum circuit execution backend.
             trotterization_strategy: Strategy for term selection
                 (``ExactTrotterization``, ``QDrift``). Defaults to ``ExactTrotterization()``.
                 Copied per program for thread safety; a seeded ``QDrift`` gets
                 an independent seed derived from its own and the time value,
                 so each time point's draws do not depend on the other points.
-            n_steps: Number of Trotter steps.
+            n_steps: Number of Trotter steps per time point. Defaults to 1.
+            dt: Fixed Trotter step instead of ``n_steps``; every time point must
+                be a non-negative whole multiple of it. Requires
+                ``ExactTrotterization``. With an ``observable``, no
+                ``qem_protocol`` and a backend that
+                :attr:`~divi.backends.CircuitRunner.supports_incremental_evolution`,
+                one program evolves the state through every time point in a
+                single submission; otherwise each time point runs on its own.
+                A checkpoint restores only onto a backend that makes the same
+                choice.
             order: Suzuki-Trotter order (1 or even).
             initial_state: Initial state preparation (:class:`~divi.qprog.initial_states.InitialState` instance).
                 Defaults to ``ZerosState()`` if None.
@@ -93,8 +135,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 value of one observable, or of each observable in a sequence.
             seed: Random seed for reproducible results. Each time point runs
                 with an independent seed derived from it and the time value.
-            **kwargs: Forwarded verbatim to every per-time-point
-                :class:`~divi.qprog.algorithms.TimeEvolution`.  Use this for
+            **kwargs: Forwarded verbatim to every program the trajectory
+                creates.  Use this for
                 ``grouping_strategy``, ``shot_distribution``, ``precision``,
                 and any other ``QuantumProgram`` / ``ObservableMeasuringMixin``
                 kwarg that should apply uniformly across the trajectory.
@@ -113,12 +155,20 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             raise ValueError("time_points must not be empty.")
         if len(set(time_points)) != len(time_points):
             raise ValueError("time_points must not contain duplicates.")
-        n_steps, order = _validate_trotter_settings(n_steps, order)
+        if dt is not None:
+            if n_steps is not None:
+                raise ValueError("Pass either n_steps or dt, not both.")
+            if not isinstance(trotterization_strategy, ExactTrotterization | None):
+                raise ValueError("dt requires ExactTrotterization.")
+        n_steps, order = _validate_trotter_settings(
+            1 if n_steps is None else n_steps, order
+        )
 
         self._hamiltonian = hamiltonian
         self._time_points = time_points
         self._trotterization_strategy = trotterization_strategy
         self._n_steps = n_steps
+        self._fixed_step = None if dt is None else (dt, _count_steps(time_points, dt))
         self._order = order
         self._initial_state = initial_state
         self._observable = observable
@@ -126,27 +176,56 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         self._extra_kwargs = kwargs
 
     def create_programs(self, state=None):
-        """Create one TimeEvolution program per time point."""
+        """Create one program per time point, or one for an incremental trajectory."""
         super().create_programs()
 
-        template_meta, t_param = self._maybe_build_template()
+        if self._fixed_step is not None and self._can_evolve_incrementally():
+            dt, step_counts = self._fixed_step
+            self._programs[_INCREMENTAL_PROGRAM_KEY] = _IncrementalTrajectory(
+                trotterization_strategy=copy.deepcopy(self._trotterization_strategy),
+                time=dt,
+                seed=self._seed,
+                steps=step_counts,
+                **self._build_program_kwargs(),
+            )
+            return
 
-        for t in self._time_points:
-            prog_id = f"t={t}"
-            self._programs[prog_id] = TimeEvolution(
-                hamiltonian=self._hamiltonian,
+        template_meta, t_param = self._maybe_build_template()
+        if self._fixed_step is None:
+            n_steps = [self._n_steps] * len(self._time_points)
+        else:
+            # t = 0 still needs one (zero-length) step.
+            n_steps = [max(k, 1) for k in self._fixed_step[1]]
+
+        for t, steps in zip(self._time_points, n_steps):
+            self._programs[f"t={t}"] = TimeEvolution(
                 trotterization_strategy=self._strategy_for(t),
                 time=t,
-                n_steps=self._n_steps,
-                order=self._order,
-                initial_state=self._initial_state,
-                observable=self._observable,
-                backend=self.backend,
+                n_steps=steps,
                 seed=_time_point_seed(self._seed, t),
                 _template_meta=template_meta,
                 _template_param=t_param,
-                **self._extra_kwargs,
+                **self._build_program_kwargs(),
             )
+
+    def _build_program_kwargs(self) -> dict:
+        """Build the keyword arguments every program of this trajectory shares."""
+        return {
+            "hamiltonian": self._hamiltonian,
+            "order": self._order,
+            "initial_state": self._initial_state,
+            "observable": self._observable,
+            "backend": self.backend,
+            **self._extra_kwargs,
+        }
+
+    def _can_evolve_incrementally(self) -> bool:
+        """Whether the fixed-step trajectory can run as one evolution."""
+        return (
+            self._observable is not None
+            and self._extra_kwargs.get("qem_protocol") is None
+            and self.backend.supports_incremental_evolution
+        )
 
     def _strategy_for(self, time: float) -> TrotterizationStrategy | None:
         """The strategy for the program at ``time``, reseeded when it samples
@@ -167,13 +246,15 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
         The template is built only when the trotterization strategy is
         :class:`ExactTrotterization` (QDrift's per-program random sampling
-        means each program's circuit topology differs) and the number of
-        time points clears :data:`_CACHE_MIN_TIME_POINTS`. Any exception
-        raised by the symbolic-time probe is logged at WARNING and the
-        trajectory falls back to per-program circuit construction.
+        means each program's circuit topology differs), there is no ``dt``,
+        and the number of time points clears :data:`_CACHE_MIN_TIME_POINTS`.
+        Any exception raised by the symbolic-time probe is logged at WARNING
+        and the trajectory falls back to per-program circuit construction.
         """
         strategy = self._trotterization_strategy
         if strategy is not None and not isinstance(strategy, ExactTrotterization):
+            return None, None
+        if self._fixed_step is not None:
             return None, None
         if len(self._time_points) < _CACHE_MIN_TIME_POINTS:
             return None, None
@@ -181,16 +262,11 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         t_param = Parameter("t")
         try:
             probe = TimeEvolution(
-                hamiltonian=self._hamiltonian,
                 trotterization_strategy=copy.deepcopy(self._trotterization_strategy),
                 time=t_param,
                 n_steps=self._n_steps,
-                order=self._order,
-                initial_state=self._initial_state,
-                observable=self._observable,
-                backend=self.backend,
                 seed=self._seed,
-                **self._extra_kwargs,
+                **self._build_program_kwargs(),
             )
             result = probe.trotterization_strategy.process_hamiltonian(
                 probe._initial_spec()
@@ -223,6 +299,11 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             ``list[float]`` with one value per observable for a sequence.
         """
         self._check_ready_for_aggregation()
+        if (trajectory := self._programs.get(_INCREMENTAL_PROGRAM_KEY)) is not None:
+            return {
+                float(t): value
+                for t, value in zip(self._time_points, trajectory.results, strict=True)
+            }
         return {float(t): self._programs[f"t={t}"].results for t in self._time_points}
 
     def visualize_results(self):

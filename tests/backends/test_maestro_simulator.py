@@ -21,7 +21,12 @@ import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends.runners._maestro import _circuit_seed, _run_with_cancellation
 from divi.circuits._qasm_template import build_template, render_template
-from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.exceptions import (
+    ExecutionCancelledError,
+    IncrementalEvolutionUnavailableError,
+    VJPUnavailableError,
+)
+from divi.pipeline._compilation import _build_preamble
 from tests._helpers import exact_match
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
@@ -54,6 +59,19 @@ def _depolarizing_model():
     noise_model = maestro.NoiseModel()
     noise_model.set_all_depolarizing(num_qubits=2, p=0.05)
     return noise_model
+
+
+_NON_NATIVE_ESTIMATION = pytest.mark.parametrize(
+    "force_sampling, make_config",
+    [
+        pytest.param(True, MaestroConfig, id="force_sampling"),
+        pytest.param(
+            False,
+            lambda: MaestroConfig(noise_model=_depolarizing_model()),
+            id="noise-model",
+        ),
+    ],
+)
 
 
 def _readout_error_model():
@@ -201,17 +219,7 @@ class TestProperties:
         sim = _make_simulator(mocker, _make_fake_maestro(mocker), **kwargs)
         assert sim.shots == expected
 
-    @pytest.mark.parametrize(
-        "force_sampling, make_config",
-        [
-            pytest.param(True, MaestroConfig, id="force_sampling"),
-            pytest.param(
-                False,
-                lambda: MaestroConfig(noise_model=_depolarizing_model()),
-                id="noise-model",
-            ),
-        ],
-    )
+    @_NON_NATIVE_ESTIMATION
     def test_vjp_needs_native_noiseless_estimation(
         self, make_maestro_simulator, force_sampling, make_config
     ):
@@ -228,6 +236,26 @@ class TestProperties:
             ),
         ):
             sim.submit_vjp([], ham_ops="Z", cotangents={})
+
+    @_NON_NATIVE_ESTIMATION
+    def test_incremental_evolution_needs_native_noiseless_estimation(
+        self, make_maestro_simulator, force_sampling, make_config
+    ):
+        sim = make_maestro_simulator(
+            maestro_config=make_config(), force_sampling=force_sampling
+        )
+
+        assert sim.supports_incremental_evolution is False
+        with pytest.raises(
+            IncrementalEvolutionUnavailableError,
+            match=exact_match(
+                "MaestroSimulator evolves incrementally only with native, "
+                "noiseless estimation."
+            ),
+        ):
+            sim.submit_incremental_evolution(
+                _build_preamble(2), _build_preamble(2), steps=[1], ham_ops="ZI"
+            )
 
     def test_default_config(self, mocker):
         """No ``maestro_config=`` argument → backend uses a default MaestroConfig."""
@@ -356,11 +384,11 @@ class TestSamplingSubmission:
 
 class TestParallelExecution:
     """Multi-circuit submissions fan out across a per-instance thread pool
-    sized at ``max(1, cpu_count // 2)`` so maestro's internal OpenMP
-    threads aren't oversubscribed.  The pool is constructed lazily on the
-    first :meth:`MaestroSimulator.submit_circuits` call and reused across
-    subsequent submissions; these tests pin that lifecycle plus the
-    result-label alignment that the parallel path must preserve."""
+    sized at ``max(1, cpu_count // 2)``, longest circuit first.  The pool is
+    constructed lazily on the first :meth:`MaestroSimulator.submit_circuits`
+    call and reused across subsequent submissions; these tests pin that
+    lifecycle, the start order, and the result-label alignment that the
+    parallel path must preserve."""
 
     @staticmethod
     def _spy_pool(mocker):
@@ -566,19 +594,117 @@ class TestParallelExecution:
         assert result.results[1]["results"] == {"ZI": 0.2}
         assert result.results[2]["results"] == {"ZI": 0.3}
 
+    def test_longest_circuit_starts_first(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        started = []
+
+        def record_start(qasm, **_):
+            started.append(qasm)
+            return _sampled({"00": 1})
+
+        fake.simple_execute.side_effect = record_start
+        mocker.patch.object(maestro_module.os, "cpu_count", return_value=1)
+        sim = _make_simulator(mocker, fake)
+        short = QASM_DEPTH_2
+        long = QASM_DEPTH_2.replace("h q[0]", "x q[0];\nx q[0];\nh q[0]")
+
+        result = sim.submit_circuits({"short": short, "long": long})
+
+        assert started == [long, short]
+        assert [entry["label"] for entry in result.results] == ["short", "long"]
+
+
+_WORKER_ERROR = ValueError("worker failed")
+
+
+def _run_until_item_zero_acts(act, event, expected):
+    """Run items 0-3 on one worker; item 0 calls ``act``, item 1 blocks."""
+    started, release = [], Event()
+
+    def fn(item):
+        started.append(item)
+        if item == 0:
+            act()
+        elif item == 1:
+            release.wait(timeout=5)
+        return item
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        with pytest.raises(expected) as exc_info:
+            _run_with_cancellation(executor, fn, range(4), event)
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+    return started, exc_info.value
+
 
 class TestRunWithCancellation:
-    """Direct unit tests for the cancellation-aware executor consumer.
-
-    Production callers (``MaestroSimulator.submit_circuits``) test it through
-    a ``ThreadPoolExecutor`` whose scheduling is non-deterministic; here we
-    exercise the helper with the real executor but synchronously, so the
-    event check between items is observable without timing races."""
+    """Direct unit tests for the cancellation-aware executor consumer."""
 
     def test_event_none_returns_all_results(self):
         with ThreadPoolExecutor(max_workers=2) as executor:
             out = _run_with_cancellation(executor, lambda x: x * 2, [1, 2, 3], None)
         assert out == [2, 4, 6]
+
+    def test_worker_error_propagates_unchanged_and_skips_unstarted_items(self):
+        def fail():
+            raise _WORKER_ERROR
+
+        started, error = _run_until_item_zero_acts(fail, None, ValueError)
+
+        assert error is _WORKER_ERROR
+        assert set(started) <= {0, 1}
+
+    def test_interrupt_in_a_worker_skips_unstarted_items(self):
+        def interrupt():
+            raise KeyboardInterrupt
+
+        started, _error = _run_until_item_zero_acts(interrupt, None, KeyboardInterrupt)
+
+        assert set(started) <= {0, 1}
+
+    def test_event_set_mid_batch_skips_unstarted_items(self):
+        event = Event()
+
+        started, error = _run_until_item_zero_acts(
+            event.set, event, ExecutionCancelledError
+        )
+
+        assert str(error) == "Maestro batch cancelled after partial completion"
+        assert set(started) <= {0, 1}
+
+    @pytest.mark.parametrize(
+        "make_event, small_action, expected",
+        [
+            pytest.param(lambda: None, "fail", ValueError, id="worker-error"),
+            pytest.param(Event, "cancel", ExecutionCancelledError, id="cancellation"),
+        ],
+    )
+    def test_is_noticed_before_an_earlier_slow_item_finishes(
+        self, make_event, small_action, expected
+    ):
+        event = make_event()
+        release, big_done = Event(), Event()
+
+        def fn(item):
+            if item == "big":
+                release.wait(timeout=5)
+                big_done.set()
+            elif small_action == "fail":
+                raise _WORKER_ERROR
+            else:
+                event.set()
+            return item
+
+        executor = ThreadPoolExecutor(max_workers=2)
+        try:
+            with pytest.raises(expected):
+                _run_with_cancellation(executor, fn, ["big", "small"], event)
+            assert not big_done.is_set()
+        finally:
+            release.set()
+            executor.shutdown(wait=True)
 
     def test_event_preset_raises_after_dispatch_with_no_results(self):
         event = Event()
@@ -586,44 +712,6 @@ class TestRunWithCancellation:
         with ThreadPoolExecutor(max_workers=2) as executor:
             with pytest.raises(ExecutionCancelledError):
                 _run_with_cancellation(executor, lambda x: x * 2, [1, 2, 3, 4], event)
-
-    def test_event_set_mid_batch_calls_cancel_on_remaining_futures(self, mocker):
-        """When the event flips between items, every remaining future has
-        :meth:`Future.cancel` called on it. Whether each ``cancel()`` actually
-        succeeds depends on whether the executor has already pulled the
-        future into a worker — that's an executor scheduling property, not
-        ours to control. The contract we own is: we always *ask* to cancel
-        every remaining future."""
-        event = Event()
-
-        def fn(x):
-            if x == 0:
-                event.set()
-            return x
-
-        executor = ThreadPoolExecutor(max_workers=1)
-        original_submit = executor.submit
-        submitted_futures: list = []
-
-        def tracking_submit(*args, **kwargs):
-            fut = original_submit(*args, **kwargs)
-            mocker.spy(fut, "cancel")
-            submitted_futures.append(fut)
-            return fut
-
-        mocker.patch.object(executor, "submit", side_effect=tracking_submit)
-
-        try:
-            with pytest.raises(ExecutionCancelledError):
-                _run_with_cancellation(executor, fn, list(range(5)), event)
-        finally:
-            executor.shutdown(wait=True)
-
-        assert len(submitted_futures) == 5
-        # Every future submitted should have had cancel() invoked on the
-        # cleanup path — even ones that were already done.
-        for fut in submitted_futures:
-            fut.cancel.assert_called()
 
 
 def test_event_set_mid_batch_stops_consuming(mocker):
@@ -671,6 +759,14 @@ def test_preset_event_aborts_before_dispatch(mocker):
         sim.submit_circuits({"c0": QASM_DEPTH_2}, cancellation_event=event)
 
     fake.simple_execute.assert_not_called()
+
+
+def _observables_by_qasm(fake) -> dict[str, str]:
+    """The observables each circuit was estimated against, keyed by its QASM."""
+    return {
+        call.args[0]: call.kwargs["observables"]
+        for call in fake.simple_estimate.call_args_list
+    }
 
 
 class TestExpvalSubmission:
@@ -752,7 +848,8 @@ class TestExpvalSubmission:
     def test_circuit_ham_map_routing(self, mocker):
         """circuit_ham_map routes correct observables to each circuit."""
         fake = _make_fake_maestro(mocker)
-        fake.simple_estimate.side_effect = [_estimated([0.5]), _estimated([0.8])]
+        per_qasm = {QASM_DEPTH_2: [0.5], QASM_DEPTH_3: [0.8]}
+        fake.simple_estimate.side_effect = lambda qasm, **_: _estimated(per_qasm[qasm])
         sim = _make_simulator(mocker, fake)
 
         result = sim.submit_circuits(
@@ -763,10 +860,7 @@ class TestExpvalSubmission:
 
         assert result.results[0]["results"] == {"ZI": 0.5}
         assert result.results[1]["results"] == {"XX": 0.8}
-
-        calls = fake.simple_estimate.call_args_list
-        assert calls[0][1]["observables"] == "ZI"
-        assert calls[1][1]["observables"] == "XX"
+        assert _observables_by_qasm(fake) == {QASM_DEPTH_2: "ZI", QASM_DEPTH_3: "XX"}
 
     def test_circuit_ham_map_fallback(self, mocker):
         """A circuit outside every group is measured against all observables.
@@ -775,10 +869,8 @@ class TestExpvalSubmission:
         would read 'ZI|XX' as one 5-character pseudo-term, return 0.0 for it,
         and drop both real observables without raising."""
         fake = _make_fake_maestro(mocker)
-        fake.simple_estimate.side_effect = [
-            _estimated([0.5]),
-            _estimated([0.5, -0.3]),
-        ]
+        per_qasm = {QASM_DEPTH_2: [0.5], QASM_DEPTH_3: [0.5, -0.3]}
+        fake.simple_estimate.side_effect = lambda qasm, **_: _estimated(per_qasm[qasm])
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits(
@@ -787,9 +879,10 @@ class TestExpvalSubmission:
             circuit_ham_map=[[0, 1]],
         )
 
-        calls = fake.simple_estimate.call_args_list
-        assert calls[0][1]["observables"] == "ZI"
-        assert calls[1][1]["observables"] == "ZI;XX"
+        assert _observables_by_qasm(fake) == {
+            QASM_DEPTH_2: "ZI",
+            QASM_DEPTH_3: "ZI;XX",
+        }
 
 
 class TestNoisySamplingSubmission:
@@ -1654,3 +1747,114 @@ class TestVectorJacobianProducts:
                 cotangents=_VJP_COTANGENTS,
                 cancellation_event=event,
             )
+
+
+class TestIncrementalEvolution:
+    def test_measures_every_step_along_one_evolution(
+        self, make_maestro_simulator, mocker
+    ):
+        evolve = mocker.spy(maestro_module.maestro, "incremental_evolve")
+        dt = 0.1
+        steps = (0, 1, 5)
+
+        result = make_maestro_simulator().submit_incremental_evolution(
+            _build_preamble(2),
+            _build_preamble(2) + f"rx({2 * dt}) q[0];\n",
+            steps=steps,
+            ham_ops="ZI;IZ",
+        )
+
+        evolve.assert_called_once()
+        assert result.run_time >= 0.0
+        assert [entry["label"] for entry in result.results] == ["0", "1", "5"]
+        for entry, k in zip(result.results, steps, strict=True):
+            assert entry["results"]["ZI"] == pytest.approx(np.cos(2 * k * dt))
+            assert entry["results"]["IZ"] == pytest.approx(1.0)
+            assert set(entry) == {"label", "results"}
+
+    def test_evolves_a_wide_mps_register(self, make_maestro_simulator):
+        sim = make_maestro_simulator(
+            maestro_config=MaestroConfig(simulation_type="MatrixProductState")
+        )
+        z1 = "IZ" + "I" * 68
+        z0_z69 = "Z" + "I" * 68 + "Z"
+        steps = (1, 3)
+
+        result = sim.submit_incremental_evolution(
+            _build_preamble(70) + "h q[0];\ncx q[0], q[69];\n",
+            _build_preamble(70) + "rx(0.1) q[1];\n",
+            steps=steps,
+            ham_ops=f"{z1};{z0_z69}",
+        )
+
+        for entry, k in zip(result.results, steps, strict=True):
+            assert entry["results"][z1] == pytest.approx(np.cos(0.1 * k))
+            assert entry["results"][z0_z69] == pytest.approx(1.0)
+
+    def test_short_terms_are_padded_onto_the_first_qubits(self, make_maestro_simulator):
+        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZI"))):
+            result = make_maestro_simulator().submit_incremental_evolution(
+                _build_preamble(2),
+                _build_preamble(2),
+                steps=[0],
+                ham_ops="Z",
+            )
+
+        assert result.results[0]["results"] == {"ZI": pytest.approx(1.0)}
+
+    def test_records_both_circuit_depths(self, make_maestro_simulator):
+        sim = make_maestro_simulator(track_depth=True)
+
+        sim.submit_incremental_evolution(
+            _build_preamble(2) + "h q[0];\n",
+            _build_preamble(2) + "cx q[0], q[1];\nrz(0.1) q[1];\n",
+            steps=[1],
+            ham_ops="ZZ",
+        )
+
+        assert sim.depth_history == [[1, 2]]
+
+    @pytest.mark.parametrize(
+        "steps",
+        [
+            pytest.param([], id="empty"),
+            pytest.param([-1, 2], id="negative"),
+            pytest.param([2, 2], id="repeated"),
+            pytest.param([3, 1], id="descending"),
+            pytest.param([0.9, 2.7], id="fractional"),
+            pytest.param([True, 2], id="bool"),
+        ],
+    )
+    def test_steps_must_be_increasing_non_negative_integers(
+        self, make_maestro_simulator, steps
+    ):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "steps must be non-empty, non-negative and strictly increasing "
+                f"integers; got {steps}."
+            ),
+        ):
+            make_maestro_simulator().submit_incremental_evolution(
+                _build_preamble(2),
+                _build_preamble(2),
+                steps=steps,
+                ham_ops="ZI",
+            )
+
+    def test_a_set_cancellation_event_stops_it_before_dispatch(
+        self, make_maestro_simulator, mocker
+    ):
+        evolve = mocker.patch.object(maestro_module.maestro, "incremental_evolve")
+        event = Event()
+        event.set()
+
+        with pytest.raises(ExecutionCancelledError):
+            make_maestro_simulator().submit_incremental_evolution(
+                _build_preamble(2),
+                _build_preamble(2),
+                steps=[1],
+                ham_ops="ZI",
+                cancellation_event=event,
+            )
+        evolve.assert_not_called()

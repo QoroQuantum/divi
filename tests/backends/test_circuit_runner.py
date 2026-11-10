@@ -11,7 +11,7 @@ from qiskit.circuit import Parameter
 
 from divi.backends import CircuitRunner, ExecutionResult, normalise_circuit_batch
 from divi.circuits._payloads import CircuitPayload
-from divi.exceptions import VJPUnavailableError
+from divi.exceptions import IncrementalEvolutionUnavailableError, VJPUnavailableError
 from tests._helpers import exact_match
 
 
@@ -54,6 +54,18 @@ class TestCircuitRunner:
             ),
         ):
             runner.submit_vjp([], ham_ops="Z", cotangents={})
+
+    def test_incremental_evolution_is_unavailable_by_default(self):
+        runner = ConcreteCircuitRunner(shots=100)
+
+        assert runner.supports_incremental_evolution is False
+        with pytest.raises(
+            IncrementalEvolutionUnavailableError,
+            match=exact_match(
+                "ConcreteCircuitRunner cannot evolve a state incrementally."
+            ),
+        ):
+            runner.submit_incremental_evolution("", "", steps=[1], ham_ops="Z")
 
 
 @pytest.mark.parametrize("shots", [1000, np.int64(1000), np.uint16(1000)])

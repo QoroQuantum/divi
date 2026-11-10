@@ -335,9 +335,9 @@ class QuantumProgram(ABC):
             )
         raise TypeError(message)
 
-    @abstractmethod
     def has_results(self) -> bool:
         """Return True once the program has produced results."""
+        return bool(self._results)
 
     def _set_cancellation_event(self, event: Event):
         """Set a cancellation event for graceful program termination.

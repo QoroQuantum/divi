@@ -388,7 +388,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return len(self._losses_history) > 0
 
     def has_results(self) -> bool:
-        return self._has_run_optimization()
+        """Return True once the program has been trained or sampled."""
+        return self._has_run_optimization() or super().has_results()
 
     @property
     def stop_reason(self) -> StopReason | None:

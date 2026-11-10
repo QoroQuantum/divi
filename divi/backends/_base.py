@@ -23,7 +23,7 @@ from divi.backends._shot_allocation import (
     to_wire,
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
-from divi.exceptions import VJPUnavailableError
+from divi.exceptions import IncrementalEvolutionUnavailableError, VJPUnavailableError
 
 
 def normalise_circuit_batch(circuits: CircuitBatch) -> dict[str, str]:
@@ -188,7 +188,6 @@ class CircuitRunner(ABC):
         return self._shots
 
     @property
-    @abstractmethod
     def supports_expval(self) -> bool:
         """
         Whether the backend supports expectation value measurements.
@@ -240,6 +239,47 @@ class CircuitRunner(ABC):
         """
         raise VJPUnavailableError(
             f"{type(self).__name__} cannot compute vector-Jacobian products."
+        )
+
+    @property
+    def supports_incremental_evolution(self) -> bool:
+        """Whether :meth:`submit_incremental_evolution` can evolve a state."""
+        return False
+
+    def submit_incremental_evolution(
+        self,
+        initial_circuit: str,
+        step_circuit: str,
+        *,
+        steps: Sequence[int],
+        ham_ops: str,
+        cancellation_event: Event | None = None,
+    ) -> ExecutionResult:
+        """Expectation values of one state evolved step by step.
+
+        ``initial_circuit`` is prepared once and ``step_circuit`` applied to it
+        repeatedly; the state is measured without collapse after each count in
+        ``steps``.
+
+        Args:
+            initial_circuit: OpenQASM 2.0 preparation of the starting state.
+            step_circuit: OpenQASM 2.0 circuit of one step, on the same register.
+            steps: Step counts to measure at, strictly increasing from zero up.
+            ham_ops: Semicolon-separated Pauli terms, as for
+                :meth:`submit_circuits`.
+            cancellation_event: When set, the backend aborts before dispatch and
+                raises :class:`~divi.exceptions.ExecutionCancelledError`.
+
+        Returns:
+            One entry per step count, labelled by it: ``"results"`` maps each
+            term to its expectation value.
+
+        Raises:
+            IncrementalEvolutionUnavailableError: If the backend cannot evolve
+                a state incrementally.
+        """
+        raise IncrementalEvolutionUnavailableError(
+            f"{type(self).__name__} cannot evolve a state incrementally."
         )
 
     def set_seed(self, seed: int) -> None:

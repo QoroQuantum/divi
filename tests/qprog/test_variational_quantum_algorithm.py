@@ -127,9 +127,6 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 class _BaseSampler(QuantumProgram):
     """Minimal non-VQA host."""
 
-    def has_results(self) -> bool:
-        return bool(self._results)
-
     def run(self):
         return self
 

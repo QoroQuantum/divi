@@ -5,39 +5,27 @@
 import logging
 import warnings
 from collections import Counter, defaultdict
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
-from dataclasses import replace
-from itertools import groupby
-from operator import itemgetter
+from functools import partial
 from threading import Event
 from typing import Any
 
 import numpy as np
-from rich.console import Console
-from rich.tree import Tree
+from qiskit import QuantumCircuit
 
-from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
-from divi.backends._cancellation import (
-    _cancel_job_on_abort,
-    _require_async_backend,
-    _sigint_to_event,
-)
-from divi.circuits._conversions import (
-    _format_bound_param,
-    _sparse_pauli_op_to_ham_string,
-)
-from divi.circuits._payloads import CircuitPayload, flatten_bound_payloads, is_bound
-from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.backends._cancellation import _sigint_to_event
+from divi.exceptions import VJPUnavailableError
 from divi.hamiltonians.trotterization import ExactTrotterization
 from divi.reporting._events import ProgressEvent
 
-from ._compilation import (
-    _batch_has_free_parameters,
-    _compile_batch,
-    batch_lineage,
-    reject_colliding_body_tags,
+from ._compilation import reject_colliding_body_tags
+from ._execution import (
+    _default_execute_fn,
+    _execute_incremental,
+    _execute_vjp,
+    _measurement_artifacts,
 )
 from ._postprocessing import (
     _counts_to_cost_variance,
@@ -46,17 +34,10 @@ from ._postprocessing import (
     _expval_dicts_to_indexed,
     _to_big_endian_histogram,
 )
-from ._result_keys_operations import (
-    FOREIGN_KEY_ATTR,
-    OBS_GROUP_AXIS,
-    PARAM_SET_AXIS,
-    _collapse_to_parent_results,
-    extract_param_set_idx,
-)
+from ._result_keys_operations import FOREIGN_KEY_ATTR
 from .abc import (
     BundleStage,
     ChildResults,
-    ContractViolation,
     DiviPerformanceWarning,
     ExpansionResult,
     MetaCircuitBatch,
@@ -96,38 +77,6 @@ _ForwardCacheKey = tuple[
 ]
 
 
-def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
-    children: dict[str, set[str]] = defaultdict(set)
-    for key in keys:
-        parts = "/".join(f"{axis}:{value}" for axis, value in key).split("/")
-        for i in range(1, len(parts) + 1):
-            children["/".join(parts[: i - 1])].add("/".join(parts[:i]))
-    return {p: sorted(c) for p, c in children.items()}
-
-
-def format_pipeline_tree(trace: PipelineTrace) -> None:
-    """Print the full pipeline expansion tree to the terminal."""
-    keys = list(batch_lineage(trace.final_batch).values())
-    if not keys:
-        print("(empty)")
-        return
-    children = _path_children(keys)
-    roots = children.get("", [])
-
-    def s(p: str) -> str:
-        return p.split("/")[-1]
-
-    def add(tree: Tree, path: str) -> None:
-        for c in children.get(path, []):
-            add(tree.add(s(c)), c)
-
-    root = Tree(s(roots[0])) if len(roots) == 1 else Tree("")
-    for r in roots:
-        add(root if len(roots) == 1 else root.add(s(r)), r)
-
-    Console(no_color=True).print(root)
-
-
 def _report_pipeline_stage(env: "PipelineEnv", stage_name: str | None) -> None:
     """Emit a classical-pipeline phase event when reporting is bound.
 
@@ -138,258 +87,6 @@ def _report_pipeline_stage(env: "PipelineEnv", stage_name: str | None) -> None:
         return
     message = f"Pipeline: {stage_name}" if stage_name else ""
     env._progress_emitter(ProgressEvent.show(env._progress_key, message))
-
-
-def _wait_for_async_result(
-    backend: AsyncJobBackend, execution_result: ExecutionResult, env: "PipelineEnv"
-) -> ExecutionResult:
-    """Poll an async backend until job completes, then fetch results."""
-    job_id = execution_result.job_id
-    if job_id is None:
-        raise ValueError("ExecutionResult must have a job_id for async completion")
-
-    # Build the poll callback when progress delivery is bound.
-    progress_callback = None
-    if env._progress_emitter is not None and env._progress_key is not None:
-        progress_emitter = env._progress_emitter
-        progress_key = env._progress_key
-
-        def progress_callback(n_polls, status):
-            progress_emitter(
-                ProgressEvent.polling(
-                    progress_key,
-                    job_id=job_id,
-                    status=status,
-                    attempt=n_polls,
-                    limit=backend.max_retries,
-                )
-            )
-
-    status = backend.poll_job_status(
-        execution_result,
-        loop_until_complete=True,
-        verbose=progress_callback is None,
-        progress_callback=progress_callback,
-        cancellation_event=env.cancellation_event,
-    )
-
-    if status != JobStatus.COMPLETED:
-        raise RuntimeError(
-            f"Backend poll_job_status returned unexpected status {status} for job {job_id}"
-        )
-
-    return backend.get_job_results(execution_result)
-
-
-def _resolve_branch_shot_count(
-    branch_key: tuple,
-    spec_keys: Sequence[tuple],
-    per_group_shots: Mapping[tuple, dict[int, int]],
-    per_param_group_shots: Mapping[tuple, dict[int, dict[int, int]]],
-) -> int | None:
-    """Resolve one compiled branch to its measurement-stage shot allocation."""
-    branch_axes = set(branch_key)
-    spec_match = next(
-        (spec_key for spec_key in spec_keys if set(spec_key) <= branch_axes), None
-    )
-    if spec_match is None:
-        return None
-
-    obs_group = next(value for axis, value in branch_key if axis == OBS_GROUP_AXIS)
-    if spec_match not in per_param_group_shots:
-        return per_group_shots[spec_match].get(obs_group)
-
-    param_set = next(value for axis, value in branch_key if axis == PARAM_SET_AXIS)
-    return per_param_group_shots[spec_match].get(param_set, {}).get(obs_group)
-
-
-def _build_shot_groups(
-    circuits: Mapping[str, str],
-    lineage_by_label: Mapping[str, tuple],
-    per_group_shots: Mapping[tuple, dict[int, int]] | None = None,
-    per_param_group_shots: Mapping[tuple, dict[int, dict[int, int]]] | None = None,
-) -> list[list[int]] | None:
-    """Translate measurement allocations into backend ``shot_groups``.
-
-    The backend interface accepts ``shot_groups`` as a list of
-    ``[start, end, shots]`` triples covering the iteration order of
-    ``circuits``. Consecutive circuits with identical shot counts are
-    collapsed into a single range. Returns ``None`` if no per-group
-    allocation applies (every circuit's spec is unmapped).
-    """
-    per_group_shots = per_group_shots or {}
-    per_param_group_shots = per_param_group_shots or {}
-    spec_keys = list(dict.fromkeys((*per_param_group_shots, *per_group_shots)))
-    per_circuit_shots = [
-        _resolve_branch_shot_count(
-            lineage_by_label[label],
-            spec_keys,
-            per_group_shots,
-            per_param_group_shots,
-        )
-        for label in circuits
-    ]
-
-    if all(s is None for s in per_circuit_shots):
-        return None
-
-    # Collapse consecutive identical shot counts into [start, end, shots] ranges.
-    shot_groups: list[list[int]] = []
-    for shots, run in groupby(enumerate(per_circuit_shots), key=itemgetter(1)):
-        positions = [i for i, _ in run]
-        if shots is None:
-            raise ValueError(
-                f"Circuit at position {positions[0]} has no per-group shot allocation; "
-                "per_group_shots must cover every submitted circuit."
-            )
-        shot_groups.append([positions[0], positions[-1] + 1, int(shots)])
-
-    return shot_groups
-
-
-def _measurement_artifacts(batch: MetaCircuitBatch) -> dict[str, Any]:
-    """Reconstruct measurement submission metadata from circuit metadata.
-
-    The measurement stage records these on each :class:`MetaCircuit`; this
-    gathers them back into the artifact shape used for backend submission and
-    dry-run reporting.
-    """
-    artifacts: dict[str, Any] = {}
-    per_group_shots = {
-        key: meta.group_shots for key, meta in batch.items() if meta.group_shots
-    }
-    if per_group_shots:
-        artifacts["per_group_shots"] = per_group_shots
-    per_param_group_shots = {
-        key: meta.param_group_shots
-        for key, meta in batch.items()
-        if meta.param_group_shots
-    }
-    if per_param_group_shots:
-        artifacts["per_param_group_shots"] = per_param_group_shots
-    ham_ops = next(
-        (m.backend_ham_ops for m in batch.values() if m.backend_ham_ops is not None),
-        None,
-    )
-    if ham_ops is not None:
-        artifacts["ham_ops"] = ham_ops
-    return artifacts
-
-
-def _record_submission_resources(
-    env: PipelineEnv,
-    circuit_count: int,
-    ham_ops: str | None,
-    shot_groups: Sequence[list[int]] | None,
-) -> None:
-    """Record samples requested by one pending backend submission."""
-    if ham_ops is not None:
-        device_shots = 0
-    elif shot_groups is not None:
-        device_shots = sum((end - start) * shots for start, end, shots in shot_groups)
-    else:
-        device_shots = circuit_count * env.effective_shots
-    env.artifacts["device_shots"] = device_shots
-
-    if env.estimator_samples is not None:
-        env.artifacts["estimator_samples_requested"] = sum(
-            env.estimator_samples.by_param_set
-        )
-
-
-def _default_execute_fn(
-    trace: PipelineTrace,
-    env: PipelineEnv,
-) -> ChildResults:
-    """Default execute: lower MetaCircuit batch to payloads, then run."""
-    backend = env.backend
-    if (
-        _batch_has_free_parameters(trace.final_batch)
-        and not backend.resolves_parameters
-    ):
-        raise ContractViolation(
-            "Batch still carries free parameters at execution, but this "
-            "backend cannot resolve them. Ensure ParameterBindingStage ran, "
-            "or use a backend that sets resolves_parameters."
-        )
-
-    payloads, lineage_by_label, submit_kwargs = _lower_batch(
-        trace.final_batch, env, trace.env_artifacts
-    )
-    result = backend.submit_circuits(
-        payloads, cancellation_event=env.cancellation_event, **submit_kwargs
-    )
-    entries = _await_completed_entries(result, env)
-    return _collapse_to_parent_results(
-        {entry["label"]: entry["results"] for entry in entries}, lineage_by_label
-    )
-
-
-def _lower_batch(
-    batch: MetaCircuitBatch, env: PipelineEnv, artifacts: Mapping[str, Any]
-) -> tuple[list[CircuitPayload], dict[str, tuple], dict[str, Any]]:
-    """Compile ``batch`` to payloads and record what their submission requests.
-
-    Returns the payloads, their ``label -> branch key`` lineage, and the
-    ``ham_ops``/``shot_groups`` keyword arguments for the backend.
-
-    Raises:
-        ExecutionCancelledError: If the run was cancelled before dispatch.
-    """
-    payloads, lineage_by_label = _compile_batch(batch, env.param_sets)
-    env.artifacts["circuit_count"] = sum(
-        len(payload.parameter_sets) for payload in payloads
-    )
-
-    submit_kwargs: dict[str, Any] = {}
-    ham_ops = artifacts.get("ham_ops")
-    if ham_ops is not None:
-        submit_kwargs["ham_ops"] = ham_ops
-
-    per_group_shots = artifacts.get("per_group_shots")
-    per_param_group_shots = artifacts.get("per_param_group_shots")
-    shot_groups = None
-    if per_group_shots or per_param_group_shots:
-        if not is_bound(payloads):
-            raise ValueError(
-                "Per-group shot allocation needs bound circuits, but the batch "
-                "reached execution with free parameters for the backend to "
-                "resolve. Add a ParameterBindingStage to the pipeline so each "
-                "circuit is bound before its group's shots are applied."
-            )
-        shot_groups = _build_shot_groups(
-            flatten_bound_payloads(payloads),
-            lineage_by_label,
-            per_group_shots,
-            per_param_group_shots,
-        )
-        if shot_groups is not None:
-            submit_kwargs["shot_groups"] = shot_groups
-
-    _record_submission_resources(
-        env,
-        env.artifacts["circuit_count"],
-        ham_ops,
-        shot_groups,
-    )
-    if env.cancellation_event is not None and env.cancellation_event.is_set():
-        raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
-    return payloads, lineage_by_label, submit_kwargs
-
-
-def _await_completed_entries(result: ExecutionResult, env: PipelineEnv) -> list[dict]:
-    """Wait for ``result``, record its jobs and run time, and return its entries."""
-    env.artifacts["backend_jobs"] = result.backend_jobs
-
-    if result.is_async():
-        backend = _require_async_backend(env.backend)
-        with _cancel_job_on_abort(backend, result):
-            result = _wait_for_async_result(backend, result, env)
-
-    if result.results is None:
-        raise RuntimeError("Backend returned no results")
-    env.artifacts["run_time"] = env.artifacts.get("run_time", 0.0) + result.run_time
-    return result.results
 
 
 @contextmanager
@@ -584,44 +281,7 @@ class CircuitPipeline:
 
             with _sigint_to_cancellation(env):
                 raw = execute_fn(plan, env)
-
-            # Convert raw backend results into the canonical format the
-            # measurement stage recorded on the circuits.  This runs *before*
-            # the reduce chain so downstream stages receive the expected type.
-            result_format = next(
-                (
-                    meta.result_format
-                    for meta in plan.final_batch.values()
-                    if meta.result_format is not None
-                ),
-                None,
-            )
-            if result_format is not None:
-                if result_format is ResultFormat.PROBS:
-                    raw = _counts_to_probs(raw, env.backend.shots)
-                elif result_format is ResultFormat.COUNTS:
-                    raw = {
-                        key: _to_big_endian_histogram(key, counts)
-                        for key, counts in raw.items()
-                    }
-                elif result_format is ResultFormat.EXPVALS:
-                    ham_ops = plan.env_artifacts.get("ham_ops")
-                    if ham_ops is not None:
-                        # Backend-native expval: no shot counts, so a shot-noise
-                        # variance is undefined; cost_variance is left unset and
-                        # consumers default to nan.
-                        raw = _expval_dicts_to_indexed(raw, ham_ops)
-                    else:
-                        if env.collect_variance:
-                            env.artifacts["cost_variance"] = _measurement_cost_variance(
-                                self._stages, raw, plan
-                            )
-                        raw = _counts_to_expvals(raw, plan.final_batch)
-
-            result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))
-            if any(meta._was_multi_obs for meta in plan.initial_batch.values()):
-                result._squeeze = False
-            return result
+            return self._build_result(raw, env, plan)
         finally:
             # A pipeline run owns only its transient stage/polling phase;
             # clear it so no run leaks a live spinner.
@@ -672,92 +332,84 @@ class CircuitPipeline:
                 "The pipeline must bind parameters in its last stage."
             )
         vjps: dict[int, np.ndarray] = {}
-
-        def execute(trace: PipelineTrace, env: PipelineEnv) -> ChildResults:
-            measured = trace.stage_expansions[-2].batch
-            artifacts = _measurement_artifacts(measured)
-            ham_ops = artifacts.get("ham_ops")
-            # Backend expectation values are chosen only when every node shares one.
-            observable = next(iter(measured.values())).observable
-            if ham_ops is None or observable is None:
-                raise VJPUnavailableError(
-                    "Vector-Jacobian products need the backend to compute "
-                    "expectation values."
-                )
-            if artifacts.get("per_group_shots") or artifacts.get(
-                "per_param_group_shots"
-            ):
-                raise VJPUnavailableError(
-                    "Vector-Jacobian products cannot follow per-group shot allocations."
-                )
-            if any(
-                node.result_format is not ResultFormat.EXPVALS
-                for node in measured.values()
-            ):
-                raise VJPUnavailableError(
-                    "Vector-Jacobian products need expectation values."
-                )
-
-            payloads, lineage_by_label, _ = _lower_batch(
-                binding._run_qasm_payloads(measured), env, artifacts
-            )
-            param_set_of = {
-                label: extract_param_set_idx(branch)
-                for label, branch in lineage_by_label.items()
-            }
-            if sorted(param_set_of.values()) != list(range(len(cotangents))):
-                raise VJPUnavailableError(
-                    "Vector-Jacobian products need exactly one circuit per parameter "
-                    "set."
-                )
-
-            (node,) = measured.values()
-            (payload,) = payloads
-            observables = observable if isinstance(observable, tuple) else (observable,)
-            if cotangents.shape[1] != len(observables):
-                raise ValueError(
-                    f"Got {cotangents.shape[1]} cotangents per parameter set for "
-                    f"{len(observables)} observables."
-                )
-            terms = ham_ops.split(";")
-            slot = {term: i for i, term in enumerate(terms)}
-            weights = np.zeros((len(observables), len(terms)))
-            for row, obs in enumerate(observables):
-                for term, coeff in zip(
-                    _sparse_pauli_op_to_ham_string(obs).split(";"), obs.coeffs
-                ):
-                    weights[row, slot[term]] += coeff.real
-
-            # Rounded as bound circuits render them, so cost and gradient share a point.
-            rounded = tuple(
-                (
-                    label,
-                    tuple(
-                        float(_format_bound_param(v, node.precision)) for v in values
-                    ),
-                )
-                for label, values in payload.parameter_sets
-            )
-            result = env.backend.submit_vjp(
-                [replace(payload, parameter_sets=rounded)],
-                ham_ops=ham_ops,
-                cotangents={
-                    label: cotangents[idx] @ weights
-                    for label, idx in param_set_of.items()
-                },
-                cancellation_event=env.cancellation_event,
-            )
-            entries = _await_completed_entries(result, env)
-            for entry in entries:
-                vjps[param_set_of[entry["label"]]] = np.asarray(
-                    entry["metadata"]["vjp"]
-                )
-            return _collapse_to_parent_results(
-                {entry["label"]: entry["results"] for entry in entries},
-                lineage_by_label,
-            )
-
+        execute = partial(
+            _execute_vjp, binding=binding, cotangents=cotangents, vjps=vjps
+        )
         return self.run(initial_spec, env, execute_fn=execute), vjps
+
+    def run_incremental(
+        self,
+        initial_spec: Any,
+        env: PipelineEnv,
+        initial_state: QuantumCircuit,
+        steps: Sequence[int],
+    ) -> list[PipelineResult]:
+        """Run the pipeline, evolving one state through repeats of its circuit.
+
+        The pipeline's single bound circuit is one step, applied to
+        ``initial_state`` by ``env.backend``'s
+        :meth:`~divi.backends.CircuitRunner.submit_incremental_evolution`.
+
+        Args:
+            initial_spec: Input for the spec stage.
+            env: Pipeline environment.
+            initial_state: Preparation of the state the first step acts on.
+            steps: Step counts to measure at, strictly increasing.
+
+        Returns:
+            One result per entry of ``steps``, each as :meth:`run` gives it.
+
+        Raises:
+            IncrementalEvolutionUnavailableError: If the run does not measure
+                backend expectation values of exactly one bound circuit, or the
+                backend refuses.
+        """
+        try:
+            plan = self.run_forward_pass(initial_spec, env)
+            _report_pipeline_stage(env, None)
+            with _sigint_to_cancellation(env):
+                per_step = _execute_incremental(plan, env, initial_state, list(steps))
+            return [self._build_result(raw, env, plan) for raw in per_step]
+        finally:
+            _report_pipeline_stage(env, None)
+
+    def _build_result(
+        self, raw: ChildResults, env: PipelineEnv, plan: PipelineTrace
+    ) -> PipelineResult:
+        """Convert ``raw`` to the recorded result format and reduce it."""
+        result_format = next(
+            (
+                meta.result_format
+                for meta in plan.final_batch.values()
+                if meta.result_format is not None
+            ),
+            None,
+        )
+        if result_format is ResultFormat.PROBS:
+            raw = _counts_to_probs(raw, env.backend.shots)
+        elif result_format is ResultFormat.COUNTS:
+            raw = {
+                key: _to_big_endian_histogram(key, counts)
+                for key, counts in raw.items()
+            }
+        elif result_format is ResultFormat.EXPVALS:
+            ham_ops = plan.env_artifacts.get("ham_ops")
+            if ham_ops is not None:
+                # Backend-native expval: no shot counts, so a shot-noise
+                # variance is undefined; cost_variance is left unset and
+                # consumers default to nan.
+                raw = _expval_dicts_to_indexed(raw, ham_ops)
+            else:
+                if env.collect_variance:
+                    env.artifacts["cost_variance"] = _measurement_cost_variance(
+                        self._stages, raw, plan
+                    )
+                raw = _counts_to_expvals(raw, plan.final_batch)
+
+        result = PipelineResult(self._reduce(raw, env, plan.stage_tokens))
+        if any(meta._was_multi_obs for meta in plan.initial_batch.values()):
+            result._squeeze = False
+        return result
 
     def run_forward_pass(
         self,

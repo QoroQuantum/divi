@@ -2184,7 +2184,7 @@ class ProgramEnsemble(ABC):
             self.join()
 
         for program in self._programs.values():
-            if not program.has_results() and not program._results:
+            if not program.has_results():
                 raise RuntimeError(
                     "Some/All programs have no results. "
                     "Did you call run() or sample_solution()?"

@@ -11,7 +11,6 @@ from ._core import (
     PipelineTrace,
     SpecStage,
     Stage,
-    format_pipeline_tree,
 )
 from ._dry_run import (
     DryRunReport,
@@ -19,7 +18,7 @@ from ._dry_run import (
     StageInfo,
     dry_run_pipeline,
 )
-from ._dry_run_format import format_dry_run
+from ._dry_run_format import format_dry_run, format_pipeline_tree
 from ._grouping import GroupingStrategy
 from ._preprocessor import (
     CircuitPreprocessor,

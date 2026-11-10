@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.pipeline._core: validation, CircuitPipeline, compilation, format_pipeline_tree."""
+"""Tests for CircuitPipeline: validation, compilation, execution and format_pipeline_tree."""
 
 import signal
 import threading
@@ -29,7 +29,11 @@ from divi.backends import (
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
 from divi.circuits._payloads import flatten_bound_payloads
-from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.exceptions import (
+    ExecutionCancelledError,
+    IncrementalEvolutionUnavailableError,
+    VJPUnavailableError,
+)
 from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import (
     CircuitPipeline,
@@ -50,11 +54,10 @@ from divi.pipeline._compilation import (
     _compile_batch,
     reject_colliding_body_tags,
 )
-from divi.pipeline._core import (
+from divi.pipeline._core import _scope_token, _sigint_to_cancellation
+from divi.pipeline._execution import (
     _build_shot_groups,
     _default_execute_fn,
-    _scope_token,
-    _sigint_to_cancellation,
     _wait_for_async_result,
 )
 from divi.pipeline.abc import BundleStage
@@ -2046,3 +2049,93 @@ class TestCircuitPipelineRunVJP:
         np.testing.assert_allclose(
             vjps[0], jacobian @ _COTANGENTS[0], rtol=0, atol=1e-7
         )
+
+
+_STEP_OBSERVABLES = (
+    SparsePauliOp.from_list([("ZI", 1.0), ("II", 0.25)]),
+    SparsePauliOp.from_list([("XX", 0.5), ("IZ", -1.0)]),
+)
+_NO_PARAMETERS = np.empty((1, 0))
+
+
+def _build_step_body(repetitions: int, *, initial: bool) -> QuantumCircuit:
+    qc = QuantumCircuit(2)
+    if initial:
+        qc.h(0)
+    for _ in range(repetitions):
+        qc.rx(0.3, 0)
+        qc.cx(0, 1)
+        qc.rz(0.2, 1)
+    return qc
+
+
+def _build_step_meta(body: QuantumCircuit) -> MetaCircuit:
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(body)),), observable=_STEP_OBSERVABLES
+    )
+
+
+class TestCircuitPipelineRunIncremental:
+    def test_matches_running_each_step_count_as_one_circuit_on_maestro(
+        self, default_test_simulator
+    ):
+        pipeline = _cost_pipeline()
+        steps = (0, 1, 3)
+
+        per_step = pipeline.run_incremental(
+            _build_step_meta(_build_step_body(1, initial=False)),
+            PipelineEnv(backend=default_test_simulator, param_sets=_NO_PARAMETERS),
+            _build_step_body(0, initial=True),
+            steps,
+        )
+
+        assert len(per_step) == len(steps)
+        for result, k in zip(per_step, steps, strict=True):
+            alone = pipeline.run(
+                _build_step_meta(_build_step_body(k, initial=True)),
+                PipelineEnv(backend=default_test_simulator, param_sets=_NO_PARAMETERS),
+            )
+            np.testing.assert_allclose(result.value, alone.value, rtol=0, atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "backend_fixture, spec, message",
+        [
+            pytest.param(
+                "dummy_simulator",
+                _build_step_meta(_build_step_body(1, initial=False)),
+                "Incremental evolution needs the backend to compute expectation "
+                "values.",
+                id="sampled-measurement",
+            ),
+            pytest.param(
+                "default_test_simulator",
+                [
+                    _build_step_meta(_build_step_body(1, initial=False)),
+                    _build_step_meta(_build_step_body(2, initial=False)),
+                ],
+                "Incremental evolution needs exactly one bound circuit.",
+                id="two-circuits",
+            ),
+            pytest.param(
+                "dummy_expval_backend",
+                _build_step_meta(_build_step_body(1, initial=False)),
+                "DummyExpvalBackend cannot evolve a state incrementally.",
+                id="backend-without-support",
+            ),
+        ],
+    )
+    def test_refuses_what_it_cannot_evolve(
+        self, request, backend_fixture, spec, message
+    ):
+        with pytest.raises(
+            IncrementalEvolutionUnavailableError, match=exact_match(message)
+        ):
+            _cost_pipeline().run_incremental(
+                spec,
+                PipelineEnv(
+                    backend=request.getfixturevalue(backend_fixture),
+                    param_sets=_NO_PARAMETERS,
+                ),
+                _build_step_body(0, initial=True),
+                (1,),
+            )
