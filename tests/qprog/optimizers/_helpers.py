@@ -8,8 +8,10 @@ import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
+from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits import MetaCircuit
 from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.algorithms import VQE, CustomVQA, GenericLayerAnsatz
 from divi.qprog.problems import HamiltonianProblem
@@ -26,6 +28,20 @@ def program_with_cost_circuit(mocker, cost_circuit):
     program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
     program.cost_circuit = cost_circuit
     return program
+
+
+def make_one_qubit_meta(gates, order=None) -> MetaCircuit:
+    """``gates`` is a sequence of ``(rotation, parameter name)``; ``order`` names
+    the parameter order (defaults to first use)."""
+    params = {name: Parameter(name) for _, name in gates}
+    qc = QuantumCircuit(1)
+    for rotation, name in gates:
+        getattr(qc, rotation)(params[name], 0)
+    names = order or list(params)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=tuple(params[name] for name in names),
+    )
 
 
 def sphere_cost_fn_population(params: np.ndarray) -> np.ndarray:

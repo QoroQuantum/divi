@@ -15,9 +15,9 @@ which metric is in play.
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from itertools import islice
-from typing import TYPE_CHECKING, Any
+from dataclasses import replace
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -76,19 +76,20 @@ def _run_metric_by_branch(
     )
 
 
-#: Cap on distinct overlap circuits cached per fidelity evaluator. A fixed
-#: ansatz needs one entry; the cap only bounds pathological growth.
-_OVERLAP_CACHE_CAP = 128
+#: Cap on distinct ansatz structures held by one :func:`_memoize_by_ansatz` cache.
+#: A fixed ansatz needs one entry; the cap only bounds pathological growth.
+_ANSATZ_CACHE_CAP = 128
 
 #: One gate's contribution to an ansatz fingerprint: name, qubit indices, params.
 _GateKey = tuple[str, tuple[int, ...], tuple[str, ...]]
 #: Full ansatz fingerprint: ordered parameter names plus the gate sequence.
 _AnsatzKey = tuple[tuple[str, ...], tuple[_GateKey, ...]]
+_T = TypeVar("_T")
 
 
 def _ansatz_fingerprint(meta: MetaCircuit) -> _AnsatzKey:
-    """Structural key for a cost ansatz body — the exact input to
-    ``build_overlap_meta`` — so a deterministic ansatz is built once and reused.
+    """Structural key for a cost ansatz body, under which
+    :func:`_memoize_by_ansatz` reuses what it built from a deterministic ansatz.
 
     Keyed on parameter *names* (the spec stage may re-instantiate ``Parameter``
     objects between evaluations, but names are stable) in their forward-binding
@@ -102,9 +103,27 @@ def _ansatz_fingerprint(meta: MetaCircuit) -> _AnsatzKey:
             tuple(bit_index[q] for q in node.qargs),
             tuple(str(p) for p in node.op.params),
         )
-        for node in dag.topological_op_nodes()
+        for node in dag.op_nodes()
     )
     return tuple(str(p) for p in meta.parameters), gates
+
+
+def _memoize_by_ansatz(
+    build: Callable[[MetaCircuit], _T],
+) -> Callable[[MetaCircuit], _T]:
+    """Wrap ``build`` so each distinct ansatz structure is built once; the cache
+    clears when it reaches ``_ANSATZ_CACHE_CAP``."""
+    cache: dict[_AnsatzKey, _T] = {}
+
+    def lookup(meta: MetaCircuit) -> _T:
+        key = _ansatz_fingerprint(meta)
+        if key not in cache:
+            if len(cache) >= _ANSATZ_CACHE_CAP:
+                cache.clear()
+            cache[key] = build(meta)
+        return cache[key]
+
+    return lookup
 
 
 def _overlap_preprocessor(
@@ -337,15 +356,9 @@ class PullbackMetricEstimator(MetricEstimator):
         return (_all_terms_preprocessor(),)
 
 
-def _split_into_terms(
-    hamiltonian: SparsePauliOp,
-) -> tuple[tuple[SparsePauliOp, ...], npt.NDArray[np.float64]]:
-    """Split into single-term, unit-coefficient observables and the matching
-    real coefficients."""
-    return (
-        tuple(SparsePauliOp(label) for label in hamiltonian.paulis.to_labels()),
-        np.real(hamiltonian.coeffs).astype(np.float64),
-    )
+def _split_into_terms(hamiltonian: SparsePauliOp) -> tuple[SparsePauliOp, ...]:
+    """Split into single-term, unit-coefficient observables."""
+    return tuple(SparsePauliOp(label) for label in hamiltonian.paulis.to_labels())
 
 
 def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
@@ -356,9 +369,7 @@ def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
             "The pullback metric requires each cost branch to carry a loss observable."
         )
     terms = tuple(
-        term
-        for observable in meta.observable
-        for term in _split_into_terms(observable)[0]
+        term for observable in meta.observable for term in _split_into_terms(observable)
     )
     if not terms:
         raise ContractViolation(
@@ -427,7 +438,7 @@ def _term_expectations(
             )
         weights = np.concatenate(
             [
-                _split_into_terms(observable)[1] * loss_gradient[j]
+                np.real(observable.coeffs) * loss_gradient[j]
                 for j, observable in enumerate(source_meta.observable)
             ]
         )
@@ -486,27 +497,36 @@ class FubiniStudyMetricEstimator(MetricEstimator):
         _fs_blocks(program.cost_circuit)
         _reject_data_bound(program, "Fubini–Study")
 
+    @cached_property
+    def _layouts_for(self) -> Callable[[MetaCircuit], list["_FSBlockLayout"]]:
+        """Block layouts per ansatz structure, shared by bind and preprocessors."""
+        return _memoize_by_ansatz(_build_fs_block_layouts)
+
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        blocks, full_params, _ = _fs_blocks(program.cost_circuit)
+        layouts_for = self._layouts_for
+        routines = _build_fs_routines(program, layouts_for)
+        n_params = len(program.cost_circuit.parameters)
 
         def metric_fn(params: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
             theta = np.asarray(params, dtype=np.float64).reshape(-1)
+            layouts_by_branch = {
+                branch_key: layouts_for(meta)
+                for branch_key, meta in program._post_spec_batch().items()
+            }
             branch_metrics: dict[tuple, npt.NDArray[np.float64]] = {}
-            for block_id, _ in enumerate(blocks):
-                blocks_by_branch = _fs_block_covariance(
-                    program,
-                    full_params,
-                    theta,
-                    block_id,
+            for block_id, (preprocessor, prefix_names, gather) in enumerate(routines):
+                measured = _run_metric_by_branch(
+                    program, preprocessor, theta[gather][np.newaxis]
+                )
+                blocks_by_branch = _compute_fs_block_covariance(
+                    measured, layouts_by_branch, block_id, prefix_names
                 )
                 for branch_key, (indices, block) in blocks_by_branch.items():
                     metric = branch_metrics.setdefault(
-                        branch_key, np.zeros((len(full_params), len(full_params)))
+                        branch_key, np.zeros((n_params, n_params))
                     )
-                    for a, ia in enumerate(indices):
-                        for b, ib in enumerate(indices):
-                            # One parameter may drive several gates; they add.
-                            metric[ia, ib] += block[a, b]
+                    # One parameter may drive several gates; they add.
+                    np.add.at(metric, np.ix_(indices, indices), block)
             return np.mean(list(branch_metrics.values()), axis=0)
 
         return {"metric_fn": metric_fn}
@@ -515,18 +535,8 @@ class FubiniStudyMetricEstimator(MetricEstimator):
         self, program: "VariationalQuantumAlgorithm"
     ) -> tuple[CircuitPreprocessor, ...]:
         self.check_compatible(program)
-        # One prefix-measurement routine per commuting-gate block, keyed by the
-        # block's prefix parameter names (as _measure_prefix_paulis does).
-        blocks, full_params, n_qubits = _fs_blocks(program.cost_circuit)
-        return tuple(
-            _fs_prefix_labels_preprocessor(
-                block_id,
-                tuple(
-                    p.name for p in _fs_prefix_params(prefix_ops, full_params, n_qubits)
-                ),
-            )
-            for block_id, (prefix_ops, _) in enumerate(blocks)
-        )
+        routines = _build_fs_routines(program, self._layouts_for)
+        return tuple(preprocessor for preprocessor, _, _ in routines)
 
 
 class StochasticFidelityMetricEstimator(MetricEstimator):
@@ -562,19 +572,7 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
         :meth:`preprocessors`. Overlap circuits are built lazily and cached by
         ansatz structure, so this does no circuit work until the routine runs.
         """
-        overlap_cache: dict[_AnsatzKey, MetaCircuit] = {}
-
-        def _overlap_for(meta: MetaCircuit) -> MetaCircuit:
-            key = _ansatz_fingerprint(meta)
-            overlap = overlap_cache.get(key)
-            if overlap is None:
-                if len(overlap_cache) >= _OVERLAP_CACHE_CAP:
-                    overlap_cache.clear()
-                overlap = build_overlap_meta(meta)
-                overlap_cache[key] = overlap
-            return overlap
-
-        return _overlap_preprocessor(_overlap_for)
+        return _overlap_preprocessor(_memoize_by_ansatz(build_overlap_meta))
 
     def preprocessors(
         self, program: "VariationalQuantumAlgorithm"
@@ -611,40 +609,16 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
         return {"fidelity_fn": fidelity_fn}
 
 
-@dataclass(frozen=True)
-class _PrefixOpsView(Sequence[tuple]):
-    """Immutable prefix view over one shared operation tape."""
-
-    operations: tuple[tuple, ...]
-    stop: int
-
-    def __len__(self) -> int:
-        return self.stop
-
-    def __iter__(self):
-        yield from islice(self.operations, self.stop)
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return tuple(
-                self.operations[position]
-                for position in range(*index.indices(self.stop))
-            )
-        position = index + self.stop if index < 0 else index
-        if not 0 <= position < self.stop:
-            raise IndexError(index)
-        return self.operations[position]
-
-
 def _fs_blocks(
     cost_circuit: MetaCircuit,
-) -> tuple[list[tuple[Sequence[tuple], list]], list[Parameter], int]:
+) -> tuple[tuple[tuple, ...], list[tuple[int, list]], list[Parameter], int]:
     """Layer the ansatz into blocks of commuting parametric gates.
 
-    Returns ``(blocks, full_params, n_qubits)`` where each block is
-    ``(prefix_ops, [(param_index, generator)])``: ``prefix_ops`` is the list of
-    ``(operation, wire_indices)`` applied before the block (its pre-state), and
-    each generator is the ``SparsePauliOp`` of the corresponding parametric gate.
+    Returns ``(tape, blocks, full_params, n_qubits)``: ``tape`` is every
+    ``(operation, wire_indices)`` in order, and each block is
+    ``(prefix_end, [(param_index, generator)])`` where ``tape[:prefix_end]`` is
+    applied before the block (its pre-state) and each generator is the
+    ``SparsePauliOp`` of the corresponding parametric gate.
     A block closes on a non-parametric gate or a wire conflict, so within a block
     the generators act on disjoint wires and therefore commute.
     """
@@ -653,7 +627,7 @@ def _fs_blocks(
     param_indices = {param: index for index, param in enumerate(full_params)}
     n = dag.num_qubits()
 
-    block_boundaries: list[tuple[int, list]] = []
+    blocks: list[tuple[int, list]] = []
     prefix_ops: list[tuple] = []
     cur: list[tuple[int, SparsePauliOp]] = []
     cur_wires: set[int] = set()
@@ -662,7 +636,7 @@ def _fs_blocks(
     def close() -> None:
         nonlocal cur, cur_wires
         if cur:
-            block_boundaries.append((cur_prefix_end, cur))
+            blocks.append((cur_prefix_end, cur))
         cur, cur_wires = [], set()
 
     # Walk in original circuit insertion order: ``dag.op_nodes()`` yields nodes in
@@ -697,28 +671,42 @@ def _fs_blocks(
             close()
         prefix_ops.append((node.op, wires))
     close()
-    operation_tape = tuple(prefix_ops)
-    blocks: list[tuple[Sequence[tuple], list]] = [
-        (_PrefixOpsView(operation_tape, prefix_end), entries)
-        for prefix_end, entries in block_boundaries
-    ]
-    return blocks, full_params, n
+    return tuple(prefix_ops), blocks, full_params, n
 
 
-def _fs_block_covariance(
-    program: "VariationalQuantumAlgorithm",
-    full_params: Sequence[Parameter],
-    theta: npt.NDArray[np.float64],
+#: Per Fubini–Study block: the pre-state measurement circuit (every needed
+#: label as one observable), then the block's parameter indices, generators
+#: and labels.
+_FSBlockLayout = tuple[
+    MetaCircuit, tuple[int, ...], tuple[SparsePauliOp, ...], tuple[str, ...]
+]
+
+
+def _compute_fs_block_covariance(
+    measured: Mapping[tuple, Mapping[int, npt.NDArray[np.float64]]],
+    layouts_by_branch: Mapping[tuple, Sequence[_FSBlockLayout]],
     block_id: int,
+    reference_prefix_param_names: Sequence[str],
 ) -> dict[tuple, tuple[tuple[int, ...], npt.NDArray[np.float64]]]:
-    """``g_ij = 1/2 <{K_i, K_j}> - <K_i><K_j>`` on the block's pre-state."""
-    exp_by_branch, branch_data = _measure_prefix_paulis(
-        program, full_params, theta, block_id
-    )
-
+    """``g_ij = 1/2 <{K_i, K_j}> - <K_i><K_j>`` on each measured branch's
+    block pre-state, with the block layouts taken from the cost cohort."""
     blocks: dict[tuple, tuple[tuple[int, ...], npt.NDArray[np.float64]]] = {}
-    for branch_key, exp in exp_by_branch.items():
-        indices, generators = branch_data[branch_key]
+    for branch_key, values_by_param in measured.items():
+        layouts = layouts_by_branch.get(branch_key)
+        if layouts is None:
+            raise ContractViolation(
+                "A measured Fubini-Study branch is absent from the cost cohort."
+            )
+        _, indices, generators, labels = _select_fs_block_layout(
+            layouts, block_id, reference_prefix_param_names
+        )
+        vec = np.asarray(values_by_param[0], dtype=np.float64).reshape(-1)
+        if vec.shape[0] != len(labels):
+            raise ContractViolation(
+                "Fubini-Study per-label measurement count does not match the "
+                "branch's label count."
+            )
+        exp = dict(zip(labels, vec.tolist()))
         blocks[branch_key] = (indices, _fs_block_from_expectations(generators, exp))
     return blocks
 
@@ -734,81 +722,6 @@ def _fs_block_from_expectations(
         exp[label] for label in pair_labels
     ]
     return 0.25 * (correlation - np.outer(single, single))
-
-
-def _measure_prefix_paulis(
-    program: "VariationalQuantumAlgorithm",
-    full_params: Sequence[Parameter],
-    theta: npt.NDArray[np.float64],
-    block_id: int,
-) -> tuple[
-    dict[tuple, dict[str, float]],
-    dict[tuple, tuple[tuple[int, ...], tuple[SparsePauliOp, ...]]],
-]:
-    """Measure every Pauli label a Fubini-Study block needs on each sampled
-    block pre-state in one multi-observable pass.
-
-    Returns ``(exp_by_branch, branch_data)``: the per-branch ``{label: <P>}``
-    expectations and the per-branch ``(indices, generators)`` block structure,
-    the latter recomputed from the cost cohort (``_post_spec_batch``)
-    rather than smuggled out through a closure.
-    """
-    reference_blocks, _, n_qubits = _fs_blocks(program.cost_circuit)
-    if block_id >= len(reference_blocks):
-        raise ContractViolation(
-            "The Fubini-Study block index is outside the reference ansatz."
-        )
-
-    reference_prefix_ops, _ = reference_blocks[block_id]
-    reference_prefix_params = _fs_prefix_params(
-        reference_prefix_ops, full_params, n_qubits
-    )
-    reference_prefix_param_names = tuple(p.name for p in reference_prefix_params)
-    param_indices = {param: index for index, param in enumerate(full_params)}
-    values = np.array(
-        [[theta[param_indices[p]] for p in reference_prefix_params]],
-        dtype=np.float64,
-    )
-
-    preprocessor = _fs_prefix_labels_preprocessor(
-        block_id, reference_prefix_param_names
-    )
-    indexed = _run_metric_by_branch(program, preprocessor, values)
-    source = program._post_spec_batch()
-
-    exp_by_branch: dict[tuple, dict[str, float]] = {}
-    branch_data: dict[tuple, tuple[tuple[int, ...], tuple[SparsePauliOp, ...]]] = {}
-    for branch_key, values_by_param in indexed.items():
-        source_meta = source.get(branch_key)
-        if source_meta is None:
-            raise ContractViolation(
-                "A measured Fubini-Study branch is absent from the cost cohort."
-            )
-        _, _, indices, generators, labels = _fs_block_prefix(
-            source_meta, block_id, reference_prefix_param_names
-        )
-        branch_data[branch_key] = (indices, generators)
-        vec = np.asarray(values_by_param[0], dtype=np.float64).reshape(-1)
-        if vec.shape[0] != len(labels):
-            raise ContractViolation(
-                "Fubini-Study per-label measurement count does not match the "
-                "branch's label count."
-            )
-        exp_by_branch[branch_key] = {
-            label: float(vec[i]) for i, label in enumerate(labels)
-        }
-    return exp_by_branch, branch_data
-
-
-def _fs_prefix_params(
-    prefix_ops: Sequence[tuple],
-    full_params: Sequence[Parameter],
-    n_qubits: int,
-) -> tuple[Parameter, ...]:
-    prefix = QuantumCircuit(n_qubits)
-    for op, wires in prefix_ops:
-        prefix.append(op, wires)
-    return tuple(p for p in full_params if p in prefix.parameters)
 
 
 def _fs_generator_labels(
@@ -836,65 +749,86 @@ def _fs_needed_labels(generators: Sequence[SparsePauliOp]) -> tuple[str, ...]:
     return tuple(sorted({*single_labels, *pair_labels}))
 
 
-def _fs_block_prefix(
-    meta: MetaCircuit,
+def _build_fs_block_layouts(meta: MetaCircuit) -> list[_FSBlockLayout]:
+    """Every block's layout, from one walk of the ansatz."""
+    tape, blocks, full_params, n_qubits = _fs_blocks(meta)
+    prefix = QuantumCircuit(n_qubits)
+    position = 0
+    layouts: list[_FSBlockLayout] = []
+    for prefix_end, entries in blocks:
+        for op, wires in tape[position:prefix_end]:
+            prefix.append(op, wires)
+        position = prefix_end
+        present = set(prefix.parameters)
+        generators = tuple(generator for _, generator in entries)
+        labels = _fs_needed_labels(generators)
+        prefix_meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(prefix)),),
+            parameters=tuple(p for p in full_params if p in present),
+            observable=tuple(SparsePauliOp(label) for label in labels),
+            _was_multi_obs=True,
+        )
+        layouts.append(
+            (prefix_meta, tuple(index for index, _ in entries), generators, labels)
+        )
+    return layouts
+
+
+def _select_fs_block_layout(
+    layouts: Sequence[_FSBlockLayout],
     block_id: int,
     reference_prefix_param_names: Sequence[str],
-) -> tuple[
-    QuantumCircuit,
-    tuple[Parameter, ...],
-    tuple[int, ...],
-    tuple[SparsePauliOp, ...],
-    tuple[str, ...],
-]:
-    """Block pre-state circuit and its generator/label data for one FS block.
-
-    Pure function of the (sampled) branch meta — used both to build the
-    measurement observable and to recompute per-branch block structure from the
-    cost cohort, so no data needs smuggling through a closure.
-    """
-    blocks, branch_params, n_qubits = _fs_blocks(meta)
-    if block_id >= len(blocks):
+) -> _FSBlockLayout:
+    """One branch's layout for ``block_id``, checked against the reference ansatz."""
+    if block_id >= len(layouts):
         raise ContractViolation(
             "A sampled metric branch has fewer Fubini-Study blocks than "
             "the reference ansatz."
         )
-
-    prefix_ops, entries = blocks[block_id]
-    indices = tuple(index for index, _ in entries)
-    generators = tuple(generator for _, generator in entries)
-    labels = _fs_needed_labels(generators)
-
-    prefix = QuantumCircuit(n_qubits)
-    for op, wires in prefix_ops:
-        prefix.append(op, wires)
-    prefix_params = tuple(p for p in branch_params if p in prefix.parameters)
-    if tuple(p.name for p in prefix_params) != reference_prefix_param_names:
+    layout = layouts[block_id]
+    if tuple(p.name for p in layout[0].parameters) != tuple(
+        reference_prefix_param_names
+    ):
         raise ContractViolation(
             "A sampled metric branch has a different Fubini-Study prefix "
             "parameter layout than the reference ansatz."
         )
-    return prefix, prefix_params, indices, generators, labels
+    return layout
+
+
+def _build_fs_routines(
+    program: "VariationalQuantumAlgorithm",
+    layouts_for: Callable[[MetaCircuit], list[_FSBlockLayout]],
+) -> list[tuple[CircuitPreprocessor, tuple[str, ...], npt.NDArray[np.intp]]]:
+    """Per reference block: its measurement preprocessor, prefix parameter
+    names, and the indices that gather those parameters from ``theta``."""
+    cost_circuit = program.cost_circuit
+    param_index = {p.name: i for i, p in enumerate(cost_circuit.parameters)}
+    routines = []
+    for block_id, (prefix_meta, *_) in enumerate(layouts_for(cost_circuit)):
+        names = tuple(p.name for p in prefix_meta.parameters)
+        routines.append(
+            (
+                _fs_prefix_labels_preprocessor(block_id, names, layouts_for),
+                names,
+                np.array([param_index[name] for name in names], dtype=np.intp),
+            )
+        )
+    return routines
 
 
 def _fs_prefix_labels_preprocessor(
     block_id: int,
     reference_prefix_param_names: Sequence[str],
+    layouts_for: Callable[[MetaCircuit], list[_FSBlockLayout]],
 ) -> CircuitPreprocessor:
     """Cacheable preprocessor measuring every Pauli label a Fubini-Study block
-    needs on its pre-state in one multi-observable pass. Pure: the per-branch
-    block structure is recomputed from the cost cohort by the caller."""
+    needs on its pre-state in one multi-observable pass."""
 
     def preprocess(meta: MetaCircuit) -> MetaCircuit:
-        prefix, prefix_params, _, _, labels = _fs_block_prefix(
-            meta, block_id, reference_prefix_param_names
-        )
-        return MetaCircuit(
-            circuit_bodies=(((), circuit_to_dag(prefix)),),
-            parameters=prefix_params,
-            observable=tuple(SparsePauliOp(label) for label in labels),
-            _was_multi_obs=True,
-        )
+        return _select_fs_block_layout(
+            layouts_for(meta), block_id, reference_prefix_param_names
+        )[0]
 
     return CircuitPreprocessor(
         # One pipeline per block, so each carries the block in its name: the name

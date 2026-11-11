@@ -377,7 +377,7 @@ def test_fs_blocks_emits_one_entry_per_gate_for_a_shared_parameter():
         circuit_bodies=(((), circuit_to_dag(circuit)),), parameters=(theta,)
     )
 
-    blocks, full_params, _ = _fs_blocks(meta)
+    _, blocks, full_params, _ = _fs_blocks(meta)
 
     assert len(full_params) == 1
     assert len(blocks) == 1

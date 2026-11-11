@@ -42,6 +42,7 @@ from tests.qprog.optimizers._helpers import (
     count_divergence_warnings,
     counting_cost_fn,
     data_bound_custom_vqa,
+    make_one_qubit_meta,
     program_with_cost_circuit,
 )
 from tests.qprog.optimizers._helpers import sphere_cost_fn_batch_aware as _sphere
@@ -1241,25 +1242,11 @@ def test_qnspsa_rejects_data_bound_program(dummy_simulator, default_optimizer):
         QNSPSAOptimizer().validate_program(program)
 
 
-def _one_qubit_meta(gates, order=None) -> MetaCircuit:
-    """``gates`` is a sequence of ``(rotation, parameter name)``; ``order`` names
-    the parameter order (defaults to first use)."""
-    params = {name: Parameter(name) for _, name in gates}
-    qc = QuantumCircuit(1)
-    for rotation, name in gates:
-        getattr(qc, rotation)(params[name], 0)
-    names = order or list(params)
-    return MetaCircuit(
-        circuit_bodies=(((), circuit_to_dag(qc)),),
-        parameters=tuple(params[name] for name in names),
-    )
-
-
 _RX_A_RY_B = (("rx", "a"), ("ry", "b"))
 
 
 def _overlap_routine(mocker):
-    program = program_with_cost_circuit(mocker, _one_qubit_meta(_RX_A_RY_B))
+    program = program_with_cost_circuit(mocker, make_one_qubit_meta(_RX_A_RY_B))
     (routine,) = StochasticFidelityMetricEstimator().preprocessors(program)
     return routine
 
@@ -1272,34 +1259,12 @@ def test_overlap_routine_reads_probabilities_from_dag_bodies(mocker):
     assert routine.cache_key == METRIC_ROUTINE
 
 
-def test_overlap_cache_is_keyed_on_ansatz_structure(mocker):
-    """Rebuilt parameter objects with the same names reuse the cached overlap
-    circuit; any change of gate, gate-parameter assignment or parameter order
-    builds a new one."""
-    overlap_for = _overlap_routine(mocker).preprocess
-    reference = overlap_for(_one_qubit_meta(_RX_A_RY_B))
+def test_overlap_preprocess_leads_with_the_ansatz_parameters(mocker):
+    reordered = make_one_qubit_meta(_RX_A_RY_B, order=["b", "a"])
 
-    assert overlap_for(_one_qubit_meta(_RX_A_RY_B)) is reference
-    variants = [
-        _one_qubit_meta((("rx", "a"), ("rz", "b"))),
-        _one_qubit_meta((("rx", "b"), ("ry", "a")), order=["a", "b"]),
-        _one_qubit_meta(_RX_A_RY_B, order=["b", "a"]),
-    ]
-    for variant in variants:
-        overlap = overlap_for(variant)
-        assert overlap is not reference
-        assert overlap.parameters[: len(variant.parameters)] == variant.parameters
+    overlap = _overlap_routine(mocker).preprocess(reordered)
 
-
-def test_overlap_cache_clears_once_full(mocker, monkeypatch):
-    monkeypatch.setattr("divi.qprog.optimizers.metrics._OVERLAP_CACHE_CAP", 2)
-    overlap_for = _overlap_routine(mocker).preprocess
-    metas = [_one_qubit_meta(((rotation, "a"),)) for rotation in ("rx", "ry", "rz")]
-
-    first, _, last = (overlap_for(meta) for meta in metas)
-
-    assert overlap_for(metas[0]) is not first
-    assert overlap_for(metas[2]) is last
+    assert overlap.parameters[: len(reordered.parameters)] == reordered.parameters
 
 
 def test_fidelity_fn_pairs_theta_with_each_perturbed_point(mocker, monkeypatch):
@@ -1310,7 +1275,7 @@ def test_fidelity_fn_pairs_theta_with_each_perturbed_point(mocker, monkeypatch):
         return {0: 0.9, 1: 0.4}
 
     monkeypatch.setattr("divi.qprog.optimizers.metrics._run_overlap", fake_run_overlap)
-    program = program_with_cost_circuit(mocker, _one_qubit_meta(_RX_A_RY_B))
+    program = program_with_cost_circuit(mocker, make_one_qubit_meta(_RX_A_RY_B))
     fidelity_fn = StochasticFidelityMetricEstimator().bind(program)["fidelity_fn"]
 
     overlaps = fidelity_fn(
@@ -1413,11 +1378,11 @@ def test_stochastic_fidelity_uses_bounded_structural_cache_for_qdrift(
         max_iterations=2,
         backend=dummy_simulator,
     )
+    spy = mocker.spy(metrics_module, "build_overlap_meta")
     fidelity_fn = StochasticFidelityMetricEstimator().bind(qaoa)["fidelity_fn"]
     n_params = len(qaoa.cost_circuit.parameters)
     theta = np.linspace(0.1, 1.0, n_params)
 
-    spy = mocker.spy(metrics_module, "build_overlap_meta")
     fidelity_fn(theta, [np.zeros(n_params)])
     after_first = spy.call_count
     fidelity_fn(theta, [np.zeros(n_params)])

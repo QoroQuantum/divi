@@ -42,13 +42,14 @@ from divi.qprog.optimizers.metrics import (
     PullbackMetricEstimator,
     StochasticFidelityMetricEstimator,
     _all_terms_preprocessor,
+    _build_fs_block_layouts,
+    _compute_fs_block_covariance,
     _fs_block_from_expectations,
-    _fs_block_prefix,
     _fs_blocks,
     _fs_needed_labels,
     _fs_prefix_labels_preprocessor,
-    _measure_prefix_paulis,
-    _PrefixOpsView,
+    _memoize_by_ansatz,
+    _select_fs_block_layout,
     _split_into_terms,
     _split_observable_into_terms,
     _term_expectations,
@@ -65,6 +66,7 @@ from tests.qprog.optimizers._helpers import (
     bowl_metric,
     data_bound_custom_vqa,
     inject_term_expectations,
+    make_one_qubit_meta,
     program_with_cost_circuit,
     set_unit_shift_rule,
 )
@@ -556,7 +558,8 @@ def test_metric_pipeline_terms_sum_to_energy(toy_vqe):
     n_params = toy_vqe.n_layers * toy_vqe.n_params_per_layer
     params = np.random.default_rng(1).uniform(0, 2 * np.pi, size=(1, n_params))
 
-    terms, coeffs = _split_into_terms(toy_vqe.cost_hamiltonian)
+    terms = _split_into_terms(toy_vqe.cost_hamiltonian)
+    coeffs = np.real(toy_vqe.cost_hamiltonian.coeffs)
     preprocessor = CircuitPreprocessor(
         "metric",
         preprocess=lambda meta: replace(
@@ -680,49 +683,59 @@ def test_fubini_study_matches_pennylane_block_diag(
     np.testing.assert_allclose(divi_metric, pl_metric[np.ix_(order, order)], atol=1e-10)
 
 
-def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(
-    mocker, monkeypatch
-):
-    """FS prefix measurement derives the prefix + per-branch block structure
-    from the sampled branch meta (recomputed from the cost cohort) and measures
-    every label in one multi-observable pass."""
-    theta = Parameter("theta")
-    qc = QuantumCircuit(1)
-    qc.rx(theta, 0)
-    sampled_meta = MetaCircuit(
-        circuit_bodies=(((), circuit_to_dag(qc)),),
-        parameters=(theta,),
-    )
-    seen = []
+def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta():
+    """The FS preprocessor measures the labels the incoming branch's block needs
+    in one multi-observable pass, and the block covariance reads that branch's
+    structure from the cost cohort."""
+    layouts_for = _memoize_by_ansatz(_build_fs_block_layouts)
+    preprocess = _fs_prefix_labels_preprocessor(0, (), layouts_for).preprocess
 
-    def fake_fs_blocks(meta):
-        seen.append(meta)
-        return [([], [(0, SparsePauliOp("X"))])], [theta], 1
-
-    prefix_metas = []
-
-    def fake_run_metric_by_branch(_program, preprocessor, _param_sets):
-        prefix_metas.append(preprocessor.preprocess(sampled_meta))
-        return {(("ham", 0),): {0: np.array([0.25])}}
-
-    monkeypatch.setattr("divi.qprog.optimizers.metrics._fs_blocks", fake_fs_blocks)
-    monkeypatch.setattr(
-        "divi.qprog.optimizers.metrics._run_metric_by_branch",
-        fake_run_metric_by_branch,
+    prefix_metas = [
+        preprocess(make_one_qubit_meta(((rotation, "a"),))) for rotation in ("rx", "ry")
+    ]
+    blocks = _compute_fs_block_covariance(
+        {(("ham", 0),): {0: np.array([0.25])}},
+        {(("ham", 0),): layouts_for(make_one_qubit_meta((("rx", "a"),)))},
+        0,
+        (),
     )
 
-    program = program_with_cost_circuit(mocker, sampled_meta)
-    program._post_spec_batch.return_value = {(("ham", 0),): sampled_meta}
-    exp_by_branch, branch_data = _measure_prefix_paulis(
-        program, [theta], np.array([0.1]), block_id=0
-    )
+    assert all(meta._was_multi_obs for meta in prefix_metas)
+    assert [[str(o.paulis[0]) for o in meta.observable] for meta in prefix_metas] == [
+        ["X"],
+        ["Y"],
+    ]
+    indices, block = blocks[(("ham", 0),)]
+    assert indices == (0,)
+    np.testing.assert_allclose(block, [[0.25 * (1 - 0.25**2)]])
 
-    assert sampled_meta in seen
-    (prefix_meta,) = prefix_metas
-    assert prefix_meta._was_multi_obs is True
-    assert [str(o.paulis[0]) for o in prefix_meta.observable] == ["X"]
-    assert branch_data[(("ham", 0),)][0] == (0,)
-    assert exp_by_branch[(("ham", 0),)]["X"] == pytest.approx(0.25)
+
+def test_memoize_by_ansatz_is_keyed_on_ansatz_structure():
+    """Rebuilt parameter objects with the same names reuse the cached build; any
+    change of gate, gate-parameter assignment or parameter order builds a new
+    one."""
+    gates = (("rx", "a"), ("ry", "b"))
+    lookup = _memoize_by_ansatz(lambda meta: object())
+    reference = lookup(make_one_qubit_meta(gates))
+
+    assert lookup(make_one_qubit_meta(gates)) is reference
+    variants = [
+        make_one_qubit_meta((("rx", "a"), ("rz", "b"))),
+        make_one_qubit_meta((("rx", "b"), ("ry", "a")), order=["a", "b"]),
+        make_one_qubit_meta(gates, order=["b", "a"]),
+    ]
+    assert all(lookup(variant) is not reference for variant in variants)
+
+
+def test_memoize_by_ansatz_clears_once_full(monkeypatch):
+    monkeypatch.setattr("divi.qprog.optimizers.metrics._ANSATZ_CACHE_CAP", 2)
+    lookup = _memoize_by_ansatz(lambda meta: object())
+    metas = [make_one_qubit_meta(((rotation, "a"),)) for rotation in ("rx", "ry", "rz")]
+
+    first, _, last = (lookup(meta) for meta in metas)
+
+    assert lookup(metas[0]) is not first
+    assert lookup(metas[2]) is last
 
 
 # --------------------------------------------------------------------------- #
@@ -843,8 +856,11 @@ def test_metric_pipelines_are_cacheable(dummy_simulator, default_optimizer):
         optimizer=default_optimizer,
     )
     assert _all_terms_preprocessor().cache_key == METRIC_ROUTINE
-    assert _fs_prefix_labels_preprocessor(0, ()).cache_key == (METRIC_ROUTINE, 0)
-    assert _fs_prefix_labels_preprocessor(0, ()).consumes_dag_bodies is True
+    fs_preprocessor = _fs_prefix_labels_preprocessor(
+        0, (), _memoize_by_ansatz(_build_fs_block_layouts)
+    )
+    assert fs_preprocessor.cache_key == (METRIC_ROUTINE, 0)
+    assert fs_preprocessor.consumes_dag_bodies is True
 
     # Fresh-but-equal preprocessors hit the cache -> same pipeline object.
     p1 = vqe._build_preprocessor_pipeline(_all_terms_preprocessor())
@@ -860,26 +876,22 @@ def _meta_from(qc: QuantumCircuit, observable=None) -> MetaCircuit:
     )
 
 
-def _single_ry_meta() -> MetaCircuit:
-    qc = QuantumCircuit(1)
-    qc.ry(Parameter("a"), 0)
-    return _meta_from(qc)
-
-
 @pytest.mark.parametrize("block_id", [1, 5])
-def test_fs_block_prefix_rejects_out_of_range_block(block_id):
+def test_select_fs_block_layout_rejects_out_of_range_block(block_id):
     """A branch with fewer FS blocks than the requested index fails loudly."""
     message = (
         "A sampled metric branch has fewer Fubini-Study blocks than the "
         "reference ansatz."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        _fs_block_prefix(
-            _single_ry_meta(), block_id=block_id, reference_prefix_param_names=()
+        _select_fs_block_layout(
+            _build_fs_block_layouts(make_one_qubit_meta((("ry", "a"),))),
+            block_id=block_id,
+            reference_prefix_param_names=(),
         )
 
 
-def test_fs_block_prefix_rejects_prefix_param_layout_mismatch():
+def test_select_fs_block_layout_rejects_prefix_param_layout_mismatch():
     """A branch whose prefix-parameter layout differs from the reference ansatz
     fails loudly rather than mis-aligning the metric."""
     message = (
@@ -887,8 +899,10 @@ def test_fs_block_prefix_rejects_prefix_param_layout_mismatch():
         "layout than the reference ansatz."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        _fs_block_prefix(
-            _single_ry_meta(), block_id=0, reference_prefix_param_names=("z",)
+        _select_fs_block_layout(
+            _build_fs_block_layouts(make_one_qubit_meta((("ry", "a"),))),
+            block_id=0,
+            reference_prefix_param_names=("z",),
         )
 
 
@@ -922,25 +936,11 @@ def test_fs_blocks_rejects_unsupported_rotations(build, used):
         _fs_blocks(_meta_from(qc))
 
 
-def test_prefix_ops_view_indexes_only_its_prefix():
-    view = _PrefixOpsView(("a", "b", "c", "d"), stop=3)
-
-    assert len(view) == 3
-    assert list(view) == ["a", "b", "c"]
-    assert [view[i] for i in (0, 2, -1, -3)] == ["a", "c", "c", "a"]
-    assert view[1:] == ("b", "c")
-    assert view[::-1] == ("c", "b", "a")
-    with pytest.raises(IndexError, match="^3$"):
-        view[3]
-    with pytest.raises(IndexError, match="^-4$"):
-        view[-4]
-
-
-def test_split_into_terms_keeps_every_term_with_its_coefficient():
+def test_split_into_terms_keeps_every_term_in_order():
     hamiltonian = SparsePauliOp.from_list([("ZI", 0.5), ("II", 1.0), ("IZ", -0.3)])
-    terms, coeffs = _split_into_terms(hamiltonian)
+    terms = _split_into_terms(hamiltonian)
     assert [term.paulis.to_labels() for term in terms] == [["ZI"], ["II"], ["IZ"]]
-    np.testing.assert_allclose(coeffs, [0.5, 1.0, -0.3])
+    assert all(term.coeffs[0] == 1.0 for term in terms)
 
 
 def test_fubini_study_metric_sums_shared_parameters_and_averages_branches(
@@ -955,7 +955,7 @@ def test_fubini_study_metric_sums_shared_parameters_and_averages_branches(
         qscript=qc, backend=dummy_simulator, optimizer=default_optimizer
     )
     monkeypatch.setattr(
-        "divi.qprog.optimizers.metrics._fs_block_covariance",
+        "divi.qprog.optimizers.metrics._compute_fs_block_covariance",
         lambda *_: {
             (("ham", 0),): ((0, 0), np.array([[1.0, 2.0], [2.0, 4.0]])),
             (("ham", 1),): ((0, 0), np.array([[0.0, 0.0], [0.0, 1.0]])),
@@ -1025,40 +1025,34 @@ def _single_rx_program(mocker, source_batch):
 
 
 @pytest.mark.parametrize(
-    "block_id, source_batch, measured, message",
+    "source_batch, measured, message",
     [
         (
-            1,
-            lambda meta: {(("ham", 0),): meta},
-            [0.25],
-            "The Fubini-Study block index is outside the reference ansatz.",
-        ),
-        (
-            0,
             lambda meta: {},
             [0.25],
             "A measured Fubini-Study branch is absent from the cost cohort.",
         ),
         (
-            0,
             lambda meta: {(("ham", 0),): meta},
             [0.25, 0.5],
             "Fubini-Study per-label measurement count does not match the "
             "branch's label count.",
         ),
     ],
-    ids=["block-out-of-range", "branch-absent", "label-count-mismatch"],
+    ids=["branch-absent", "label-count-mismatch"],
 )
-def test_measure_prefix_paulis_rejects_inconsistent_measurements(
-    mocker, monkeypatch, block_id, source_batch, measured, message
+def test_fs_block_covariance_rejects_inconsistent_measurements(
+    source_batch, measured, message
 ):
-    program, theta = _single_rx_program(mocker, source_batch)
-    monkeypatch.setattr(
-        "divi.qprog.optimizers.metrics._run_metric_by_branch",
-        lambda *_: {(("ham", 0),): {0: np.array(measured)}},
-    )
+    meta = make_one_qubit_meta((("ry", "a"),))
+    layouts_by_branch = {
+        branch_key: _build_fs_block_layouts(source_meta)
+        for branch_key, source_meta in source_batch(meta).items()
+    }
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        _measure_prefix_paulis(program, [theta], np.array([0.1]), block_id=block_id)
+        _compute_fs_block_covariance(
+            {(("ham", 0),): {0: np.array(measured)}}, layouts_by_branch, 0, ()
+        )
 
 
 def _expval_program(mocker, observable):
@@ -1339,8 +1333,9 @@ def test_qaoa_qdrift_pullback_uses_sampled_branch_observables(dummy_simulator):
     assert set(branch_payloads) == set(sourced)
     for branch_key, meta in sourced.items():
         assert meta.observable is not None
-        _, sampled_coeffs = _split_into_terms(meta.observable[0])
-        np.testing.assert_allclose(branch_payloads[branch_key][1], sampled_coeffs)
+        np.testing.assert_allclose(
+            branch_payloads[branch_key][1], np.real(meta.observable[0].coeffs)
+        )
 
 
 def test_qaoa_qdrift_qng_refuses_upfront(dummy_simulator):
