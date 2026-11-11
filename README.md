@@ -35,8 +35,8 @@ pip install qoro-divi
 That covers local and cloud execution, VQE, QAOA, and program ensembles.
 Heavier features live behind optional extras — `pennylane` (PennyLane circuits,
 operators, and molecules), `aer` (Qiskit Aer backends), `qubo-decompose`
-(partitioned QUBO solving), `chem` (PySCF/OpenFermion chemistry), `ai`, and
-`jupyter` — or `pip install "qoro-divi[all]"` for everything. See the
+(partitioned QUBO solving), `chem` (PySCF/OpenFermion chemistry), `qrmi`
+(QRMI-managed resources, Linux only), `ai`, and `jupyter` — or `pip install "qoro-divi[all]"` for all of them but `ai`. See the
 **[installation guide](https://divi.readthedocs.io/en/latest/installation.html)**
 for what each unlocks and what keeps working without it.
 

@@ -69,6 +69,10 @@ Optional Extras
        :class:`~divi.qprog.ensembles.lassqd.LASSQD`.
      - VQE from a ``SparsePauliOp`` or a Pauli-string dictionary, and every
        non-chemistry ansatz.
+   * - ``qrmi``
+     - :class:`~divi.backends.QRMIBackend` on a Maestro local server or an IBM
+       resource that QRMI manages. Linux only.
+     - Every other backend.
    * - ``ai``
      - The ``divi-ai`` offline documentation assistant. See :doc:`tools/divi_ai`.
      - Everything except ``divi-ai``.
@@ -86,7 +90,7 @@ Install one extra, or several at once:
 
    uv add "qoro-divi[aer,chem,pennylane]"
 
-To pull in everything:
+To pull in every extra except ``ai``:
 
 .. code-block:: bash
 
@@ -94,9 +98,9 @@ To pull in everything:
 
 .. note::
 
-   ``all`` includes ``ai``, which depends on ``llama-cpp-python``. On platforms
-   with no prebuilt wheel it is compiled from source and needs a C++ toolchain.
-   If that is a problem, name the extras you want individually instead.
+   ``all`` leaves out ``ai``, which depends on ``llama-cpp-python``. On platforms
+   with no prebuilt wheel that is compiled from source and needs a C++
+   toolchain. Add it by name with ``pip install "qoro-divi[all,ai]"``.
 
 Working from a source checkout with uv, the equivalents are:
 

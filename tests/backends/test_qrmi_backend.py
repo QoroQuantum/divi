@@ -182,15 +182,14 @@ class TestConstruction:
         )
         message = (
             "QRMIBackend runs maestro-local and IBM resources; got "
-            f"{FakeResourceType.PasqalLocal}. maestro-local needs Qoro's fork of "
-            "qrmi (https://github.com/QoroQuantum/qrmi)."
+            f"{FakeResourceType.PasqalLocal}. maestro-local needs qrmi 0.27 or later."
         )
 
         with pytest.raises(ValueError, match=exact_match(message)):
             make_qrmi_backend(resource)
 
     def test_imports_upstream_qrmi_without_maestro_helpers(self, mocker):
-        """Upstream qrmi has no maestro-local type or ``qrmi.maestro`` module;
+        """qrmi before 0.27 has no maestro-local type or ``qrmi.maestro`` module;
         importing that module would fail."""
         upstream = mocker.NonCallableMock(
             spec_set=["ResourceType"], ResourceType=FakeUpstreamResourceType

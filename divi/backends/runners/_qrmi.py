@@ -22,7 +22,7 @@ from qiskit.primitives import BitArray
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler import generate_preset_pass_manager
 
-from divi._optional import import_if_available, import_optional
+from divi._optional import import_optional
 from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
 from divi.backends._config import DeviceConfig, describe_unknown, require_device_config
@@ -146,12 +146,7 @@ def _release_session(resource: Any, lock: Lock, lease: _Lease) -> None:
 
 def _import_qrmi() -> Any:
     """The ``qrmi`` module, with ``qrmi.maestro`` where the build has it."""
-    qrmi = import_if_available("qrmi")
-    if qrmi is None:
-        raise ImportError(
-            "QRMIBackend needs qrmi; maestro-local resources need Qoro's fork "
-            "(https://github.com/QoroQuantum/qrmi)."
-        )
+    qrmi = import_optional("qrmi", extra="qrmi", capability="QRMIBackend")
     if hasattr(qrmi.ResourceType, "MaestroLocal"):
         importlib.import_module("qrmi.maestro")
     return qrmi
@@ -161,10 +156,7 @@ def _import_ibm_runtime() -> tuple[Callable[..., Any], Any, Any]:
     """qrmi's IBM backend factory, and Qiskit Runtime's job encoder and result
     decoder."""
     runtime = import_optional(
-        "qiskit_ibm_runtime",
-        extra="aer",
-        capability="QRMIBackend on IBM resources",
-        hint='Installing "qrmi[ibm]" provides it too.',
+        "qiskit_ibm_runtime", extra="qrmi", capability="QRMIBackend on IBM resources"
     )
     from qiskit_ibm_runtime.decoders import result_decoder
 
@@ -376,8 +368,7 @@ class QRMIBackend(CircuitRunner):
         ):
             raise ValueError(
                 "QRMIBackend runs maestro-local and IBM resources; got "
-                f"{self._resource_type}. maestro-local needs Qoro's fork of qrmi "
-                "(https://github.com/QoroQuantum/qrmi)."
+                f"{self._resource_type}. maestro-local needs qrmi 0.27 or later."
             )
         # A QRMI resource's methods take `&mut self`: one call at a time.
         self._resource_lock = Lock()

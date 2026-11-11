@@ -4198,6 +4198,7 @@ all = [
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
     { name = "qiskit-nature" },
+    { name = "qrmi", extra = ["ibm"], marker = "sys_platform == 'linux'" },
     { name = "threadpoolctl" },
 ]
 chem = [
@@ -4213,6 +4214,9 @@ jupyter = [
 ]
 pennylane = [
     { name = "pennylane" },
+]
+qrmi = [
+    { name = "qrmi", extra = ["ibm"], marker = "sys_platform == 'linux'" },
 ]
 qubo-decompose = [
     { name = "dwave-hybrid" },
@@ -4285,8 +4289,9 @@ requires-dist = [
     { name = "qiskit-aer", marker = "extra == 'aer'", specifier = ">=0.18" },
     { name = "qiskit-ibm-runtime", marker = "extra == 'aer'", specifier = ">=0.51" },
     { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
-    { name = "qoro-divi", extras = ["aer", "chem", "jupyter", "pennylane", "qubo-decompose"], marker = "extra == 'all'" },
+    { name = "qoro-divi", extras = ["aer", "chem", "jupyter", "pennylane", "qrmi", "qubo-decompose"], marker = "extra == 'all'" },
     { name = "qoro-maestro", specifier = "==0.3.14" },
+    { name = "qrmi", extras = ["ibm"], marker = "sys_platform == 'linux' and extra == 'qrmi'", specifier = ">=0.27,<0.28" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=15.0" },
     { name = "rustworkx", specifier = ">=0.18" },
@@ -4298,7 +4303,7 @@ requires-dist = [
     { name = "threadpoolctl", specifier = ">=3.1,<4.0" },
     { name = "threadpoolctl", marker = "extra == 'chem'", specifier = ">=3.1,<4" },
 ]
-provides-extras = ["jupyter", "ai", "aer", "qubo-decompose", "pennylane", "chem", "all"]
+provides-extras = ["jupyter", "ai", "aer", "qubo-decompose", "pennylane", "chem", "qrmi", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4345,6 +4350,28 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/df/72/8dbf2a8ad5b86512189a190379fa9dadc96ad2ccd31c38087904daa64a6e/qoro_maestro-0.3.14-cp310-abi3-macosx_15_0_arm64.whl", hash = "sha256:4811fc76a76974b9de231593f2017c60bc3d5173973428e3d518b2cb6c51f7d6", size = 12831071, upload-time = "2026-11-11T17:42:16.347Z" },
     { url = "https://files.pythonhosted.org/packages/1f/bb/ddeb1661f014bda39f130af397f9098e9745a7f1e04fbb92209b15413bcc/qoro_maestro-0.3.14-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f564ab8c5c3e13c06d1e0ad3ce4c3437f8a8d9e651442a1f46765e9849738a5c", size = 18369662, upload-time = "2026-11-11T17:42:19.279Z" },
     { url = "https://files.pythonhosted.org/packages/f8/dc/57d0e9de76e5f7e561ae6577e32e7256f0331970ca3c809a1b6580bea452/qoro_maestro-0.3.14-cp310-abi3-win_amd64.whl", hash = "sha256:86b67b2b7ce7f6fa495f5a29f37f338e98136242437ab3ebf2ce6739893c36ec", size = 19806120, upload-time = "2026-11-11T17:42:22.479Z" },
+]
+
+[[package]]
+name = "qrmi"
+version = "0.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+    { name = "python-dotenv" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/68/32617cb1e9ac759badbbc84af59c943f02aaceb418dda732436c6bb04681/qrmi-0.27.0.tar.gz", hash = "sha256:8b10582b6ea589307f8fe8c1b91a0b6c65d25343d4234d28774f45078608f505", size = 1077271, upload-time = "2026-11-10T23:24:31.117Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/63/28562b93c899d0db7433e1b9f5ae8603a44fdafd2e9e5b8d6226d88ed6a1/qrmi-0.27.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:edea590ed960fbca3401726cafb38b8fffaa40a181d8890e591913f288a39ec9", size = 8645943, upload-time = "2026-11-10T23:24:23.311Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/79/8a83f8f1fe6502cb265370c2833733729841b5fc20b98276f8a7551c0a91/qrmi-0.27.0-cp311-abi3-manylinux_2_28_ppc64le.whl", hash = "sha256:fe228b89b574557eb8db081eda470fe18b3a2b02ca956cfe56a990dd74810bb6", size = 11197200, upload-time = "2026-11-10T23:24:26.176Z" },
+    { url = "https://files.pythonhosted.org/packages/03/58/b80c09b19c81ee879c340bae46d091bea0aea9b0d04d371bb5e4cfbe7e55/qrmi-0.27.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:3eb02236df6f26fb17064c12d86a19bd7740ca7a00f2262ea05115e9436a28d4", size = 8778557, upload-time = "2026-11-10T23:24:28.845Z" },
+]
+
+[package.optional-dependencies]
+ibm = [
+    { name = "qiskit-ibm-runtime" },
+    { name = "qiskit-qasm3-import" },
 ]
 
 [[package]]

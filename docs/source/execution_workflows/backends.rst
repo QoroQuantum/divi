@@ -213,14 +213,13 @@ use it when your scheduler provides the server, and
 Install
 ^^^^^^^
 
-:class:`~divi.backends.QRMIBackend` needs Qoro's fork of QRMI, which adds the
-``maestro-local`` resource type, and Python 3.11 or later. The fork is built
-from source with ``maturin``, so a Rust toolchain is required. Ask your site
-administrator which commit their server is tested against and pin it:
+:class:`~divi.backends.QRMIBackend` needs QRMI 0.27 or later, which adds the
+``maestro-local`` resource type. The ``qrmi`` extra installs it, with what IBM
+resources need, on Linux:
 
 .. code-block:: console
 
-   $ pip install "qrmi @ git+https://github.com/QoroQuantum/qrmi.git@<commit>"
+   $ pip install "qoro-divi[qrmi]"
 
 First run
 ^^^^^^^^^
@@ -312,12 +311,8 @@ IBM resources
 ^^^^^^^^^^^^^
 
 An on-premises IBM Quantum System, the Qiskit Runtime service or the IBM
-Quantum compute service runs your program on hardware. These need QRMI's IBM
-extra, not Qoro's fork:
-
-.. code-block:: console
-
-   $ pip install "qrmi[ibm]"
+Quantum compute service runs your program on hardware. The ``qrmi`` extra
+covers these too.
 
 The resource reads its endpoint and credentials from settings prefixed with its
 name, such as ``ibm_torino_QRMI_IBM_QS_ENDPOINT``; see QRMI's documentation.
