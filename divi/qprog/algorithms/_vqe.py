@@ -99,8 +99,9 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         self.current_iteration = 0
 
         self._problem = problem
-        self.cost_hamiltonian = problem.hamiltonian.simplify(atol=0)
-        self.n_qubits = _require_qiskit_num_qubits(self.cost_hamiltonian.num_qubits)
+        hamiltonian = problem.hamiltonian.simplify(atol=0)
+        self.n_qubits = _require_qiskit_num_qubits(hamiltonian.num_qubits)
+        self.cost_hamiltonian = hamiltonian
 
         # Resolve & store initial state (n_qubits is now set)
         if initial_state is None:

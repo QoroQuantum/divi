@@ -277,6 +277,44 @@ def test_initial_state_is_prepended_to_the_cost_circuit(
     assert circuit.count_ops()["h"] == 2
 
 
+def test_reassigning_the_cost_hamiltonian_rebuilds_the_cost_circuit(
+    dummy_simulator, default_optimizer
+):
+    vqe = _two_qubit_ry_vqe(dummy_simulator, default_optimizer)
+    old_circuit = vqe.cost_circuit
+    replacement = SparsePauliOp(["XI", "IX"])
+
+    vqe.cost_hamiltonian = replacement
+
+    assert vqe.cost_circuit is not old_circuit
+    assert vqe.cost_circuit.observable[0].equiv(replacement)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        (
+            SparsePauliOp.from_list([("XI", 1.0j)]),
+            "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+            "must be real.",
+        ),
+        (
+            SparsePauliOp(["XII"]),
+            "cost_hamiltonian.num_qubits is 3 but the program has 2 qubits; "
+            "they must match.",
+        ),
+    ],
+    ids=["non-hermitian", "wrong-width"],
+)
+def test_assigning_an_invalid_cost_hamiltonian_raises(
+    dummy_simulator, default_optimizer, replacement, message
+):
+    vqe = _two_qubit_ry_vqe(dummy_simulator, default_optimizer)
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        vqe.cost_hamiltonian = replacement
+
+
 def test_chemistry_ansatz_on_the_zeros_state_does_not_warn(
     four_qubit_hamiltonian, dummy_simulator, default_optimizer
 ):

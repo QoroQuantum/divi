@@ -26,7 +26,6 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit.circuit import ParameterVector
 
 from divi.qprog.checkpointing import CheckpointConfig, CheckpointNotFoundError
 from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
@@ -309,19 +308,6 @@ class IterativeQAOA(QAOA):
             return self._max_iterations_per_depth(depth)
         return self._max_iterations_per_depth
 
-    def _rebuild_for_depth(self, depth: int) -> None:
-        """Rebuild parameters for a new circuit depth and drop stale pipelines."""
-        self.n_layers = depth
-        gammas = ParameterVector("γ", depth)
-        betas = ParameterVector("β", depth)
-        # Replaces the parent QAOA._params so the meta-circuit factories
-        # pick up the new layer count.
-        self._params = np.array([[g, b] for g, b in zip(gammas, betas)], dtype=object)
-        # Drop the memoized protocol pipelines (and their forward caches): the
-        # ansatz changed shape, so the cost/sample circuits must be rebuilt.
-        self._preprocessor_pipeline_cache.clear()
-        self._cost_circuit = None
-
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA state plus the depths run so far."""
         state = super()._save_subclass_state()
@@ -356,7 +342,7 @@ class IterativeQAOA(QAOA):
             }
             for entry in state["depth_history"]
         ]
-        self._rebuild_for_depth(state["depth"])
+        self.n_layers = state["depth"]
 
     @classmethod
     def _resolve_checkpoint_path(
@@ -527,7 +513,7 @@ class IterativeQAOA(QAOA):
             # A checkpoint taken mid-depth already carries that depth's ansatz,
             # parameters and optimizer state; continue it rather than restart it.
             if not (depth == start_depth and resumes_mid_depth):
-                self._rebuild_for_depth(depth)
+                self.n_layers = depth
                 self._reset_optimization_state()
 
                 if depth > 1 and prev_best_params is not None:
@@ -568,7 +554,7 @@ class IterativeQAOA(QAOA):
         self._best_depth = best_entry["depth"]
 
         # Restore the instance to the best depth
-        self._rebuild_for_depth(self._best_depth)
+        self.n_layers = self._best_depth
         self._best_params = best_entry["best_params"]
         self._final_params = self._best_params.copy()
         self._best_loss = best_entry["best_loss"]

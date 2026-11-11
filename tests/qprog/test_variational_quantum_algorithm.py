@@ -72,6 +72,7 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
+        self.n_qubits = 2
         self.cost_hamiltonian = SparsePauliOp.from_sparse_list(
             [("X", [0], 1.0), ("Z", [1], 1.0), ("XZ", [0, 1], 1.0)], num_qubits=2
         )

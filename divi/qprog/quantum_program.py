@@ -106,6 +106,9 @@ class QuantumProgram(ABC):
         _seed: Random seed for reproducible results.
     """
 
+    n_qubits: int
+    """Width of the register this program's circuits act on."""
+
     def _make_checkpoint(
         self,
         checkpoint_dir: Path,

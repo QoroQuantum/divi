@@ -20,6 +20,7 @@ from scipy.optimize import OptimizeResult
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.hamiltonians._term_ops import ObservableLike, to_spo
 from divi.pipeline import (
     CircuitPreprocessor,
     GroupingStrategy,
@@ -211,8 +212,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     current_iteration: int
     max_iterations: int
     n_layers: int
-    cost_hamiltonian: SparsePauliOp
-    """The cost Hamiltonian for the variational problem."""
 
     _grouping_strategy: GroupingStrategy
     _shot_distribution: ShotDistStrategy | None
@@ -642,6 +641,34 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         if self._cost_circuit is None:
             self._cost_circuit = self._create_cost_circuit()
         return self._cost_circuit
+
+    @property
+    def cost_hamiltonian(self) -> SparsePauliOp:
+        """The cost Hamiltonian, validated and coerced to ``SparsePauliOp`` on
+        assignment."""
+        return self._cost_hamiltonian
+
+    @cost_hamiltonian.setter
+    def cost_hamiltonian(self, hamiltonian: ObservableLike) -> None:
+        self._cost_hamiltonian = self._check_width(
+            "cost_hamiltonian", to_spo(hamiltonian)
+        )
+        self._drop_built_circuits()
+
+    def _check_width(self, name: str, hamiltonian: SparsePauliOp) -> SparsePauliOp:
+        """Return ``hamiltonian`` once it is known to span the program's qubits."""
+        if hamiltonian.num_qubits != self.n_qubits:
+            raise ValueError(
+                f"{name}.num_qubits is {hamiltonian.num_qubits} but the program "
+                f"has {self.n_qubits} qubits; they must match."
+            )
+        return hamiltonian
+
+    def _drop_built_circuits(self) -> None:
+        """Forget the pipelines, cost circuit and shift rule built from the old ansatz."""
+        self._preprocessor_pipeline_cache.clear()
+        self._cost_circuit = None
+        self.__dict__.pop("_grad_shift_rule", None)
 
     @abstractmethod
     def _create_cost_circuit(self) -> MetaCircuit:

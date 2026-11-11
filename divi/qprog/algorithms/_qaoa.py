@@ -5,6 +5,7 @@
 import logging
 from collections.abc import Mapping
 from fractions import Fraction
+from functools import cached_property
 from math import gcd, lcm
 from numbers import Integral
 from typing import Any, Literal, Self
@@ -17,6 +18,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._term_ops import (
+    ObservableLike,
     _split_identity_terms,
     _spo_to_qiskit_basis_gates,
     _spo_wires,
@@ -143,11 +145,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
                 including ``optimizer`` and ``backend``.
         """
-        if initial_state is not None and not isinstance(initial_state, InitialState):
-            raise TypeError(
-                f"initial_state must be an InitialState instance or None, "
-                f"got {type(initial_state).__name__}"
-            )
         if max_shift_evaluations_per_parameter is not None and (
             isinstance(max_shift_evaluations_per_parameter, bool)
             or not isinstance(max_shift_evaluations_per_parameter, Integral)
@@ -164,43 +161,90 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         super().__init__(**kwargs)
 
-        # Coerce both Hamiltonians to ``SparsePauliOp`` at the input boundary.
         self.problem = problem
-        self.cost_hamiltonian: SparsePauliOp = to_spo(problem.cost_hamiltonian)
-        self.mixer_hamiltonian: SparsePauliOp = to_spo(problem.mixer_hamiltonian)
-        self._trotter_spec = TrotterSpec(self.cost_hamiltonian)
+        cost_hamiltonian = to_spo(problem.cost_hamiltonian)
         self._decode_solution_fn = problem.decode_fn
-        self.initial_state = initial_state or problem.recommended_initial_state
+        self.initial_state = initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
         self.max_shift_evaluations_per_parameter = max_shift_evaluations_per_parameter
 
         # Canonical wire mapping aligned with the cost SPO; problems may
         # surface domain-level labels (e.g. graph node names) via
         # ``wire_labels``, otherwise we fall back to dense qubit indices.
-        self._circuit_wires = tuple(
-            problem.wire_labels or _spo_wires(self.cost_hamiltonian)
-        )
+        self._circuit_wires = tuple(problem.wire_labels or _spo_wires(cost_hamiltonian))
         self.n_qubits = len(self._circuit_wires)
 
-        cost_n = self.cost_hamiltonian.num_qubits
-        mixer_n = self.mixer_hamiltonian.num_qubits
-        if cost_n != self.n_qubits or mixer_n != self.n_qubits:
-            raise ValueError(
-                f"wire_labels has {self.n_qubits} entries but "
-                f"cost_hamiltonian.num_qubits is {cost_n} and "
-                f"mixer_hamiltonian.num_qubits is {mixer_n}. Each must "
-                f"equal len(wire_labels)."
-            )
+        self.cost_hamiltonian = cost_hamiltonian
+        self.mixer_hamiltonian = problem.mixer_hamiltonian
 
         # Algorithm parameters
         self.n_layers = n_layers
         self.max_iterations = max_iterations
         self.current_iteration = 0
-        self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
-        # Circuit parameters — Qiskit ParameterVector, no sympy.
-        gammas = ParameterVector("γ", self.n_layers)
-        betas = ParameterVector("β", self.n_layers)
+        self.trotterization_strategy = trotterization_strategy
+
+    @cached_property
+    def _trotter_spec(self) -> TrotterSpec:
+        """The spec the cost pipeline trotterizes, built once per cost Hamiltonian."""
+        return TrotterSpec(self.cost_hamiltonian)
+
+    def _drop_built_circuits(self) -> None:
+        super()._drop_built_circuits()
+        self.__dict__.pop("_trotter_spec", None)
+
+    @property
+    def mixer_hamiltonian(self) -> SparsePauliOp:
+        """Mixer Hamiltonian, validated and coerced to ``SparsePauliOp`` on assignment."""
+        return self._mixer_hamiltonian
+
+    @mixer_hamiltonian.setter
+    def mixer_hamiltonian(self, hamiltonian: ObservableLike) -> None:
+        self._mixer_hamiltonian = self._check_width(
+            "mixer_hamiltonian", to_spo(hamiltonian)
+        )
+        self._drop_built_circuits()
+
+    @property
+    def n_layers(self) -> int:
+        """Number of QAOA layers; assigning it rebuilds the layer parameters."""
+        return self._n_layers
+
+    @n_layers.setter
+    def n_layers(self, n_layers: int) -> None:
+        self._n_layers = n_layers
+        gammas = ParameterVector("γ", n_layers)
+        betas = ParameterVector("β", n_layers)
         self._params = np.array([[g, b] for g, b in zip(gammas, betas)], dtype=object)
+        self._drop_built_circuits()
+
+    @property
+    def initial_state(self) -> InitialState:
+        """Initial state; ``None`` selects the problem's recommended one."""
+        return self._initial_state
+
+    @initial_state.setter
+    def initial_state(self, state: InitialState | None) -> None:
+        if state is None:
+            state = self.problem.recommended_initial_state
+        elif not isinstance(state, InitialState):
+            raise TypeError(
+                f"initial_state must be an InitialState instance or None, "
+                f"got {type(state).__name__}"
+            )
+        self._initial_state = state
+        self._drop_built_circuits()
+
+    @property
+    def trotterization_strategy(self) -> TrotterizationStrategy:
+        """Trotterization strategy; ``None`` selects exact trotterization."""
+        return self._trotterization_strategy
+
+    @trotterization_strategy.setter
+    def trotterization_strategy(self, strategy: TrotterizationStrategy | None) -> None:
+        self._trotterization_strategy = (
+            ExactTrotterization() if strategy is None else strategy
+        )
+        self._drop_built_circuits()
 
     @property
     def n_params_per_layer(self) -> int:

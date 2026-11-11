@@ -519,7 +519,7 @@ class TestGraphInput:
 
         verify_cost_circuit(qaoa_problem)
 
-    def test_graph_unsupported_initial_state(self, dummy_simulator):
+    def test_graph_unsupported_initial_state(self, dummy_simulator, default_optimizer):
         with pytest.raises(
             TypeError, match="initial_state must be an InitialState instance or None"
         ):
@@ -527,6 +527,7 @@ class TestGraphInput:
                 MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
                 initial_state="Bell",
                 backend=dummy_simulator,
+                optimizer=default_optimizer,
             )
 
     def test_graph_initial_state_recommended(self, dummy_simulator, default_optimizer):

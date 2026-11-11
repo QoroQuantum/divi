@@ -20,6 +20,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import BinaryPolynomialProblem
 from divi.hamiltonians._polynomial import _compute_hard_cvar_energy_jit
+from divi.hamiltonians._term_ops import ObservableLike
 from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog import VariationalQuantumAlgorithm
@@ -558,8 +559,18 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         super().__init__(**kwargs)
         self.max_iterations = max_iterations
         self.current_iteration = 0
-        self.cost_hamiltonian = sum(
-            self._variable_observables[1:], self._variable_observables[0]
+        self._cost_hamiltonian = SparsePauliOp.sum(list(self._variable_observables))
+
+    @property
+    def cost_hamiltonian(self) -> SparsePauliOp:
+        """Sum of the variables' Pauli strings; fixed by the problem and encoding."""
+        return self._cost_hamiltonian
+
+    @cost_hamiltonian.setter
+    def cost_hamiltonian(self, hamiltonian: ObservableLike) -> None:
+        raise AttributeError(
+            "PCE's cost Hamiltonian is fixed by its problem and encoding; build a "
+            "new PCE to change it."
         )
 
     @cached_property

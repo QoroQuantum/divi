@@ -8,6 +8,7 @@ import dimod
 import numpy as np
 import pytest
 from qiskit.circuit.library import CXGate, CYGate, RYGate, RZGate
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import MaestroConfig
 from divi.circuits._conversions import _QISKIT_TO_QASM2
@@ -176,6 +177,13 @@ def test_pce_cost_circuit_measures_one_pauli_string_per_variable(
     is Z on qubit 1, which Qiskit labels ZI."""
     pce = make_pce(problem=np.eye(3), encoding=encoding)
     assert [str(op.paulis[0]) for op in pce.cost_circuit.observable] == strings
+
+
+def test_pce_cost_hamiltonian_is_read_only(make_pce):
+    pce = make_pce(problem=np.eye(3))
+
+    with pytest.raises(AttributeError):
+        pce.cost_hamiltonian = SparsePauliOp(["ZZ"])
 
 
 _EXTRA_QUBITS_WARNING = exact_match(

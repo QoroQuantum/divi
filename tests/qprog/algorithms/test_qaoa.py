@@ -17,7 +17,7 @@ from divi.hamiltonians.trotterization import (
     QDrift,
 )
 from divi.pipeline.stages import TrotterSpecStage, _trotter_spec_stage
-from divi.qprog.algorithms import QAOA, IterativeQAOA
+from divi.qprog.algorithms import QAOA
 from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import SuperpositionState, ZerosState
@@ -258,6 +258,25 @@ class TestGeneralQAOA:
         )
 
         assert qaoa.max_shift_evaluations_per_parameter == 1
+
+    @pytest.mark.parametrize("attribute", ["cost_hamiltonian", "mixer_hamiltonian"])
+    def test_assigning_a_non_hermitian_hamiltonian_raises(
+        self, gradient_free_optimizer, dummy_simulator, attribute
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(2)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+                "must be real."
+            ),
+        ):
+            setattr(qaoa, attribute, SparsePauliOp.from_list([("XI", 1.0j)]))
 
     @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint8])
     def test_qaoa_stores_a_numpy_shift_limit_as_a_plain_int(
@@ -1104,13 +1123,13 @@ class TestWireSpaceInvariant:
             pytest.param(
                 ["IZZ", "ZZI"],
                 ["IIIX", "IIXI", "IXII", "XIII"],
-                r"wire_labels has 3 entries.*mixer_hamiltonian\.num_qubits is 4",
+                r"mixer_hamiltonian\.num_qubits is 4 but the program has 3 qubits",
                 id="mixer_wider_than_cost",
             ),
             pytest.param(
                 ["IIZZ", "ZZII"],
                 ["IIX", "IXI", "XII"],
-                r"wire_labels has 4 entries.*mixer_hamiltonian\.num_qubits is 3",
+                r"mixer_hamiltonian\.num_qubits is 3 but the program has 4 qubits",
                 id="cost_wider_than_mixer",
             ),
         ],
@@ -1137,9 +1156,28 @@ class TestWireSpaceInvariant:
         )
         with pytest.raises(
             ValueError,
-            match=r"wire_labels has 4 entries.*cost_hamiltonian\.num_qubits is 3",
+            match=r"cost_hamiltonian\.num_qubits is 3 but the program has 4 qubits",
         ):
             QAOA(prob, backend=dummy_simulator, optimizer=default_optimizer)
+
+    @pytest.mark.parametrize("attribute", ["cost_hamiltonian", "mixer_hamiltonian"])
+    def test_assigning_a_hamiltonian_of_another_width_raises(
+        self, dummy_simulator, default_optimizer, attribute
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(2)),
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                f"{attribute}.num_qubits is 3 but the program has 2 qubits; "
+                "they must match."
+            ),
+        ):
+            setattr(qaoa, attribute, SparsePauliOp.from_list([("XII", 1.0)]))
 
     def test_isolated_node_graph_with_wire_labels_succeeds(
         self, dummy_simulator, default_optimizer
@@ -1273,22 +1311,76 @@ class TestCostPipelineCache:
             is not self._cost_pipeline(qaoa2)._forward_cache
         )
 
-    def test_depth_rebuild_invalidates_persistent_entries(
-        self, dummy_simulator, default_optimizer
+    @pytest.mark.parametrize(
+        ("attribute", "replacement"),
+        [
+            ("cost_hamiltonian", [("ZIIII", 2.0), ("IZIII", -1.0)]),
+            ("mixer_hamiltonian", [("YIIII", 1.0), ("IYIII", 1.0)]),
+        ],
+        ids=["cost", "mixer"],
+    )
+    def test_reassigning_a_hamiltonian_rebuilds_derived_state(
+        self, dummy_simulator, default_optimizer, attribute, replacement
     ):
-        qaoa = IterativeQAOA(
-            MaxCutProblem(make_bull_graph()),
-            max_depth=2,
-            backend=dummy_simulator,
-            max_iterations_per_depth=1,
-            optimizer=default_optimizer,
+        qaoa = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
+        )
+        old_rule = qaoa._grad_shift_rule
+        old_circuit = qaoa.cost_circuit
+
+        setattr(qaoa, attribute, SparsePauliOp.from_list(replacement))
+
+        assert qaoa.cost_circuit is not old_circuit
+        assert qaoa._grad_shift_rule is not old_rule
+
+    @pytest.mark.parametrize(
+        ("attribute", "replacement"),
+        [
+            (
+                "cost_hamiltonian",
+                SparsePauliOp.from_list([("ZIIII", 2.0), ("IZIII", -1.0)]),
+            ),
+            (
+                "mixer_hamiltonian",
+                SparsePauliOp.from_list([("YIIII", 1.0), ("IYIII", 1.0)]),
+            ),
+            ("n_layers", 2),
+            ("initial_state", ZerosState()),
+            ("trotterization_strategy", ExactTrotterization(keep_top_n=1)),
+        ],
+        ids=["cost", "mixer", "n_layers", "initial_state", "trotterization"],
+    )
+    def test_reassigning_the_ansatz_inputs_rebuilds_the_circuits(
+        self, dummy_simulator, default_optimizer, attribute, replacement
+    ):
+        qaoa = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
         )
         first = self._forward(qaoa)
 
-        qaoa._rebuild_for_depth(2)
+        setattr(qaoa, attribute, replacement)
         second = self._forward(qaoa)
 
         assert second.initial_batch is not first.initial_batch
+        assert (
+            next(iter(second.initial_batch.values())).circuit_bodies
+            != next(iter(first.initial_batch.values())).circuit_bodies
+        )
+
+    def test_reassigning_n_layers_resizes_the_parameters(
+        self, dummy_simulator, default_optimizer
+    ):
+        qaoa = self._make_qaoa(
+            ExactTrotterization(), dummy_simulator, default_optimizer
+        )
+        shifts_before, _ = qaoa._grad_shift_rule
+
+        qaoa.n_layers = 3
+        shifts_after, _ = qaoa._grad_shift_rule
+
+        assert qaoa.n_params == 6
+        assert len(qaoa.cost_circuit.parameters) == 6
+        assert (shifts_before.shape[1], shifts_after.shape[1]) == (2, 6)
 
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
