@@ -3,14 +3,45 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  schedule:
+    - cron: "0 0 * * *" # nightly, midnight UTC
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: "Publish a nightly .dev build instead of the version in pyproject.toml"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
+  check:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      has-new-commits: ${{ steps.commit-check.outputs.has-new-commits }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for new commits in the last 24 hours
+        id: commit-check
+        run: |
+          if git log --since="24 hours ago" --oneline | grep -q .; then
+            echo "has-new-commits=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-new-commits=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
+    needs: check
+    # `check` runs only on the schedule; a skipped `check` must not skip this job.
+    if: >-
+      !cancelled() && needs.check.result != 'failure'
+      && (github.event_name != 'schedule' || needs.check.outputs.has-new-commits == 'true')
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -24,6 +55,19 @@ jobs:
       - uses: ./.github/actions/build-ai-index
         with:
           hf-token: ${{ secrets.HF_TOKEN }}
+
+      - name: Set nightly version
+        if: github.event_name == 'schedule' || inputs.nightly
+        run: |
+          BASE_VERSION=$(uv version --short)
+          # Bump minor so nightly sorts AFTER the current stable release on PyPI
+          # e.g. 0.9.0 -> 0.10.0.dev202603280000 (which is > 0.9.0 and > 0.9.x per PEP 440).
+          # The time lets a manual run publish alongside that day's scheduled one.
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          NEXT_MINOR="$MAJOR.$((MINOR + 1)).0"
+          NIGHTLY_VERSION="${NEXT_MINOR}.dev$(date -u +%Y%m%d%H%M)"
+          uv version "$NIGHTLY_VERSION" --no-sync
+          echo "NIGHTLY_VERSION=$NIGHTLY_VERSION" >> "$GITHUB_ENV"
 
       - name: Build package
         run: uv build
