@@ -141,20 +141,6 @@ class TestExpand:
 
         assert spy.call_args.args[1] is spec
 
-    def test_rejects_non_hermitian_sparse_pauli_op(self, dummy_expval_backend):
-        stage = TrotterSpecStage(
-            _DummyStrategy(n=1), meta_circuit_factory=_meta_factory
-        )
-        env = PipelineEnv(backend=dummy_expval_backend)
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "SparsePauliOp observables must be Hermitian; Pauli coefficients "
-                "must be real."
-            ),
-        ):
-            stage.expand(TrotterSpec(SparsePauliOp.from_list([("Z", 1.0j)])), env)
-
 
 class TestIntrospect:
     def test_returns_token_info(self, dummy_expval_backend):

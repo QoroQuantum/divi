@@ -86,7 +86,7 @@ class TestGeneralQAOA:
             backend=default_test_simulator,
         )
 
-        assert qaoa_problem._initial_spec().hamiltonian is qaoa_problem.cost_hamiltonian
+        assert qaoa_problem._initial_spec().hamiltonian == qaoa_problem.cost_hamiltonian
 
     @pytest.mark.parametrize(
         "initial_state, expected",

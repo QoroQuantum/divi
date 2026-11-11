@@ -16,7 +16,10 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
 from divi.circuits._conversions import lower_to_basis_gates
-from divi.hamiltonians._term_ops import _spo_to_qiskit_basis_gates
+from divi.hamiltonians._term_ops import (
+    _assert_hermitian_spo,
+    _spo_to_qiskit_basis_gates,
+)
 
 if TYPE_CHECKING:
     from divi.qprog.initial_states import InitialState
@@ -29,10 +32,13 @@ class TrotterSpec:
 
     :class:`~divi.pipeline.CircuitPipeline` caches forward passes by the
     identity of this object, so a program builds its spec once and reuses it.
+
+    Raises:
+        ValueError: If ``hamiltonian`` is not Hermitian.
     """
 
     hamiltonian: SparsePauliOp
-    """Hamiltonian to split into Trotter steps."""
+    """Hamiltonian to split into Trotter steps, stored with real coefficients."""
 
     initial_state: "InitialState | None" = None
     """State the evolution starts from; ``None`` outside a time evolution."""
@@ -43,6 +49,14 @@ class TrotterSpec:
     time: float | Parameter | None = None
     """Evolution time, symbolic for a parametric template; ``None`` outside a
     time evolution."""
+
+    def __post_init__(self):
+        _assert_hermitian_spo(self.hamiltonian)
+        object.__setattr__(
+            self,
+            "hamiltonian",
+            SparsePauliOp(self.hamiltonian.paulis, self.hamiltonian.coeffs.real),
+        )
 
 
 @dataclass(frozen=True)

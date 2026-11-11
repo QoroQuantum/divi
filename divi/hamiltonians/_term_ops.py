@@ -320,7 +320,6 @@ def _spo_to_qiskit_basis_gates_numeric(
     qc, spo: SparsePauliOp, time: float, qubits: Sequence[int]
 ) -> None:
     """Numeric-angle fast path; see :func:`_spo_to_qiskit_basis_gates`."""
-    _assert_hermitian_spo(spo)
     qubit_list = list(qubits)
 
     if len(qubit_list) == 0 or spo.size == 0:
@@ -338,7 +337,6 @@ def _spo_to_qiskit_basis_gates_symbolic(
     Qiskit's ``LieTrotter`` synthesiser only accepts numeric angles, so any
     ``Parameter`` / ``ParameterExpression`` ``time`` comes through here.
     """
-    _assert_hermitian_spo(spo)
     qubit_list = list(qubits)
     x_arr = spo.paulis.x  # bool[N_terms, n_qubits]
     z_arr = spo.paulis.z

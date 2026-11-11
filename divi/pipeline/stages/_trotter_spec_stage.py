@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 
 from divi.circuits import MetaCircuit
-from divi.circuits._core import _assert_hermitian_spo
 from divi.hamiltonians._term_ops import _split_identity_terms
 from divi.hamiltonians.trotterization import QDrift, TrotterizationStrategy, TrotterSpec
 from divi.pipeline._result_keys_operations import (
@@ -90,7 +89,6 @@ class TrotterSpecStage(SpecStage[TrotterSpec]):
                 f"TrotterSpecStage expects a TrotterSpec, got {type(items).__name__}"
             )
 
-        _assert_hermitian_spo(items.hamiltonian)
         terms, _ = _split_identity_terms(items.hamiltonian.simplify(atol=0))
 
         strategy = self._trotterization_strategy

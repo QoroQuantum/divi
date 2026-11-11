@@ -46,6 +46,33 @@ def test_a_constant_only_hamiltonian_keeps_its_constant(strategy, warning):
     assert result.effective_hamiltonian.equiv(5.0 * SparsePauliOp("II"))
 
 
+def test_a_spec_rejects_a_non_hermitian_hamiltonian():
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+            "must be real."
+        ),
+    ):
+        TrotterSpec(SparsePauliOp.from_list([("ZI", 1.0), ("IX", 1.0j)]))
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [ExactTrotterization(), QDrift(sampling_budget=2, seed=0)],
+    ids=["exact", "qdrift"],
+)
+def test_accepted_round_off_is_dropped_before_synthesis(strategy):
+    hamiltonian = SparsePauliOp.from_list([("ZI", 0.5 + 1e-12j), ("IX", 0.3)])
+    spec = TrotterSpec(hamiltonian)
+
+    result = strategy.process_hamiltonian(spec)
+    qc = _synthesize(result, n_steps=1, order=1, n_qubits=2)
+
+    assert not np.any(spec.hamiltonian.coeffs.imag)
+    assert qc.size() > 0
+
+
 @pytest.mark.parametrize(
     "build, field, value",
     [
