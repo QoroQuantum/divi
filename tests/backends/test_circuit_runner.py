@@ -13,6 +13,7 @@ from divi.backends import CircuitRunner, ExecutionResult, normalise_circuit_batc
 from divi.circuits._payloads import CircuitPayload
 from divi.exceptions import IncrementalEvolutionUnavailableError, VJPUnavailableError
 from tests._helpers import exact_match
+from tests.backends._helpers import parametric_payload
 
 
 class ConcreteCircuitRunner(CircuitRunner):
@@ -66,6 +67,28 @@ class TestCircuitRunner:
             ),
         ):
             runner.submit_incremental_evolution("", "", steps=[1], ham_ops="Z")
+
+    def test_payload_depths_follow_payload_then_row_order(self):
+        deep = parametric_payload(
+            "ry(w_0) q[0];\nrz(w_1) q[0];\nrx(w_0) q[0];\n",
+            rows=((0.1, 0.2), (0.3, 0.4)),
+            parameters=("w_0", "w_1"),
+            n_qubits=2,
+        )
+        shallow = parametric_payload(
+            "ry(w_0) q[0];\nry(w_1) q[1];\n",
+            rows=((0.1, 0.2), (0.3, 0.4), (0.5, 0.6)),
+            parameters=("w_0", "w_1"),
+            n_qubits=2,
+        )
+        runner = ConcreteCircuitRunner(shots=100, track_depth=True)
+
+        runner._record_payload_depths([deep, shallow])
+
+        assert runner.depth_history == [[4, 4, 2, 2, 2]]
+        untracked = ConcreteCircuitRunner(shots=100)
+        untracked._record_payload_depths([deep, shallow])
+        assert untracked.depth_history == []
 
 
 @pytest.mark.parametrize("shots", [1000, np.int64(1000), np.uint16(1000)])

@@ -14,8 +14,10 @@ from pydantic import ValidationError
 from qiskit.circuit import Parameter
 
 from divi.backends import ExecutionResult, JobStatus
+from divi.backends.runners import _qoro
 from divi.backends.runners._qoro import API_URL
 from divi.circuits._payloads import CircuitPayload
+from divi.circuits._qasm_template import bind_template, build_template
 
 SHOT_GROUPS_WITH_HAM_OPS_MESSAGE = (
     "shot_groups is incompatible with ham_ops: expectation-value mode is "
@@ -93,10 +95,10 @@ def http_response(
 
 
 def patch_transport(mocker, *, session=None, plain=None):
-    """Patch the retrying session and the plain ``requests.request`` path."""
+    """Patch the retrying session and the plain, non-retrying session."""
     return (
-        mocker.patch("requests.Session.request", side_effect=session),
-        mocker.patch("requests.request", side_effect=plain),
+        mocker.patch.object(_qoro.session, "request", side_effect=session),
+        mocker.patch.object(_qoro.plain_session, "request", side_effect=plain),
     )
 
 
@@ -131,6 +133,12 @@ def parametric_payload(
         parameters=tuple(Parameter(name) for name in parameters),
         parameter_sets=tuple((f"row_{i}", row) for i, row in enumerate(rows)),
     )
+
+
+def bind_row(payload: CircuitPayload, values: tuple[float, ...]) -> str:
+    """``payload``'s circuit with ``values`` bound to its parameters."""
+    template = build_template(payload.circuit, payload.parameter_names)
+    return bind_template(template, values)
 
 
 VJP_COTANGENTS = {"row_0": np.array([1.0, 0.5]), "row_1": np.array([-0.3, 2.0])}

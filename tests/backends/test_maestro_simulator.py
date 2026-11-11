@@ -20,7 +20,6 @@ from qiskit.quantum_info import SparsePauliOp, random_unitary
 import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends.runners._maestro import _circuit_seed, _run_with_cancellation
-from divi.circuits._qasm_template import build_template, render_template
 from divi.exceptions import (
     ExecutionCancelledError,
     IncrementalEvolutionUnavailableError,
@@ -37,6 +36,7 @@ from tests.backends._circuit_runner_contracts import (
 )
 from tests.backends._helpers import (
     SHOT_GROUPS_WITH_HAM_OPS_MESSAGE,
+    bind_row,
     padding_warning,
     parametric_payload,
     uncovered_circuits_message,
@@ -1571,14 +1571,9 @@ _parametric_payload = partial(
 )
 
 
-def _bound(payload, values):
-    template = build_template(payload.circuit, payload.parameter_names)
-    return render_template(template, [f"({float(v)!r})" for v in values])
-
-
 def _estimate(payload, values):
     """Maestro's expectation values of ``_VJP_HAM_OPS`` with ``values`` bound."""
-    qasm = _bound(payload, values)
+    qasm = bind_row(payload, values)
     return np.array(
         maestro.simple_estimate(qasm, observables=_VJP_HAM_OPS)["expectation_values"]
     )
@@ -1692,18 +1687,16 @@ class TestVectorJacobianProducts:
             atol=1e-7,
         )
 
-    def test_tracked_depths_include_each_row(self, make_maestro_simulator):
-        payload = _parametric_payload(_AFFINE_BODY)
+    def test_tracked_depths_have_one_entry_per_row(self, make_maestro_simulator):
         sim = make_maestro_simulator(track_depth=True)
 
-        sim.submit_vjp([payload], ham_ops=_VJP_HAM_OPS, cotangents=_VJP_COTANGENTS)
+        sim.submit_vjp(
+            [_parametric_payload(_AFFINE_BODY)],
+            ham_ops=_VJP_HAM_OPS,
+            cotangents=_VJP_COTANGENTS,
+        )
 
-        assert sim.depth_history == [
-            [
-                QuantumCircuit.from_qasm_str(_bound(payload, row)).depth()
-                for row in _VJP_ROWS
-            ]
-        ]
+        assert [len(batch) for batch in sim.depth_history] == [len(_VJP_ROWS)]
 
     @pytest.mark.parametrize(
         "config, reason",

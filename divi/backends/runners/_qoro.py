@@ -23,7 +23,6 @@ from typing import Any, TypeVar
 import numpy as np
 import requests
 from dotenv import dotenv_values, find_dotenv
-from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
@@ -119,6 +118,9 @@ retry_configuration = Retry(
 
 session.mount("http://", HTTPAdapter(max_retries=retry_configuration))
 session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
+
+# Pooled connections without retries, for requests a retry could apply twice.
+plain_session = requests.Session()
 
 logger = logging.getLogger(__name__)
 
@@ -499,7 +501,7 @@ class QoroService(AsyncJobBackend):
                 through the session that has the retry adapter mounted.
                 Set to ``False`` for state-changing requests, which a retry
                 after a lost response would apply twice.
-            **kwargs: Additional arguments to pass to requests.request(), such as
+            **kwargs: Additional arguments to pass to requests.Session.request(), such as
                 'json', 'timeout', 'params', etc.
 
         Returns:
@@ -519,7 +521,7 @@ class QoroService(AsyncJobBackend):
         if "headers" in kwargs:
             headers.update(kwargs.pop("headers"))
 
-        requester = session.request if retry else requests.request
+        requester = session.request if retry else plain_session.request
         response = requester(method, url, headers=headers, **kwargs)
 
         # Raise with comprehensive error details if request failed
@@ -1034,13 +1036,7 @@ class QoroService(AsyncJobBackend):
                 msg = _format_validation_error_with_context(circuit, e)
                 raise ValueError(f"Circuit '{key}' is not a valid QASM: {msg}") from e
 
-        if self.track_depth:
-            self._depth_history.append(
-                [
-                    QuantumCircuit.from_qasm_str(qasm).depth()
-                    for qasm in circuits.values()
-                ]
-            )
+        self._record_qasm_depths(circuits.values())
 
         chunks = self._split_circuits(circuits, envelope, shot_ranges)
         # Per-chunk starting offset into the global circuit list, used to
@@ -1182,6 +1178,7 @@ class QoroService(AsyncJobBackend):
                         ],
                     }
                 )
+        self._record_payload_depths(payloads)
         return call_plan
 
     def _dispatch_job(

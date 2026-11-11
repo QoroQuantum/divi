@@ -517,9 +517,8 @@ class TestQoroServiceMock:
         self, mocker, qoro_service_factory, method, kwargs, extra_headers
     ):
         service = qoro_service_factory(auth_token="test_token")
-        mock_request = mocker.patch(
-            "requests.Session.request",
-            return_value=mocker.MagicMock(status_code=200, url=f"{_API}/test"),
+        mock_request, _ = patch_transport(
+            mocker, session=[mocker.MagicMock(status_code=200, url=f"{_API}/test")]
         )
 
         service._make_request(method, "test", **kwargs)
@@ -1615,6 +1614,26 @@ class TestQoroServiceMock:
         ]
         assert finalized_flags == ["false", "false", "true"]
 
+    def test_parametric_submission_records_one_depth_per_row(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory(track_depth=True)
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker),
+                make_mock_add_response(mocker),
+                make_mock_add_response(mocker),
+            ],
+        )
+
+        service.submit_circuits(
+            [make_qasm_payload(n_param_sets=2), make_qasm_payload(n_param_sets=3)]
+        )
+
+        assert [len(batch) for batch in service.depth_history] == [5]
+
     def test_parametric_submission_chunks_oversized_parameter_sets(
         self, mocker, qoro_service_factory
     ):
@@ -2470,10 +2489,16 @@ class TestTransportRetries:
     asserts its shape.
     """
 
-    def test_retry_policy_is_mounted_for_both_schemes(self):
-        for scheme in ("http://", "https://"):
-            adapter = _qoro_service.session.get_adapter(scheme)
-            assert adapter.max_retries is _qoro_service.retry_configuration
+    @pytest.mark.parametrize("scheme", ["http://", "https://"])
+    def test_retry_policy_is_mounted_for_both_schemes(self, scheme):
+        adapter = _qoro_service.session.get_adapter(scheme)
+        assert adapter.max_retries is _qoro_service.retry_configuration
+
+    @pytest.mark.parametrize("scheme", ["http://", "https://"])
+    def test_the_plain_session_never_retries(self, scheme):
+        """A request resent after the server applied it would apply it twice."""
+        adapter = _qoro_service.plain_session.get_adapter(f"{scheme}example")
+        assert adapter.max_retries.total == 0
 
     def test_retry_policy_covers_transient_failures(self):
         retries = _qoro_service.retry_configuration
@@ -2548,7 +2573,9 @@ def test_status_reads_keep_the_retrying_session(mocker, qoro_service_factory):
     assert session_request.call_args.args == ("get", f"{_API}/job/job_1/status/")
 
 
-def test_an_unretried_request_goes_through_plain_requests(mocker, qoro_service_factory):
+def test_an_unretried_request_goes_through_the_plain_session(
+    mocker, qoro_service_factory
+):
     service = qoro_service_factory(auth_token="test_token")
     session_request, plain_request = patch_transport(
         mocker, plain=[http_response(mocker, body={})]
@@ -3383,8 +3410,8 @@ class TestQoroServiceWithApiKey:
         classical bits reading 0 — never narrowed to only the measured clbits.
 
         Positional decoding in ``_batched_expectation`` (expval path) and the
-        PCE parity decoder assumes qubit ``i`` sits at bitstring position ``i``;
-        a narrowed key would silently misalign every position. The circuit X's
+        PCE parity decoder assumes each qubit sits at a fixed bitstring
+        position; a narrowed key would silently misalign every position. The circuit X's
         all three qubits but measures only q0 and q2, so a full-width result is
         ``2`` ones (the measured qubits) and ``1`` zero (unmeasured c1).
         """

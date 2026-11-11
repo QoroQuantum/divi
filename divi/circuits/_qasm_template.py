@@ -4,11 +4,13 @@
 
 """Pre-split QASM templates for fast parameter substitution."""
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
 from itertools import chain
 from typing import NamedTuple
 
+from divi.circuits._conversions import _format_bound_param
+from divi.circuits._payloads import CircuitPayload
 from divi.qasm import _param_regex
 
 
@@ -101,3 +103,18 @@ def render_template(template: QASMTemplate, formatted_values: Sequence[str]) -> 
     values = (formatted_values[slot] for slot in template.slot_indices)
     interleaved = chain.from_iterable(zip(template.fragments, values))
     return "".join(interleaved) + template.fragments[-1]
+
+
+def bind_template(template: QASMTemplate, values: Iterable[float]) -> str:
+    """Render ``template`` with ``values`` bound to its parameters, at full precision."""
+    return render_template(
+        template, [f"({_format_bound_param(v, 17)})" for v in values]
+    )
+
+
+def bind_first_row(payload: CircuitPayload) -> str:
+    """``payload``'s circuit with its first parameter row bound."""
+    _, first_row = payload.parameter_sets[0]
+    return bind_template(
+        build_template(payload.circuit, payload.parameter_names), first_row
+    )

@@ -23,6 +23,7 @@ from divi.backends._shot_allocation import (
     to_wire,
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
+from divi.circuits._qasm_template import bind_first_row
 from divi.exceptions import IncrementalEvolutionUnavailableError, VJPUnavailableError
 
 
@@ -377,6 +378,16 @@ class CircuitRunner(ABC):
         self._depth_history.append(
             [QuantumCircuit.from_qasm_str(qasm).depth() for qasm in qasm_strings]
         )
+
+    def _record_payload_depths(self, payloads: Sequence[CircuitPayload]) -> None:
+        """Append one depth per parameter row, measured once per payload, when ``track_depth`` is set."""
+        if not self.track_depth:
+            return
+        depths: list[int] = []
+        for payload in payloads:
+            depth = QuantumCircuit.from_qasm_str(bind_first_row(payload)).depth()
+            depths.extend([depth] * len(payload.parameter_sets))
+        self._depth_history.append(depths)
 
     @property
     def depth_history(self) -> list[list[int]]:

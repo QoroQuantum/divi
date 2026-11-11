@@ -33,12 +33,12 @@ from divi.backends._shot_allocation import (
     group_shots_into_ranges,
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
+from divi.circuits._qasm_template import bind_first_row
 from divi.exceptions import VJPUnavailableError
 from divi.qasm import count_clbits, count_qubits
 
 from ._maestro import (
     MaestroConfig,
-    _bind_parameter_sets,
     _circuit_seed,
     _compile_adjoint_programs,
     _expectation_value,
@@ -611,11 +611,13 @@ class QRMIBackend(CircuitRunner):
         terms = pad_ham_ops(
             ham_ops, None, [count_qubits(payload.circuit) for payload in payloads]
         ).split(";")
-        if self.track_depth:
-            self._record_qasm_depths(_bind_parameter_sets(payloads))
+        self._record_payload_depths(payloads)
+        circuits = [bind_first_row(payload) for payload in payloads]
 
         results: list[dict] = []
-        for payload, (_, angle_matrix, angle_offset) in zip(payloads, compiled):
+        for payload, circuit, (_, angle_matrix, angle_offset) in zip(
+            payloads, circuits, compiled
+        ):
             raise_if_cancelled(
                 cancellation_event, "QRMI batch cancelled after partial completion"
             )
@@ -623,7 +625,6 @@ class QRMIBackend(CircuitRunner):
                 payload, angle_matrix, angle_offset, cotangents
             )
             # Any bound row: parameter_rows supplies every row's gate angles.
-            circuit = next(_bind_parameter_sets([payload]))
             request = _request(
                 "adjoint_vjp",
                 circuit,

@@ -1002,6 +1002,16 @@ class TestVectorJacobianProducts:
         )
         np.testing.assert_allclose(results[0]["metadata"]["vjp"], [2.0, 1.0])
 
+    def test_tracked_depths_have_one_entry_per_row(self, resource, make_qrmi_backend):
+        backend = make_qrmi_backend(resource, track_depth=True)
+        payload = make_vjp_payload()
+
+        backend.submit_vjp([payload], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS)
+
+        assert [len(batch) for batch in backend.depth_history] == [
+            len(payload.parameter_sets)
+        ]
+
     def test_forced_sampling_rules_it_out(self, resource, make_qrmi_backend):
         backend = make_qrmi_backend(resource, force_sampling=True)
 

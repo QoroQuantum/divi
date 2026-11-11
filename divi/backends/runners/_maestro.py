@@ -10,7 +10,7 @@ import re
 import time
 import warnings
 import zlib
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from itertools import pairwise
 from numbers import Integral
@@ -29,12 +29,11 @@ from divi.backends._config import describe_unknown, reject_unknown_reset
 from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
 from divi.backends._shot_allocation import expand_shot_groups
 from divi.circuits._conversions import (
-    _format_bound_param,
     _sparse_pauli_op_to_ham_string,
     lower_to_basis_gates,
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
-from divi.circuits._qasm_template import build_template, render_template
+from divi.circuits._qasm_template import bind_template, build_template
 from divi.exceptions import IncrementalEvolutionUnavailableError, VJPUnavailableError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
 from divi.qasm import count_clbits, count_qubits
@@ -105,7 +104,7 @@ def _compile_adjoint_template(
 
     def compile_at(values: np.ndarray) -> "maestro.AdjointProgram":
         return maestro.AdjointProgram(
-            maestro.QasmToCirc().parse_and_translate(_bind_parameters(template, values))
+            maestro.QasmToCirc().parse_and_translate(bind_template(template, values))
         )
 
     base, check = np.random.default_rng(0).uniform(-1.0, 1.0, (2, n_params))
@@ -151,21 +150,6 @@ def _compile_adjoint_template(
     except (ValueError, MemoryError) as exc:
         return f"Maestro cannot differentiate the circuit: {exc}"
     return program, angle_matrix, angle_offset
-
-
-def _bind_parameters(template: Any, values: Iterable[float]) -> str:
-    """``template`` with ``values`` bound to its parameters, at full precision."""
-    return render_template(
-        template, [f"({_format_bound_param(v, 17)})" for v in values]
-    )
-
-
-def _bind_parameter_sets(payloads: Sequence[CircuitPayload]) -> Iterator[str]:
-    """Each payload's circuit, once per parameter row, with the row bound."""
-    for payload in payloads:
-        template = build_template(payload.circuit, payload.parameter_names)
-        for _label, values in payload.parameter_sets:
-            yield _bind_parameters(template, values)
 
 
 def _compile_adjoint_programs(
@@ -639,8 +623,7 @@ class MaestroSimulator(CircuitRunner):
         terms = pad_ham_ops(
             ham_ops, None, [count_qubits(payload.circuit) for payload in payloads]
         ).split(";")
-        if self.track_depth:
-            self._record_qasm_depths(_bind_parameter_sets(payloads))
+        self._record_payload_depths(payloads)
 
         def _run(item) -> list[dict]:
             payload, (program, angle_matrix, angle_offset) = item
