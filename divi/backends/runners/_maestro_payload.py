@@ -65,8 +65,7 @@ def maestro_config_to_payload(config: MaestroConfig) -> dict:
 
     The simulator options ``config`` sets travel under maestro's own names,
     with the enums as maestro's integer codes; the noise model travels as the
-    list of ``set_*`` calls that built it, with ``noise_realizations`` resolved
-    to the value a local run would use.
+    list of ``set_*`` calls that built it.
 
     Raises:
         ValueError: If the noise model cannot be rebuilt from its recorded
@@ -81,10 +80,7 @@ def maestro_config_to_payload(config: MaestroConfig) -> dict:
         payload["noise_seed"] = config.noise_seed
     if config.noise_model is not None:
         payload["noise_model"] = _noise_model_to_payload(config.noise_model)
-        payload |= config._noise_realization_kwargs()
-    elif config.noise_realizations is not None:
-        payload["noise_realizations"] = config.noise_realizations
-    return payload
+    return payload | config._noise_realization_kwargs()
 
 
 def maestro_config_from_payload(data: Mapping[str, Any]) -> MaestroConfig:

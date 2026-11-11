@@ -66,11 +66,6 @@ _NATIVE_BACKENDS = {
     "QuestSim": "quest",
 }
 
-# ``noise_realizations`` that Maestro's ``full_noise_execute`` and
-# ``full_noise_estimate`` default to, which a local run leaves in force.
-_LOCAL_EXECUTE_REALIZATIONS = 64
-_LOCAL_ESTIMATE_REALIZATIONS = 100
-
 # What the server reports for a session it no longer has, or QRMI for a
 # resource holding none.
 _LOST_SESSION_MARKERS = ("session_not_found", "No session")
@@ -245,13 +240,9 @@ def _noise_block(
     )
     if not channels:
         return None
-    noise = {
-        "channels": channels,
-        "realizations": config._noise_realization_kwargs().get(
-            "noise_realizations",
-            _LOCAL_ESTIMATE_REALIZATIONS if estimating else _LOCAL_EXECUTE_REALIZATIONS,
-        ),
-    }
+    noise: dict[str, Any] = {"channels": channels}
+    if config.noise_realizations is not None:
+        noise["realizations"] = config.noise_realizations
     if (seed := _circuit_seed(config.noise_seed, label, qasm)) is not None:
         noise["seed"] = seed
     return noise

@@ -1098,39 +1098,6 @@ class TestPerCircuitSeeds:
         assert seeds[0] == seeds[2]
 
 
-class TestNoiseBackendFit:
-    """Choices that depend on whether the backend applies noise exactly."""
-
-    @pytest.mark.parametrize(
-        "simulation_type", ["DensityMatrix", "MatrixProductOperator"]
-    )
-    def test_exact_backends_default_to_one_realization(self, mocker, simulation_type):
-        fake = _make_fake_maestro(mocker)
-        sim, _ = _make_noisy_sim(
-            mocker, fake, simulator_type="QCSim", simulation_type=simulation_type
-        )
-
-        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
-
-        assert fake.full_noise_estimate.call_args.kwargs["noise_realizations"] == 1
-
-    def test_stochastic_layers_keep_maestros_default_on_exact_backends(self, mocker):
-        noise_model = maestro.NoiseModel()
-        noise_model.set_all_coherent_depolarizing(2, 0.01)
-        fake = _make_fake_maestro(mocker)
-        sim, _ = _make_noisy_sim(
-            mocker,
-            fake,
-            noise_model=noise_model,
-            simulator_type="QCSim",
-            simulation_type="DensityMatrix",
-        )
-
-        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
-
-        assert "noise_realizations" not in fake.full_noise_estimate.call_args.kwargs
-
-
 def _contract_maestro_runner(mocker, fake_maestro, **kwargs):
     return _make_simulator(mocker, fake_maestro, shots=CONTRACT_TEST_SHOTS, **kwargs)
 
@@ -1317,40 +1284,6 @@ class TestMaestroIntegration:
         counts = sim.submit_circuits({"c0": _ID_QASM}).results[0]["results"]
 
         assert counts.get("1", 0) > 100
-
-    @pytest.mark.parametrize(
-        "simulator_type, simulation_type",
-        [
-            ("QCSim", "DensityMatrix"),
-            ("QCSim", "MatrixProductOperator"),
-            ("QiskitAer", "DensityMatrix"),
-            ("QCSim", "Statevector"),
-            ("QCSim", "MatrixProductState"),
-            ("QiskitAer", "Statevector"),
-            ("QiskitAer", "MatrixProductOperator"),
-        ],
-    )
-    def test_exact_channel_backends_match_maestro(
-        self, make_maestro_simulator, simulator_type, simulation_type
-    ):
-        """Maestro runs exact-only channels exactly where divi assumes it does."""
-        noise_model = maestro.NoiseModel()
-        noise_model.set_generalized_amplitude_damping(0, 0.1, 0.2)
-        config = MaestroConfig(
-            simulator_type=simulator_type,
-            simulation_type=simulation_type,
-            noise_model=noise_model,
-        )
-        sim = make_maestro_simulator(maestro_config=config)
-
-        def run():
-            return sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZZ")
-
-        if config._uses_exact_channels():
-            run()
-        else:
-            with pytest.raises(ValueError, match="density-matrix or MPO"):
-                run()
 
     def test_id_gates_run_noiseless(self, make_maestro_simulator):
         sim = make_maestro_simulator(shots=100)

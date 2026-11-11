@@ -498,27 +498,22 @@ class TestNoise:
             },
         ]
 
-    @pytest.mark.parametrize(
-        "ham_ops, realizations",
-        [pytest.param(None, 64, id="execute"), pytest.param("ZZ", 100, id="estimate")],
-    )
-    def test_uses_the_realizations_a_local_run_defaults_to(
-        self, resource, make_noisy_backend, ham_ops, realizations
+    @pytest.mark.parametrize("ham_ops", [None, "ZZ"], ids=["execute", "estimate"])
+    def test_unset_realizations_are_left_to_maestro(
+        self, resource, make_noisy_backend, ham_ops
     ):
         make_noisy_backend(_depolarizing()).submit_circuits(
             {"c0": _BELL_QASM}, ham_ops=ham_ops
         )
 
-        assert resource.last_request["noise"]["realizations"] == realizations
+        assert "realizations" not in resource.last_request["noise"]
 
-    def test_one_realization_where_every_channel_is_exact(
-        self, resource, make_noisy_backend
-    ):
-        make_noisy_backend(
-            _depolarizing(), simulation_type="DensityMatrix"
-        ).submit_circuits({"c0": _BELL_QASM})
+    def test_forwards_explicit_realizations(self, resource, make_noisy_backend):
+        make_noisy_backend(_depolarizing(), noise_realizations=7).submit_circuits(
+            {"c0": _BELL_QASM}
+        )
 
-        assert resource.last_request["noise"]["realizations"] == 1
+        assert resource.last_request["noise"]["realizations"] == 7
 
     def test_derives_each_circuits_noise_seed_as_maestro_simulator_does(
         self, resource, make_noisy_backend

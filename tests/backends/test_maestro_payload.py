@@ -130,19 +130,14 @@ def test_a_config_from_a_simulator_config_round_trips():
     assert _over_the_wire(config) == config
 
 
-@pytest.mark.parametrize(
-    "simulation_type, realizations", [("DensityMatrix", 1), ("Statevector", None)]
-)
-def test_noise_realizations_are_resolved_as_a_local_run_would(
-    simulation_type, realizations
-):
+def test_unset_noise_realizations_are_left_to_maestro():
     noise_model = maestro.NoiseModel()
     noise_model.set_all_depolarizing(2, 0.02)
     payload = maestro_config_to_payload(
-        MaestroConfig(simulation_type=simulation_type, noise_model=noise_model)
+        MaestroConfig(simulation_type="DensityMatrix", noise_model=noise_model)
     )
 
-    assert payload.get("noise_realizations") == realizations
+    assert "noise_realizations" not in payload
 
 
 def test_noise_model_round_trip():

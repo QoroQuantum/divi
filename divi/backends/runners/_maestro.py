@@ -276,17 +276,6 @@ def _lower_for_statevector(
     return qasm, float(lowered.global_phase), active_indices
 
 
-# Simulator/simulation pairs on which Maestro applies noise as exact channels.
-_EXACT_CHANNEL_BACKENDS = frozenset(
-    {
-        ("QCSim", "DensityMatrix"),
-        ("QCSim", "MatrixProductOperator"),
-        ("Gpu", "DensityMatrix"),
-        ("Gpu", "MatrixProductOperator"),
-        ("QiskitAer", "DensityMatrix"),
-    }
-)
-
 _SIMULATOR_OPTIONS = frozenset(maestro.SimulatorConfig._fields)
 # Per-run settings a maestro user may look for on the config.
 _RUN_OPTIONS = frozenset({"shots", "force_sampling"})
@@ -333,8 +322,8 @@ class MaestroConfig(BaseModel):
 
     noise_realizations: int | None = None
     """``noise_realizations`` passed to Maestro's noisy entry points.  ``None``
-    uses one on backends where every channel of the model is exact, and
-    Maestro's default otherwise."""
+    leaves Maestro to choose: one where it applies every channel exactly, and
+    its sampling default otherwise."""
 
     @model_validator(mode="before")
     @classmethod
@@ -451,28 +440,11 @@ class MaestroConfig(BaseModel):
     def __dir__(self) -> list[str]:
         return sorted(set(super().__dir__()) | _SIMULATOR_OPTIONS)
 
-    def _uses_exact_channels(self) -> bool:
-        """Whether Maestro applies noise as exact channels on this config's backend."""
-        config = self._simulator_config()
-        backend = (config.simulator_type.name, config.simulation_type.name)
-        return backend in _EXACT_CHANNEL_BACKENDS
-
     def _noise_realization_kwargs(self) -> dict[str, int]:
-        """``noise_realizations`` for Maestro's noisy entry points.
-
-        Unset, one realisation is used where every channel of the model is
-        exact, since repeats would redo the same simulation; otherwise
-        Maestro's default applies.
-        """
-        if self.noise_realizations is not None:
-            return {"noise_realizations": self.noise_realizations}
-        noise_model = self.noise_model
-        if noise_model is None:
+        """``noise_realizations`` for Maestro's noisy entry points, when set."""
+        if self.noise_realizations is None:
             return {}
-        stochastic = noise_model.has_coherent() or noise_model.has_correlated()
-        if self._uses_exact_channels() and not stochastic:
-            return {"noise_realizations": 1}
-        return {}
+        return {"noise_realizations": self.noise_realizations}
 
 
 def require_maestro_config(value: Any, name: str) -> None:
