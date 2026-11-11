@@ -470,7 +470,7 @@ Submitting and Monitoring Jobs
 
 .. note::
 
-   **Bitstring Ordering**: :class:`~divi.backends.QoroService` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labelled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
+   **Bitstring Ordering**: result bitstrings put classical bit ``c[0]`` leftmost, and the Hamiltonian operators passed via ``ham_ops`` put qubit 0 leftmost. For example, measuring each ``q[i]`` into ``c[i]`` on a 4-qubit system, the bitstring ``"0011"`` represents qubit 0=0, qubit 1=0, qubit 2=1, qubit 3=1, and the operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2 and I to qubit 3.
 
 Configuring Jobs with JobConfig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

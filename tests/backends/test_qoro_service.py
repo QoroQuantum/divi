@@ -116,18 +116,37 @@ def _shots_envelope(service) -> dict:
     return service._fragment_envelope(None, None, None, service.shots)
 
 
-def _serve_job_results(mocker, service, pages, run_time=None):
-    """Serve ``pages`` from ``resultsV2`` and ``run_time``, if given, from ``status``."""
+def _serve_job_results(mocker, service, pages, run_time=None, qpu_system_name=None):
+    """Serve ``pages``, ``run_time`` (if given) and ``qpu_system_name`` as the API would."""
     pages = iter(pages)
     status = {"status": "COMPLETED"}
     if run_time is not None:
         status["run_time"] = run_time
+    meta = {"qpu_system_name": qpu_system_name}
 
     def respond(_method, endpoint, **_kwargs):
-        body = status if endpoint.endswith("/status/") else next(pages)
+        if endpoint.endswith("/status/"):
+            body = status
+        elif endpoint.endswith("/meta/"):
+            body = meta
+        else:
+            body = next(pages)
         return mocker.MagicMock(status_code=HTTPStatus.OK, json=lambda: body)
 
     return mocker.patch.object(service, "_make_request", side_effect=respond)
+
+
+def _qh1_row(label, n_bits, index):
+    """A ``resultsV2`` row whose QH1 histogram holds ``index`` three times."""
+    blob = build_qh_histogram(n_bits, [(index, 3)])
+    return {
+        "label": label,
+        "results": {
+            "encoding": "qh1",
+            "n_bits": n_bits,
+            "payload": base64.b64encode(blob).decode("ascii"),
+        },
+    }
 
 
 def _mock_config_endpoint(mocker, service, response_data):
@@ -2167,6 +2186,60 @@ class TestQoroServiceMock:
 
         assert result.results == [
             {"label": "wide", "results": {"1" + "0" * (n_bits - 1): 2}}
+        ]
+
+    @pytest.mark.parametrize(
+        ("qpu_system_name", "expected"),
+        [(None, {"001": 3}), ("qpu_x", {"100": 3})],
+        ids=["simulator", "qpu"],
+    )
+    def test_get_job_results_keys_counts_with_c0_leftmost(
+        self, mocker, qoro_service_factory, qpu_system_name, expected
+    ):
+        """QPU counts arrive with c[0] rightmost, simulator counts leftmost."""
+        service = qoro_service_factory()
+        page = {"next": None, "results": [_qh1_row("c0", 3, 1)]}
+        _serve_job_results(mocker, service, [page], qpu_system_name=qpu_system_name)
+
+        result = service.get_job_results(make_execution_result("job_1"))
+
+        assert result.results == [{"label": "c0", "results": expected}]
+
+    def test_get_job_results_reverses_qpu_counts_on_every_page_with_one_meta_call(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        pages = [
+            {"next": next_page, "results": [_qh1_row(f"c{i}", 3, index)]}
+            for i, (next_page, index) in enumerate([("page-2", 1), (None, 6)])
+        ]
+        mock_request = _serve_job_results(
+            mocker, service, pages, qpu_system_name="qpu_x"
+        )
+
+        result = service.get_job_results(make_execution_result("job_1"))
+
+        assert result.results == [
+            {"label": "c0", "results": {"100": 3}},
+            {"label": "c1", "results": {"011": 3}},
+        ]
+        endpoints = [call.args[1] for call in mock_request.call_args_list]
+        assert endpoints.count("job/job_1/meta/") == 1
+
+    def test_get_job_results_leaves_qpu_expectation_values_alone(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        page = {"next": None, "results": [{"label": "c0", "results": {"ZI": 0.5}}]}
+        mock_request = _serve_job_results(
+            mocker, service, [page], qpu_system_name="qpu_x"
+        )
+
+        result = service.get_job_results(make_execution_result("job_1"))
+
+        assert result.results == [{"label": "c0", "results": {"ZI": 0.5}}]
+        assert "job/job_1/meta/" not in [
+            call.args[1] for call in mock_request.call_args_list
         ]
 
     def test_get_job_results_paginates_multiple_pages(

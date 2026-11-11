@@ -6,8 +6,7 @@
 
 All grouping operates on Qiskit :class:`SparsePauliOp` — no PennyLane
 dependency.  Groups are returned as tuples of big-endian Pauli label
-strings (qubit 0 on the left); post-processing reverses them to match the
-little-endian histogram keys backends return.
+strings (qubit 0 on the left), the order backends key histograms in.
 """
 
 from collections import defaultdict, deque

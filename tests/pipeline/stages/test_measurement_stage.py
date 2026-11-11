@@ -721,8 +721,8 @@ class TestMeasureAllQubits:
     @pytest.mark.parametrize(
         ("registers", "body", "expected"),
         [
-            ("qreg q[3];\ncreg c[3];\n", "x q[0];\nmeasure q[0] -> c[0];\n", "001"),
-            ("qreg q[3];\ncreg c[2];\n", "x q[2];\nmeasure q[2] -> c[1];\n", "10"),
+            ("qreg q[3];\ncreg c[3];\n", "x q[0];\nmeasure q[0] -> c[0];\n", "100"),
+            ("qreg q[3];\ncreg c[2];\n", "x q[2];\nmeasure q[2] -> c[1];\n", "01"),
         ],
         ids=["untouched-qubits", "narrower-register"],
     )

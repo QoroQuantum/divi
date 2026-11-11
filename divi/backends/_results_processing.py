@@ -4,6 +4,7 @@
 
 import base64
 from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 
@@ -143,14 +144,9 @@ def _limbs_to_bitstrings(limbs: np.ndarray, n_bits: int, L: int) -> list[str]:
     return out
 
 
-def reverse_dict_endianness(
-    probs_dict: Mapping[str, Mapping[str, float]],
-) -> dict[str, dict[str, float]]:
-    """Reverse endianness of all bitstrings in a dictionary of probability distributions."""
-    return {
-        tag: {bitstring[::-1]: prob for bitstring, prob in probs.items()}
-        for tag, probs in probs_dict.items()
-    }
+def _reverse_bitstrings(histogram: Mapping[str, Any]) -> dict[str, Any]:
+    """``histogram`` with every bitstring key reversed."""
+    return {bitstring[::-1]: value for bitstring, value in histogram.items()}
 
 
 def convert_counts_to_probs(

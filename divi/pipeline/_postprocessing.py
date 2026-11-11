@@ -150,20 +150,8 @@ def _batched_expectation(
     return (count_matrix @ eigenvalues.T / totals[:, None]).T
 
 
-def _to_big_endian_histogram(branch_key: tuple, counts: Any) -> dict[str, int]:
-    """Validate a backend histogram and flip its little-endian bitstrings.
-
-    Raises:
-        TypeError: If ``counts`` is not a mapping keyed by bitstrings.
-    """
-    return {
-        bitstring[::-1]: count
-        for bitstring, count in _check_histogram(branch_key, counts).items()
-    }
-
-
 def _check_histogram(branch_key: tuple, counts: Any) -> Mapping[str, int]:
-    """Return a backend histogram unchanged, with its little-endian keys.
+    """Return a backend histogram unchanged.
 
     Raises:
         TypeError: If ``counts`` is not a mapping keyed by bitstrings.
@@ -178,11 +166,6 @@ def _check_histogram(branch_key: tuple, counts: Any) -> Mapping[str, int]:
         "Expected a bitstring→count histogram from the backend for branch "
         f"{branch_key!r}, got {found}."
     )
-
-
-def _reverse_labels(labels: Sequence[str]) -> list[str]:
-    """Big-endian Pauli labels in the little-endian order of backend histogram keys."""
-    return [label[::-1] for label in labels]
 
 
 def _group_lookups(
@@ -240,7 +223,7 @@ def _counts_to_expvals(
     values: ChildResults = {}
     for (labels, n_qubits), members in members_by_group.items():
         expvals = _batched_expectation(
-            [counts for _, counts in members], _reverse_labels(labels), n_qubits
+            [counts for _, counts in members], labels, n_qubits
         )
         for (branch_key, _), col in zip(members, expvals.T):
             values[branch_key] = (
@@ -330,9 +313,7 @@ def _counts_to_cost_variance(
 
         labels = [str(p) for p in group_labels]
         bitstrings = list(counts)
-        eigenvalues = _compute_bitstring_eigenvalues(
-            bitstrings, _reverse_labels(labels), n_qubits
-        )
+        eigenvalues = _compute_bitstring_eigenvalues(bitstrings, labels, n_qubits)
         frequencies = np.asarray([counts[b] for b in bitstrings], dtype=np.float64)
         factors = np.ones(len(labels))
         if factor_keys:
@@ -428,7 +409,7 @@ def _counts_to_wrs_cost_variance(
         )
         bitstrings = list(counts)
         weighted_values = coefficients @ _compute_bitstring_eigenvalues(
-            bitstrings, _reverse_labels(labels), n_qubits
+            bitstrings, labels, n_qubits
         )
         state = moments.get(base_key, (0, 0.0, 0.0))
         for bitstring, weighted_value in zip(
@@ -485,11 +466,7 @@ def _counts_to_probs(
     raw: ChildResults,
     shots: int,
 ) -> ChildResults:
-    """Normalise shot counts → probability distributions.
-
-    Reverses the backends' little-endian keys to big-endian (qubit 0 first)
-    and divides by total shots.
-    """
+    """Normalise shot counts → probability distributions by dividing by total shots."""
     out: ChildResults = {}
 
     for branch_key, counts in raw.items():
@@ -497,7 +474,7 @@ def _counts_to_probs(
             out[branch_key] = counts
             continue
         out[branch_key] = {
-            bitstring[::-1]: count / shots for bitstring, count in counts.items()
+            bitstring: count / shots for bitstring, count in counts.items()
         }
 
     return out

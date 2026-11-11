@@ -47,7 +47,10 @@ from divi.backends._job_status import (
     QoroJobError,
 )
 from divi.backends._pauli_serde import compress_ham_ops, pad_ham_ops
-from divi.backends._results_processing import _decode_histogram_b64
+from divi.backends._results_processing import (
+    _decode_histogram_b64,
+    _reverse_bitstrings,
+)
 from divi.backends._saved_defaults import defaults_path, load_defaults
 from divi.backends._shot_allocation import (
     ShotRange,
@@ -1339,7 +1342,9 @@ class QoroService(AsyncJobBackend):
 
         Returns:
             ExecutionResult: A new ExecutionResult instance with results and the
-                job's ``run_time`` populated.
+                job's ``run_time`` populated. Counts are keyed with c[0]
+                leftmost; a QPU job's counts arrive with c[0] rightmost and
+                are reversed.
 
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
@@ -1349,6 +1354,7 @@ class QoroService(AsyncJobBackend):
         job_id = self._extract_job_id(execution_result)
 
         all_results: list[dict] = []
+        histograms: list[dict] = []
         limit = 100
         offset = 0
 
@@ -1371,12 +1377,22 @@ class QoroService(AsyncJobBackend):
             data = response.json()
 
             for result in data["results"]:
-                result["results"] = _decode_histogram_b64(result["results"])
+                encoded = result["results"]
+                result["results"] = _decode_histogram_b64(encoded)
+                if encoded and encoded.get("payload"):
+                    histograms.append(result)
             all_results.extend(data["results"])
 
             if data.get("next") is None:
                 break
             offset += limit
+
+        if histograms:
+            meta = self._make_request("get", f"job/{job_id}/meta/", timeout=100)
+            # QPUs key counts with c[0] rightmost.
+            if meta.json()["qpu_system_name"] is not None:
+                for result in histograms:
+                    result["results"] = _reverse_bitstrings(result["results"])
 
         status = self._make_request("get", f"job/{job_id}/status/", timeout=200)
         return execution_result.with_results(

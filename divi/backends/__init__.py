@@ -19,7 +19,7 @@ from ._job_status import (
     JobTimedOutError,
     QoroJobError,
 )
-from ._results_processing import convert_counts_to_probs, reverse_dict_endianness
+from ._results_processing import convert_counts_to_probs
 from ._systems import QPU, QPUSystem, SimulatorCluster
 from .runners import (
     JobType,
@@ -56,7 +56,6 @@ __all__ = [
     "convert_counts_to_probs",
     "create_backend_from_properties",
     "normalise_circuit_batch",
-    "reverse_dict_endianness",
 ]
 
 

@@ -27,6 +27,7 @@ from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
 from divi.backends._config import DeviceConfig, describe_unknown, require_device_config
 from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
+from divi.backends._results_processing import _reverse_bitstrings
 from divi.backends._shot_allocation import (
     bucket_by_shots,
     expand_shot_groups,
@@ -42,7 +43,7 @@ from ._maestro import (
     _circuit_seed,
     _compile_adjoint_programs,
     _expectation_value,
-    _little_endian_counts,
+    _fit_counts_width,
     _lower_for_statevector,
     _prepare_noisy_circuits,
     _result_entry,
@@ -729,7 +730,7 @@ class QRMIBackend(CircuitRunner):
             )
             raw = self._run_request(request, cancellation_event)
             if circuit_terms is None:
-                counts = _little_endian_counts(raw["counts"], count_clbits(qasm))
+                counts = _fit_counts_width(raw["counts"], count_clbits(qasm))
                 results.append(_result_entry(label, counts, raw, "counts"))
             else:
                 expvals = dict(zip(circuit_terms, raw["expectation_values"]))
@@ -770,11 +771,12 @@ class QRMIBackend(CircuitRunner):
             )
             raw = self._run_task(payload, cancellation_event)
             for index, pub in zip(indices, self._result_decoder.decode(raw)):
-                # Registers joined in declaration order, the first rightmost.
+                # Registers joined in declaration order, the first rightmost;
+                # reversed so the first register's c[0] is leftmost.
                 bits = BitArray.concatenate_bits(list(pub.data.values()))
                 entries[index] = {
                     "label": labels[index],
-                    "results": bits.get_counts(),
+                    "results": _reverse_bitstrings(bits.get_counts()),
                     "metadata": dict(pub.metadata),
                 }
         return ExecutionResult(

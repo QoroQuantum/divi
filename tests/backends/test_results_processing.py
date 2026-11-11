@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from divi.backends import _results_processing as results_processing
-from divi.backends import convert_counts_to_probs, reverse_dict_endianness
+from divi.backends import convert_counts_to_probs
 from divi.backends._numba_kernels import (
     _decode_uleb128_limbs_jit,
     _decompress_histogram_jit,
@@ -18,6 +18,7 @@ from divi.backends._results_processing import (
     _decode_histogram_b64,
     _decompress_histogram,
     _limbs_to_bitstrings,
+    _reverse_bitstrings,
 )
 from tests.backends._helpers import build_qh_histogram, encode_uleb128
 
@@ -449,27 +450,15 @@ class TestQoroServiceUtilities:
 @pytest.mark.parametrize(
     "inp, expected",
     [
-        pytest.param(
-            {"tag0": {"100": 0.5, "011": 0.5}},
-            {"tag0": {"001": 0.5, "110": 0.5}},
-            id="single_tag",
-        ),
-        pytest.param(
-            {"a": {"10": 0.7, "01": 0.3}, "b": {"11": 1.0}},
-            {"a": {"01": 0.7, "10": 0.3}, "b": {"11": 1.0}},
-            id="multiple_tags",
-        ),
+        pytest.param({"100": 5, "011": 5}, {"001": 5, "110": 5}, id="asymmetric"),
         pytest.param({}, {}, id="empty"),
         pytest.param(
-            {"t": {"010": 0.4, "111": 0.6}},
-            {"t": {"010": 0.4, "111": 0.6}},
-            id="palindromic_unchanged",
+            {"010": 4, "111": 6}, {"010": 4, "111": 6}, id="palindromic_unchanged"
         ),
     ],
 )
-def test_reverse_dict_endianness(inp, expected):
-    """Bitstrings are reversed independently within each tag."""
-    assert reverse_dict_endianness(inp) == expected
+def test_reverse_bitstrings(inp, expected):
+    assert _reverse_bitstrings(inp) == expected
 
 
 @pytest.mark.parametrize(

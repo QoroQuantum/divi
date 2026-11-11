@@ -34,11 +34,11 @@ from ._execution import (
     _record_no_submission,
 )
 from ._postprocessing import (
+    _check_histogram,
     _counts_to_cost_variance,
     _counts_to_expvals,
     _counts_to_probs,
     _expval_dicts_to_indexed,
-    _to_big_endian_histogram,
 )
 from ._result_keys_operations import (
     FOREIGN_KEY_ATTR,
@@ -432,10 +432,7 @@ class CircuitPipeline:
         if result_format is ResultFormat.PROBS:
             raw = _counts_to_probs(raw, env.backend.shots)
         elif result_format is ResultFormat.COUNTS:
-            raw = {
-                key: _to_big_endian_histogram(key, counts)
-                for key, counts in raw.items()
-            }
+            raw = {key: _check_histogram(key, counts) for key, counts in raw.items()}
         elif result_format is ResultFormat.EXPVALS:
             ham_ops = plan.env_artifacts.get("ham_ops")
             if ham_ops is not None:

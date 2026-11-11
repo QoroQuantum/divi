@@ -119,8 +119,7 @@ def load_and_execute_qasm(qasm_dir, times, backend, neel_state):
         total_shots = sum(counts.values())
         p0, p1 = 0, 0
         for bitstring, count in counts.items():
-            # Qubit 0 is the rightmost character of the bitstring.
-            if bitstring[-1] == "0":
+            if bitstring[0] == "0":
                 p0 += count
             else:
                 p1 += count

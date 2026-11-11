@@ -56,12 +56,12 @@ def backend(make_qrmi_backend):
 
 
 class TestSimulatedIBMQuantumSystem:
-    def test_counts_are_keyed_with_qubit_zero_rightmost(self, backend):
+    def test_counts_are_keyed_with_qubit_zero_leftmost(self, backend):
         (entry,) = backend.submit_circuits({"x0": QASM_X_ON_FIRST_QUBIT}).results
 
         assert entry["label"] == "x0"
         assert sum(entry["results"].values()) == 1000
-        assert _most_frequent(entry["results"]) == "01"
+        assert _most_frequent(entry["results"]) == "10"
 
     def test_each_circuit_gets_its_shots(self, backend):
         result = backend.submit_circuits(

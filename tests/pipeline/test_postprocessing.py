@@ -79,8 +79,8 @@ class TestCountsToExpvals:
     def test_single_qubit_term_maps_to_correct_qubit(
         self, dummy_sampling_pipeline_env, obs_qubit, expected
     ):
-        # Little-endian backend counts (qubit 0 rightmost): "011" -> q0=1, q1=1,
-        # q2=0, so <Z0>=<Z1>=-1 and <Z2>=+1. Three qubits (not two) so a partial
+        # Counts keyed with qubit 0 leftmost: "110" -> q0=1, q1=1, q2=0, so
+        # <Z0>=<Z1>=-1 and <Z2>=+1. Three qubits (not two) so a partial
         # reversal is distinguishable from a full one: a 0<->2 swap would flip
         # <Z0> and <Z2> and be caught here.
         observable = SparsePauliOp.from_sparse_list(
@@ -89,7 +89,7 @@ class TestCountsToExpvals:
         trace, lineage_by_label, _ = _trace_measurement(
             dummy_sampling_pipeline_env, observable
         )
-        raw: ChildResults = {bk: {"011": 100} for bk in lineage_by_label.values()}
+        raw: ChildResults = {bk: {"110": 100} for bk in lineage_by_label.values()}
 
         result = _counts_to_expvals(raw, trace.final_batch)
 
@@ -108,11 +108,11 @@ class TestCountsToExpvals:
             dummy_sampling_pipeline_env, observable
         )
 
-        # Little-endian backend counts giving distinct <Z0>=0.4, <Z1>=0.6,
-        # <Z2>=0.8, so any qubit permutation (not just a full reversal) is caught
-        # by an order-sensitive (per-index) assertion.
+        # Counts giving distinct <Z0>=0.4, <Z1>=0.6, <Z2>=0.8, so any qubit
+        # permutation (not just a full reversal) is caught by an order-sensitive
+        # (per-index) assertion.
         raw: ChildResults = {
-            bk: {"000": 40, "001": 30, "010": 20, "100": 10}
+            bk: {"000": 40, "100": 30, "010": 20, "001": 10}
             for bk in lineage_by_label.values()
         }
 
@@ -154,10 +154,10 @@ class TestCountsToCostVariance:
             (
                 SparsePauliOp.from_list([("IZ", 0.0), ("ZI", 1.0)]),
                 2,
-                {"00": 75, "10": 25},
+                {"00": 75, "01": 25},
                 0.0075,
             ),
-            (SparsePauliOp("Z"), 2, {"00": 75, "01": 25}, 0.0075),
+            (SparsePauliOp("Z"), 2, {"00": 75, "10": 25}, 0.0075),
             (SparsePauliOp("Z"), 1, {"0": 1}, 0.0),
         ],
         ids=[
@@ -188,13 +188,13 @@ class TestCountsToCostVariance:
     def test_sums_weighted_terms_within_and_across_groups(
         self, dummy_sampling_pipeline_env
     ):
-        # Little-endian counts: <Z_q0>=0.4 and <Z_q1>=0.6 in the Z group, <XX>=0.4.
+        # <Z_q0>=0.4 and <Z_q1>=0.6 in the Z group, <XX>=0.4.
         observable = SparsePauliOp.from_list([("ZI", 2.0), ("IZ", 0.5), ("XX", 1.5)])
         trace, lineage, node = _trace_measurement(
             dummy_sampling_pipeline_env, observable
         )
-        z_counts = {"00": 50, "01": 30, "10": 20}
-        xx_counts = {"00": 70, "01": 30}
+        z_counts = {"00": 50, "10": 30, "01": 20}
+        xx_counts = {"00": 70, "10": 30}
         raw: ChildResults = {
             bk: (
                 xx_counts
@@ -223,10 +223,10 @@ class TestCountsToCostVariance:
         }
         # Factors are scale × term weight: 0.4 × (2.0, 1.5) and 0.6 × 1.0.
         factors = {spec_key: {0: np.array([0.8, 0.6]), 1: 0.6}}
-        # Little-endian counts: <Z_q0>=0.5 and <ZZ>=0 in the pair, <Z_q0>=-0.5 alone.
+        # <Z_q0>=0.5 and <ZZ>=0 in the pair, <Z_q0>=-0.5 alone.
         raw: ChildResults = {
-            (*spec_key, (OBS_GROUP_AXIS, 0)): {"00": 15, "01": 5, "10": 15, "11": 5},
-            (*spec_key, (OBS_GROUP_AXIS, 1)): {"00": 5, "01": 15},
+            (*spec_key, (OBS_GROUP_AXIS, 0)): {"00": 15, "10": 5, "01": 15, "11": 5},
+            (*spec_key, (OBS_GROUP_AXIS, 1)): {"00": 5, "10": 15},
         }
 
         (variance,) = _counts_to_cost_variance(raw, batch, factors).values()
@@ -334,14 +334,14 @@ class TestCountsToWRSCostVariance:
                 np.repeat([2.0, 0.0, 0.0, -2.0], [4, 3, 2, 1]).var(ddof=1) / 10,
             ),
             ([1.0, 3.0], {"00": 1, "11": 1}, 16.0),
-            # Little-endian "01" flips only qubit 0, whose Z term carries weight 3.
-            ([1.0, 3.0], {"00": 1, "01": 1}, np.var([4.0, -2.0], ddof=1) / 2),
+            # "10" flips only qubit 0, whose Z term carries weight 3.
+            ([1.0, 3.0], {"00": 1, "10": 1}, np.var([4.0, -2.0], ddof=1) / 2),
         ],
         ids=[
             "covariance-within-group",
             "several-bins",
             "per-term-weights",
-            "little-endian-keys",
+            "qubit-zero-leftmost",
         ],
     )
     def test_matches_sample_variance_of_the_weighted_shots(
@@ -597,22 +597,21 @@ class TestBatchedExpectation:
 class TestCountsToProbs:
     """Tests for _counts_to_probs."""
 
-    def test_reverses_bitstrings_and_normalises(self):
+    def test_keeps_bitstrings_and_normalises(self):
         raw = {("obs",): {"100": 30, "010": 70}}
         result = _counts_to_probs(raw, shots=100)
-        assert result[("obs",)] == {"001": 0.3, "010": 0.7}
+        assert result[("obs",)] == {"100": 0.3, "010": 0.7}
 
     def test_non_dict_values_pass_through(self):
-        # Asymmetric 3-qubit bitstrings so the endianness reversal is visible.
         raw = {("a",): 0.42, ("b",): {"110": 5, "001": 5}}
         result = _counts_to_probs(raw, shots=10)
         assert result[("a",)] == 0.42
-        assert result[("b",)] == {"011": 0.5, "100": 0.5}
+        assert result[("b",)] == {"110": 0.5, "001": 0.5}
 
     def test_normalises_any_mapping(self):
         raw = {("obs",): MappingProxyType({"100": 30, "010": 70})}
         result = _counts_to_probs(raw, shots=100)
-        assert result[("obs",)] == {"001": 0.3, "010": 0.7}
+        assert result[("obs",)] == {"100": 0.3, "010": 0.7}
 
     def test_empty_input(self):
         assert _counts_to_probs({}, shots=100) == {}
@@ -623,8 +622,8 @@ class TestCountsToProbs:
             ("y",): {"110": 2, "001": 8},
         }
         result = _counts_to_probs(raw, shots=10)
-        assert result[("x",)] == {"001": 0.4, "100": 0.6}
-        assert result[("y",)] == {"011": 0.2, "100": 0.8}
+        assert result[("x",)] == {"100": 0.4, "001": 0.6}
+        assert result[("y",)] == {"110": 0.2, "001": 0.8}
 
 
 class TestExpvalDictsToIndexed:

@@ -326,19 +326,17 @@ class TestSamplingSubmission:
         assert result.results is not None
         assert len(result.results) == 2
         assert result.results[0]["label"] == "c0"
-        # Palindromic bitstrings are unchanged by reversal
         assert result.results[0]["results"] == {"00": 3000, "11": 2000}
         assert result.results[1]["label"] == "c1"
 
-    def test_bitstring_reversal(self, mocker):
-        """Bitstrings are reversed from maestro big-endian to Qiskit little-endian."""
+    def test_counts_keep_maestros_bit_order(self, mocker):
+        """Bitstrings keep Maestro's order, c[0] leftmost."""
         fake = _make_fake_maestro(mocker, counts={"10": 70, "11": 30})
         sim = _make_simulator(mocker, fake)
 
         result = sim.submit_circuits({"c0": QASM_DEPTH_2})
 
-        # "10" (maestro) -> "01" (qiskit)
-        assert result.results[0]["results"] == {"01": 70, "11": 30}
+        assert result.results[0]["results"] == {"10": 70, "11": 30}
 
     def test_shots_and_config_passed_to_simple_execute(self, mocker):
         """shots is forwarded, and the SimulatorConfig built from MaestroConfig
@@ -564,11 +562,9 @@ class TestParallelExecution:
         labels = [r["label"] for r in result.results]
         assert labels == ["c0", "c1", "c2"]
         # Each label retains the counts produced for *its* QASM.
-        # (Counts are reversed big-endian → little-endian, so palindromic
-        # strings are unchanged; "01"/"10" swap.)
         assert result.results[0]["results"] == {"00": 100, "11": 0}
         assert result.results[1]["results"] == {"00": 0, "11": 100}
-        assert result.results[2]["results"] == {"10": 50, "01": 50}
+        assert result.results[2]["results"] == {"01": 50, "10": 50}
 
     def test_label_alignment_under_parallel_dispatch_expval(self, mocker):
         fake = _make_fake_maestro(mocker)
@@ -941,14 +937,13 @@ class TestNoisySamplingSubmission:
         assert "u3(0,0,0) q[1];" in parsed
         assert "id q[1]" not in parsed
 
-    def test_noisy_sampling_reverses_bitstrings(self, mocker):
-        """Big-endian → little-endian reversal applies to noisy results too."""
+    def test_noisy_sampling_keeps_maestros_bit_order(self, mocker):
         fake = _make_fake_maestro(mocker, counts={"10": 70, "11": 30})
         sim, _ = _make_noisy_sim(mocker, fake)
 
         result = sim.submit_circuits({"c0": _BELL_QASM})
 
-        assert result.results[0]["results"] == {"01": 70, "11": 30}
+        assert result.results[0]["results"] == {"10": 70, "11": 30}
 
     def test_noisy_sampling_honors_shot_groups(self, mocker):
         fake = _make_fake_maestro(mocker)

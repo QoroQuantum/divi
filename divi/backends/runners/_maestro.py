@@ -489,16 +489,14 @@ def require_maestro_config(value: Any, name: str) -> None:
     )
 
 
-def _little_endian_counts(counts: Mapping[str, int], width: int) -> dict[str, int]:
-    """Maestro's counts keyed little-endian, each key fitted to ``width`` bits.
+def _fit_counts_width(counts: Mapping[str, int], width: int) -> dict[str, int]:
+    """Maestro's counts with each key fitted to ``width`` bits, c[0] leftmost.
 
-    Maestro puts c[0] leftmost and may size keys by the highest index it
-    touched; Qiskit's convention puts c[0] rightmost.
+    Maestro may size keys by the highest classical bit it touched.
     """
-    return {
-        (bits[:width].ljust(width, "0") if width else bits)[::-1]: n
-        for bits, n in counts.items()
-    }
+    if not width:
+        return dict(counts)
+    return {bits[:width].ljust(width, "0"): n for bits, n in counts.items()}
 
 
 def _expectation_value(
@@ -862,7 +860,7 @@ class MaestroSimulator(CircuitRunner):
                         **noisy_kwargs,
                     )
                 )
-                counts = _little_endian_counts(raw["counts"], count_clbits(qasm))
+                counts = _fit_counts_width(raw["counts"], count_clbits(qasm))
                 return _result_entry(label, counts, raw, "counts")
 
             terms = per_circuit_terms[i]

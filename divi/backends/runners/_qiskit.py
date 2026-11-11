@@ -29,6 +29,7 @@ from divi._optional import import_optional
 from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
 from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
+from divi.backends._results_processing import _reverse_bitstrings
 from divi.backends._shot_allocation import (
     ShotRange,
     bucket_by_shots,
@@ -467,7 +468,7 @@ class QiskitSimulator(CircuitRunner):
                     "Consider enabling deterministic mode for deterministic results."
                 )
             for offset, i in enumerate(indices):
-                counts[i] = dict(result.get_counts(offset))
+                counts[i] = _reverse_bitstrings(result.get_counts(offset))
 
         return ExecutionResult(
             results=[

@@ -222,14 +222,13 @@ class TestProperties:
 
 
 class TestSampling:
-    def test_reverses_bitstrings_to_qiskit_order(self, resource, backend):
-        """Maestro writes c[0] leftmost; divi keys results Qiskit-style with
-        c[0] rightmost. Without the flip, every result is silently mirrored."""
+    def test_keeps_maestros_bit_order(self, resource, backend):
+        """Maestro writes c[0] leftmost, as divi keys results."""
         resource.counts = {"10": 512}
 
         (entry,) = backend.submit_circuits({"c0": _BELL_QASM}).results
 
-        assert (entry["label"], entry["results"]) == ("c0", {"01": 512})
+        assert (entry["label"], entry["results"]) == ("c0", {"10": 512})
 
     def test_sizes_keys_and_the_request_to_the_classical_register(
         self, resource, backend
@@ -1111,10 +1110,10 @@ class TestIBM:
 
         assert (entry["label"], entry["results"]) == ("c0", {"00": 4, "11": 6})
 
-    def test_keys_counts_with_the_first_register_rightmost(
+    def test_keys_counts_with_the_first_register_leftmost(
         self, ibm_resource, ibm_backend
     ):
-        """As for Maestro: c[0] of the first register is the rightmost bit."""
+        """As for Maestro: c[0] of the first register is the leftmost bit."""
         two_registers = (
             'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[3];\ncreg a[1];\n'
             "creg b[2];\nx q[0];\nmeasure q[0] -> a[0];\nmeasure q[1] -> b[0];\n"
@@ -1124,7 +1123,7 @@ class TestIBM:
 
         (entry,) = ibm_backend.submit_circuits({"c0": two_registers}).results
 
-        assert entry["results"] == {"001": 10}
+        assert entry["results"] == {"100": 10}
 
     def test_samples_a_batch_in_one_sampler_job(self, ibm_resource, ibm_backend):
         result = ibm_backend.submit_circuits({"c0": _BELL_QASM, "c1": _BELL_QASM})

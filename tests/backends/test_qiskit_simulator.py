@@ -333,6 +333,13 @@ class TestQiskitSimulatorSubmitCircuits:
         assert result.results[0]["label"] == "test_circuit"
         assert sum(result.results[0]["results"].values()) == 100
 
+    def test_counts_are_keyed_with_qubit_zero_leftmost(self):
+        result = QiskitSimulator(shots=100).submit_circuits(
+            {"c0": QASM_X_ON_FIRST_QUBIT}
+        )
+
+        assert result.results[0]["results"] == {"10": 100}
+
     def test_auto_backend_rejects_circuits_wider_than_every_fake_backend(self):
         with pytest.raises(ValueError, match=exact_match(_NO_FAKE_BACKEND_MESSAGE)):
             QiskitSimulator(qiskit_backend="auto").submit_circuits({"c0": _WIDE_QASM})
