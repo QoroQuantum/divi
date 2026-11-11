@@ -334,8 +334,15 @@ class TestCountsToWRSCostVariance:
                 np.repeat([2.0, 0.0, 0.0, -2.0], [4, 3, 2, 1]).var(ddof=1) / 10,
             ),
             ([1.0, 3.0], {"00": 1, "11": 1}, 16.0),
+            # Little-endian "01" flips only qubit 0, whose Z term carries weight 3.
+            ([1.0, 3.0], {"00": 1, "01": 1}, np.var([4.0, -2.0], ddof=1) / 2),
         ],
-        ids=["covariance-within-group", "several-bins", "per-term-weights"],
+        ids=[
+            "covariance-within-group",
+            "several-bins",
+            "per-term-weights",
+            "little-endian-keys",
+        ],
     )
     def test_matches_sample_variance_of_the_weighted_shots(
         self, zz_trace_weighted_random, term_weights, counts, expected
@@ -418,7 +425,7 @@ def test_counts_consumers_reject_non_histogram_results(
 
 
 class TestBatchedExpectation:
-    """Tests for _batched_expectation with big-endian Pauli label strings."""
+    """Tests for _batched_expectation, whose labels and keys share one bit order."""
 
     @pytest.mark.parametrize(
         ("histogram", "label", "expected"),
@@ -431,8 +438,8 @@ class TestBatchedExpectation:
         ids=["z-on-qubit-0", "product-even", "product-odd", "every-pauli"],
     )
     def test_single_label_expectation(self, histogram, label, expected):
-        """Big-endian labels: position 0 is qubit 0, and ``ZIZ`` acts on qubits
-        0 and 2 so a reversal that swaps them is distinguishable."""
+        """Label position ``i`` reads key position ``i``; ``ZIZ`` acts on
+        positions 0 and 2 so a reversal that swaps them is distinguishable."""
         result = _batched_expectation([histogram], [label], n_qubits=len(label))
         assert result[0, 0] == pytest.approx(expected)
 

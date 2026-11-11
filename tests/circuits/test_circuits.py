@@ -89,6 +89,17 @@ class TestMetaCircuit:
         with pytest.raises(ValueError, match="Hermitian"):
             meta.set_observable(meta.observable)
 
+    @pytest.mark.parametrize("as_tuple", [False, True], ids=["bare", "tuple"])
+    def test_a_validated_observable_skips_the_check(self, plain_dag, as_tuple):
+        non_hermitian = SparsePauliOp.from_list([("ZZ", 1.0j)])
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),))
+
+        updated = meta.set_observable(
+            (non_hermitian,) if as_tuple else non_hermitian, validated=True
+        )
+
+        assert updated.observable == (non_hermitian,)
+
     def test_tuple_observable_requires_sparse_pauli_ops(self, plain_dag):
         with pytest.raises(TypeError) as exc_info:
             MetaCircuit(

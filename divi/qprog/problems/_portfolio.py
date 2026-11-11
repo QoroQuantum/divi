@@ -171,12 +171,17 @@ class _PortfolioBase(BinaryOptimizationProblem):
         """Units per asset encoded in ``bitstring``."""
         return self._asset_bits(bitstring) @ self._place
 
-    def _unit_bits(self, units: np.ndarray) -> list[int]:
+    def _unit_bits(self, units: np.ndarray) -> np.ndarray:
         """Decision bits that encode ``units``."""
-        width = len(self._place)
+        levels = np.arange(len(self._place))
+        units = np.asarray(units)[:, np.newaxis]
         if self._encoding == "domain_wall":
-            return [int(j < k) for k in units for j in range(width)]
-        return [(k >> j) & 1 for k in units for j in range(width)]
+            return (levels < units).astype(int).ravel()
+        return ((units >> levels) & 1).ravel()
+
+    def _encode_decision(self, units: np.ndarray) -> dict[Hashable, int]:
+        """Decision-bit assignment that encodes ``units``."""
+        return dict(enumerate(self._unit_bits(units).tolist()))
 
     def _activity_bounds(
         self, coefficients: Mapping[Hashable, float]
@@ -187,7 +192,7 @@ class _PortfolioBase(BinaryOptimizationProblem):
         ``cap`` per asset, count, so constraint slack covers no more than those.
         """
         n, total, cap = self.n_assets, self._total, self._cap
-        levels = np.array([self._unit_bits(np.array([k])) for k in range(cap + 1)])
+        levels = self._unit_bits(np.arange(cap + 1)).reshape(cap + 1, -1)
         a = np.array([coefficients.get(q, 0.0) for q in range(n * levels.shape[1])])
         # values[i, k]: the activity contributed by asset i holding k units.
         values = a.reshape(n, -1) @ levels.T
@@ -289,7 +294,7 @@ class _PortfolioBase(BinaryOptimizationProblem):
             moves reaches feasibility.
         """
         units = self._transfer_to_feasible(self._fill_budget(self._units(bitstring)))
-        repaired = self._complete_bitstring(dict(enumerate(self._unit_bits(units))))
+        repaired = self._complete_bitstring(self._encode_decision(units))
         energy = self.compute_energy(repaired) if self.is_feasible(repaired) else None
         return repaired, self.decode_fn(repaired), energy
 
@@ -469,11 +474,15 @@ class _PortfolioBase(BinaryOptimizationProblem):
     def initial_solution_size(self) -> int:
         return self.n_assets
 
-    def _global_bitstring(self, solution: Sequence[int]) -> str:
-        """Bitstring of a units-per-asset solution, with fixed assets and slack set."""
+    def _build_global_decision(self, solution: Sequence[int]) -> dict[Hashable, int]:
+        """Decision bits of a units-per-asset solution, with fixed assets set."""
         units = np.array(solution)
         units[list(self._fixed_units)] = list(self._fixed_units.values())
-        return self._complete_bitstring(dict(enumerate(self._unit_bits(units))))
+        return self._encode_decision(units)
+
+    def _global_bitstring(self, solution: Sequence[int]) -> str:
+        """Bitstring of a units-per-asset solution, with fixed assets and slack set."""
+        return self._complete_bitstring(self._build_global_decision(solution))
 
     @cached_property
     def _penalised_qubo(self) -> tuple[np.ndarray, float]:
@@ -490,7 +499,9 @@ class _PortfolioBase(BinaryOptimizationProblem):
     def evaluate_global_solution(self, solution: Sequence[int]) -> float:
         """Penalised QUBO energy, with the slack that minimises it."""
         q, offset = self._penalised_qubo
-        x = np.fromiter(map(int, self._global_bitstring(solution)), dtype=float)
+        x = np.array(
+            self._complete_bits(self._build_global_decision(solution)), dtype=float
+        )
         return float(x @ q @ x + offset)
 
     def postprocess_candidates(
@@ -511,9 +522,7 @@ class _PortfolioBase(BinaryOptimizationProblem):
                 if energy is None:
                     continue
             units = self._improve_by_transfers(self._units(bitstring))
-            bitstring = self._complete_bitstring(
-                dict(enumerate(self._unit_bits(units)))
-            )
+            bitstring = self._complete_bitstring(self._encode_decision(units))
             results[bitstring] = (
                 self.decode_fn(bitstring),
                 self.compute_energy(bitstring),

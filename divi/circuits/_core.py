@@ -225,15 +225,26 @@ class MetaCircuit:
         return replace(self, circuit_bodies=bodies)
 
     def set_observable(
-        self, observable: SparsePauliOp | tuple[SparsePauliOp, ...]
+        self,
+        observable: SparsePauliOp | tuple[SparsePauliOp, ...],
+        *,
+        validated: bool = False,
     ) -> MetaCircuit:
         """Return a new MetaCircuit measuring *observable* instead.
 
         Lets a stage refine what is measured downstream — for example by
         splitting a multi-term observable into its individual Pauli terms,
-        so the measurement stage reports each separately.
+        so the measurement stage reports each separately. ``validated=True``
+        skips the type and Hermitian checks, for an observable derived from
+        one that passed them, such as a subset of its terms.
         """
-        return replace(self, observable=observable, _validated_observable=None)
+        if isinstance(observable, SparsePauliOp):
+            observable = (observable,)
+        return replace(
+            self,
+            observable=observable,
+            _validated_observable=observable if validated else None,
+        )
 
     def set_measurement_bodies(
         self, bodies: Sequence[tuple[QASMTag, str]]

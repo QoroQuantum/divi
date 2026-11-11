@@ -6,8 +6,8 @@
 
 All grouping operates on Qiskit :class:`SparsePauliOp` — no PennyLane
 dependency.  Groups are returned as tuples of big-endian Pauli label
-strings (qubit 0 on the left), matching the bitstring convention used by
-backends and :func:`~divi.pipeline._postprocessing._batched_expectation`.
+strings (qubit 0 on the left); post-processing reverses them to match the
+little-endian histogram keys backends return.
 """
 
 from collections import defaultdict, deque
@@ -17,6 +17,7 @@ from typing import Literal
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
+from scipy.sparse import csr_matrix
 
 from divi.circuits._core import flatten_observable_tuple
 
@@ -94,10 +95,17 @@ def _create_postprocessing_fn(
         itemgetter(*range(len(slots))) if len(slots) else None
         for slots in slots_by_group
     ]
-    obs_coeffs = [np.real(o.coeffs).astype(np.float64) for o in observables]
-    obs_indices = [
-        np.asarray(indices, dtype=np.intp) for indices in per_obs_term_indices
-    ]
+    # Row i holds observable i's coefficients at its union-term columns.
+    weights = csr_matrix(
+        (
+            np.concatenate([np.real(o.coeffs) for o in observables]),
+            np.concatenate(
+                [np.asarray(indices, dtype=np.intp) for indices in per_obs_term_indices]
+            ),
+            np.cumsum([0, *map(len, per_obs_term_indices)]),
+        ),
+        shape=(len(observables), n_union_terms),
+    )
 
     def postprocessing_fn(grouped_results):
         if len(grouped_results) != len(partition_indices):
@@ -115,10 +123,7 @@ def _create_postprocessing_fn(
                 )[:, 0]
             else:
                 flat[slots] += float(np.asarray(val).flat[0])
-        return [
-            float(np.dot(coeffs, flat[indices]))
-            for coeffs, indices in zip(obs_coeffs, obs_indices)
-        ]
+        return (weights @ flat).tolist()
 
     return postprocessing_fn
 

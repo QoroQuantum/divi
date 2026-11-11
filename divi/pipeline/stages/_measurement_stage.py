@@ -4,7 +4,7 @@
 
 import math
 import warnings
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from typing import Any, get_args
@@ -635,10 +635,13 @@ class MeasurementStage(BundleStage):
 
     def _resolve_expval_mode(
         self,
-        batch: MetaCircuitBatch,
+        terms_by_node: Iterable[tuple[SparsePauliOp, ...]],
         env: PipelineEnv,
     ) -> tuple[_ResolvedGroupingStrategy, tuple[int, ...] | None]:
-        """Resolve backend-aware grouping and optional estimator budgets."""
+        """Resolve backend-aware grouping and optional estimator budgets.
+
+        ``terms_by_node`` holds each node's non-identity terms per observable.
+        """
         estimator_samples = env.estimator_samples
         if estimator_samples is not None:
             self.check_estimator_sampling(env.backend)
@@ -648,10 +651,6 @@ class MeasurementStage(BundleStage):
 
         strategy: _ResolvedGroupingStrategy = self._grouping_strategy
         # The analytic path emits one ham_ops shared by every measured node.
-        terms_by_node = [
-            tuple(_split_identity_terms(obs)[0] for obs in meta.observable or ())
-            for meta in batch.values()
-        ]
         measured_terms = [
             terms for terms in terms_by_node if any(term.size for term in terms)
         ]
@@ -690,7 +689,16 @@ class MeasurementStage(BundleStage):
         ``qasm_factory`` maps ``(surviving_groups, n_qubits, measure_all=...)``
         to one measurement QASM per group.
         """
-        strategy, sample_budgets = self._resolve_expval_mode(batch, env)
+        splits_by_key = {
+            key: tuple(
+                _split_identity_terms(member) for member in meta.observable or ()
+            )
+            for key, meta in batch.items()
+        }
+        strategy, sample_budgets = self._resolve_expval_mode(
+            [tuple(terms for terms, _ in splits) for splits in splits_by_key.values()],
+            env,
+        )
 
         result: MetaCircuitBatch = {}
         postprocess_fn_by_spec: dict[object, Callable] = {}
@@ -712,26 +720,18 @@ class MeasurementStage(BundleStage):
                     f"MeasurementStage (expval path): key '{key}' has no "
                     "observable set."
                 )
-            # MetaCircuit.__post_init__ normalises a bare SparsePauliOp to a
-            # 1-tuple via object.__setattr__, which type checkers can't track.
-            observable = (
-                meta.observable
-                if isinstance(meta.observable, tuple)
-                else (meta.observable,)
-            )
-            if not observable:
+            splits = splits_by_key[key]
+            if not splits:
                 raise ValueError(
                     f"MeasurementStage (expval path): key '{key}' has an empty "
                     "observable tuple."
                 )
-            if sample_budgets is not None and len(observable) != 1:
+            if sample_budgets is not None and len(splits) != 1:
                 raise ValueError(
                     "estimator_samples requires one scalar observable per circuit."
                 )
             # Identity terms are exact offsets, added in reduce.
-            observable, identities = zip(
-                *(_split_identity_terms(member) for member in observable)
-            )
+            observable, identities = zip(*splits)
             constant_offsets = tuple(
                 math.fsum(identity.coeffs.real) for identity in identities
             )
@@ -741,7 +741,7 @@ class MeasurementStage(BundleStage):
                 # Runs only under a COUNTS/PROBS override, measuring every qubit.
                 (measure_qasm,) = qasm_factory(((),), meta.n_qubits, measure_all=True)
                 result[key] = (
-                    meta.set_observable(observable)
+                    meta.set_observable(observable, validated=True)
                     .set_measurement_bodies(((((OBS_GROUP_AXIS, 0),), measure_qasm),))
                     .set_measurement_groups(((),))
                     .set_result_format(ResultFormat.EXPVALS)
@@ -817,7 +817,7 @@ class MeasurementStage(BundleStage):
 
             # Keep all groups: results are indexed by their original obs_group tag.
             new_meta = (
-                meta.set_observable(observable)
+                meta.set_observable(observable, validated=True)
                 .set_measurement_bodies(tagged_measurement_qasms)
                 .set_measurement_groups(measurement_groups)
                 .set_result_format(ResultFormat.EXPVALS)

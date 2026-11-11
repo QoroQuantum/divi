@@ -196,19 +196,16 @@ def reduce_mean(
     """
     out: ChildResults = {}
     for base_key, values in grouped.items():
-        if values and isinstance(values[0], dict):
+        if not values:
+            raise ValueError(f"reduce_mean got no values to average for {base_key}.")
+        if isinstance(values[0], dict):
             raise TypeError(
                 "reduce_mean expects EXPVALS values (a float or a per-observable "
                 "list of floats), but got a dict — that is a PROBS/COUNTS "
                 "histogram. Use reduce_merge_histograms for probability/counts "
                 "results."
             )
-        if values and np.ndim(values[0]) > 0:
-            n = len(values)
-            n_obs = len(values[0])
-            out[base_key] = [sum(v[i] for v in values) / n for i in range(n_obs)]
-        else:
-            out[base_key] = sum(values) / len(values)
+        out[base_key] = np.mean(np.asarray(values, dtype=float), axis=0).tolist()
     return out
 
 

@@ -779,6 +779,20 @@ class TestMeasureAllQubits:
         # <IZ> = 0 and <IX> = 1 on |++>; the identity adds exactly 10.
         assert energy == pytest.approx(10.5, abs=0.1)
 
+    def test_round_off_under_a_dominant_identity_does_not_raise(
+        self, make_seeded_sampler
+    ):
+        """The Hermitian tolerance scales with the largest coefficient, which the
+        identity split removes; the split terms stay accepted."""
+        backend = make_seeded_sampler(4000, 5)
+        pipeline = build_measurement_pipeline(
+            _make_h_layer_meta(2, [("II", 100.0), ("IX", 1e-3 + 1e-12j)])
+        )
+
+        energy = pipeline.run("ignored", PipelineEnv(backend=backend)).value
+
+        assert energy == pytest.approx(100.001, abs=1e-3)
+
     @pytest.mark.parametrize("measure_all", [False, True])
     def test_end_to_end_energy_correct_on_real_sampling_backend(
         self, measure_all, make_seeded_sampler

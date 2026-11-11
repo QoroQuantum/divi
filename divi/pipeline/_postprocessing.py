@@ -12,7 +12,7 @@ variance. Operating on result *keys* (parsing, grouping, routing) lives in
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from itertools import chain
+from itertools import chain, repeat
 from typing import Any
 
 import numpy as np
@@ -34,9 +34,15 @@ _PAULI_CHARS = frozenset("IXYZ")
 def _compute_bitstring_eigenvalues(
     bitstrings: Sequence[str], pauli_labels: Sequence[str], n_qubits: int
 ) -> npt.NDArray[np.float64]:
-    """Return Pauli eigenvalues for each measured bitstring."""
-    offending = next((bs for bs in bitstrings if len(bs) != n_qubits), None)
-    if offending is not None:
+    """Return Pauli eigenvalues for each measured bitstring.
+
+    ``pauli_labels`` must use the same bit order as ``bitstrings``.
+    """
+    n_states = len(bitstrings)
+    lengths = np.fromiter(map(len, bitstrings), dtype=np.intp, count=n_states)
+    wrong_width = np.flatnonzero(lengths != n_qubits)
+    if wrong_width.size:
+        offending = bitstrings[wrong_width[0]]
         raise ValueError(
             f"Backend returned {len(offending)}-bit histogram keys "
             f"for the {n_qubits}-qubit circuit; expected full-width keys "
@@ -44,14 +50,16 @@ def _compute_bitstring_eigenvalues(
             f"report all classical bits. If your backend cannot, set "
             f"measure_all_qubits=True to measure the full register."
         )
-    malformed = next((bs for bs in bitstrings if not set(bs) <= _BIT_CHARS), None)
-    if malformed is not None:
+    try:
+        encoded = "".join(bitstrings).encode("ascii")
+        state_bits = np.frombuffer(encoded, dtype=np.uint8).reshape(
+            n_states, n_qubits
+        ) - np.uint8(ord("0"))
+    except UnicodeEncodeError:
+        state_bits = None
+    if state_bits is None or (state_bits > 1).any():
+        malformed = next(bs for bs in bitstrings if not set(bs) <= _BIT_CHARS)
         raise ValueError(f"Backend returned a non-binary histogram key: {malformed!r}.")
-
-    n_states = len(bitstrings)
-    state_bits = np.frombuffer(
-        "".join(bitstrings).encode("ascii"), dtype=np.uint8
-    ).reshape(n_states, n_qubits) - np.uint8(ord("0"))
 
     for label in pauli_labels:
         if len(label) != n_qubits:
@@ -78,9 +86,9 @@ def _batched_expectation(
     """Vectorised counts → expectation values for multiple Pauli observables.
 
     Args:
-        shots_dicts: Per-circuit shot histograms (big-endian bitstrings).
-        pauli_labels: Big-endian Pauli label strings (qubit 0 on the left),
-            e.g. ``["ZII", "IZI", "ZZI"]``.
+        shots_dicts: Per-circuit shot histograms.
+        pauli_labels: Pauli label strings in the same bit order as the
+            histogram keys, e.g. ``["ZII", "IZI", "ZZI"]``.
         n_qubits: Total qubit count.
 
     Returns:
@@ -89,7 +97,7 @@ def _batched_expectation(
     n_histograms = len(shots_dicts)
 
     # 1. Aggregate unique measured states.
-    unique_bitstrings = sorted(set(chain.from_iterable(shots_dicts)))
+    unique_bitstrings = list(dict.fromkeys(chain.from_iterable(shots_dicts)))
     n_unique_states = len(unique_bitstrings)
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
     eigenvalues = _compute_bitstring_eigenvalues(
@@ -107,12 +115,19 @@ def _batched_expectation(
     )
     use_sparse = dense_size > 1_000_000 and sparse_bytes < dense_bytes
 
+    def split_histogram(shots_dict: Mapping[str, int]) -> tuple[np.ndarray, np.ndarray]:
+        size = len(shots_dict)
+        columns = np.fromiter(
+            map(bitstring_to_idx_map.__getitem__, shots_dict), dtype=np.intp, count=size
+        )
+        return columns, np.fromiter(shots_dict.values(), dtype=np.float64, count=size)
+
     if not use_sparse:
         count_matrix = np.zeros((n_histograms, n_unique_states))
         for i, shots_dict in enumerate(shots_dicts):
-            totals[i] = sum(shots_dict.values()) or 1.0
-            for bitstring, count in shots_dict.items():
-                count_matrix[i, bitstring_to_idx_map[bitstring]] = count
+            columns, counts = split_histogram(shots_dict)
+            count_matrix[i, columns] = counts
+            totals[i] = counts.sum() or 1.0
     else:
         # Large batches usually contain sparse histograms. Build CSR storage in
         # one allocation instead of materialising every histogram/state pair.
@@ -124,11 +139,8 @@ def _batched_expectation(
         for i, shots_dict in enumerate(shots_dicts):
             size = len(shots_dict)
             end = offset + size
-            indices[offset:end] = [
-                bitstring_to_idx_map[bitstring] for bitstring in shots_dict
-            ]
-            data[offset:end] = list(shots_dict.values())
-            totals[i] = sum(shots_dict.values()) or 1.0
+            indices[offset:end], data[offset:end] = split_histogram(shots_dict)
+            totals[i] = data[offset:end].sum() or 1.0
             offset = end
             indptr[i + 1] = end
         count_matrix = csr_matrix(
@@ -144,16 +156,33 @@ def _to_big_endian_histogram(branch_key: tuple, counts: Any) -> dict[str, int]:
     Raises:
         TypeError: If ``counts`` is not a mapping keyed by bitstrings.
     """
+    return {
+        bitstring[::-1]: count
+        for bitstring, count in _check_histogram(branch_key, counts).items()
+    }
+
+
+def _check_histogram(branch_key: tuple, counts: Any) -> Mapping[str, int]:
+    """Return a backend histogram unchanged, with its little-endian keys.
+
+    Raises:
+        TypeError: If ``counts`` is not a mapping keyed by bitstrings.
+    """
     if not isinstance(counts, Mapping):
         found = type(counts).__name__
-    elif not all(isinstance(bitstring, str) for bitstring in counts):
+    elif not all(map(isinstance, counts, repeat(str))):
         found = f"a {type(counts).__name__} not keyed by bitstrings"
     else:
-        return {bitstring[::-1]: count for bitstring, count in counts.items()}
+        return counts
     raise TypeError(
         "Expected a bitstring→count histogram from the backend for branch "
         f"{branch_key!r}, got {found}."
     )
+
+
+def _reverse_labels(labels: Sequence[str]) -> list[str]:
+    """Big-endian Pauli labels in the little-endian order of backend histogram keys."""
+    return [label[::-1] for label in labels]
 
 
 def _group_lookups(
@@ -197,7 +226,7 @@ def _counts_to_expvals(
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
 
     members_by_group: defaultdict[
-        tuple[tuple[str, ...], int], list[tuple[tuple, dict[str, int]]]
+        tuple[tuple[str, ...], int], list[tuple[tuple, Mapping[str, int]]]
     ] = defaultdict(list)
     for branch_key, counts in raw.items():
         _bk, group_labels, n_qubits = _resolve_group(
@@ -205,13 +234,13 @@ def _counts_to_expvals(
         )
         group = (tuple(map(str, group_labels)), n_qubits)
         members_by_group[group].append(
-            (branch_key, _to_big_endian_histogram(branch_key, counts))
+            (branch_key, _check_histogram(branch_key, counts))
         )
 
     values: ChildResults = {}
     for (labels, n_qubits), members in members_by_group.items():
         expvals = _batched_expectation(
-            [counts for _, counts in members], labels, n_qubits
+            [counts for _, counts in members], _reverse_labels(labels), n_qubits
         )
         for (branch_key, _), col in zip(members, expvals.T):
             values[branch_key] = (
@@ -291,7 +320,7 @@ def _counts_to_cost_variance(
             invalid_keys.add(base_key)
             continue
 
-        counts = _to_big_endian_histogram(branch_key, counts)
+        counts = _check_histogram(branch_key, counts)
         shots = sum(counts.values())
         if shots <= 0:
             # A group with no shots invalidates the whole cost variance rather
@@ -300,8 +329,10 @@ def _counts_to_cost_variance(
             continue
 
         labels = [str(p) for p in group_labels]
-        bitstrings = sorted(counts)
-        eigenvalues = _compute_bitstring_eigenvalues(bitstrings, labels, n_qubits)
+        bitstrings = list(counts)
+        eigenvalues = _compute_bitstring_eigenvalues(
+            bitstrings, _reverse_labels(labels), n_qubits
+        )
         frequencies = np.asarray([counts[b] for b in bitstrings], dtype=np.float64)
         factors = np.ones(len(labels))
         if factor_keys:
@@ -384,7 +415,7 @@ def _counts_to_wrs_cost_variance(
             invalid_keys.add(base_key)
             continue
 
-        counts = _to_big_endian_histogram(branch_key, counts)
+        counts = _check_histogram(branch_key, counts)
         if sum(counts.values()) <= 0:
             invalid_keys.add(base_key)
             continue
@@ -395,9 +426,9 @@ def _counts_to_wrs_cost_variance(
         coefficients = weights * np.asarray(
             [coeff_map.get(label, 0.0) for label in labels], dtype=np.float64
         )
-        bitstrings = sorted(counts)
+        bitstrings = list(counts)
         weighted_values = coefficients @ _compute_bitstring_eigenvalues(
-            bitstrings, labels, n_qubits
+            bitstrings, _reverse_labels(labels), n_qubits
         )
         state = moments.get(base_key, (0, 0.0, 0.0))
         for bitstring, weighted_value in zip(
@@ -456,7 +487,7 @@ def _counts_to_probs(
 ) -> ChildResults:
     """Normalise shot counts → probability distributions.
 
-    Reverses bitstring endianness (PennyLane convention → standard MSB-first)
+    Reverses the backends' little-endian keys to big-endian (qubit 0 first)
     and divides by total shots.
     """
     out: ChildResults = {}

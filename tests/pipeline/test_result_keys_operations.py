@@ -19,6 +19,7 @@ from divi.pipeline._result_keys_operations import (
     reduce_postprocess_ordered,
     strip_axis_from_label,
 )
+from tests._helpers import exact_match
 
 
 class TestStripAxisFromLabel:
@@ -130,6 +131,15 @@ class TestReduceMean:
         grouped = {(("circ", 0),): [{"00": 0.6, "11": 0.4}, {"00": 0.8, "11": 0.2}]}
         with pytest.raises(TypeError, match="reduce_merge_histograms"):
             reduce_mean(grouped)
+
+    def test_rejects_a_key_with_no_values(self):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "reduce_mean got no values to average for (('circ', 0),)."
+            ),
+        ):
+            reduce_mean({(("circ", 0),): []})
 
 
 class TestReducePostprocessOrdered:

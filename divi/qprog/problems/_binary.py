@@ -383,6 +383,10 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     def _complete_bitstring(self, decision: Mapping[Hashable, int]) -> str:
         """Bitstring for a decision assignment, with the slack that zeroes its penalty."""
+        return "".join(map(str, self._complete_bits(decision)))
+
+    def _complete_bits(self, decision: Mapping[Hashable, int]) -> list[int]:
+        """Bits, one per qubit, for a decision assignment with its slack."""
         values: dict[Hashable, int] = {v: int(decision[v]) for v in self._decision_vars}
         for slack in self._slacks:
             values.update(slack.bits(values))
@@ -391,10 +395,10 @@ class BinaryOptimizationProblem(QAOAProblem):
             raise NotImplementedError(
                 "Completing a bitstring requires the native Hamiltonian builder."
             )
-        bits = ["0"] * len(idx)
+        bits = [0] * len(idx)
         for var, value in values.items():
-            bits[idx[var]] = str(value)
-        return "".join(bits)
+            bits[idx[var]] = value
+        return bits
 
     def _solution_key(self, bitstring: str) -> Hashable:
         """The decision-variable values, ignoring slack and quadratization ancillas."""
