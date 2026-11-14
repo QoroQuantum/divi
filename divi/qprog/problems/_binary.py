@@ -33,7 +33,7 @@ from divi.hamiltonians._polynomial import (
     _evaluate_binary_polynomial,
 )
 
-from ._base import QAOAProblem
+from ._base import QAOAProblem, place_by_coupling
 from ._constraints import (
     LinearConstraint,
     _encode_constraints,
@@ -348,6 +348,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         self._variable_maps = {}
         self._bqm_subproblem_states = {}
+        self._free_variables: list[int] = []
 
     def _activity_bounds(
         self, coefficients: Mapping[Hashable, float]
@@ -571,8 +572,9 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         Each non-trivial partition becomes its own
         :class:`BinaryOptimizationProblem` keyed by ``(name, size)``. Partitions
-        with no interactions get no sub-problem; composition keeps the
-        candidate's values for their variables.
+        with no interactions get no sub-problem; their variables take the value
+        that minimises the energy given every other variable, both when scoring
+        candidates and in the composed solutions.
 
         Raises:
             ValueError: If no decomposer was provided at construction.
@@ -584,6 +586,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         self._bqm_subproblem_states = {}
         self._variable_maps = {}
+        self._free_variables = []
 
         init_state = _hybrid().State.from_problem(self._bqm)
         _bqm_partitions = self._partitioning.run(init_state).result()
@@ -605,6 +608,7 @@ class BinaryOptimizationProblem(QAOAProblem):
             ]
 
             if partition.subproblem.num_interactions == 0:
+                self._free_variables.extend(self._variable_maps[prog_id])
                 continue
 
             sub_problems[prog_id] = BinaryOptimizationProblem(
@@ -618,6 +622,20 @@ class BinaryOptimizationProblem(QAOAProblem):
     def _has_reproducible_decomposition(self) -> bool:
         """Whether repeated decomposition preserves program-slot meaning."""
         return bool(getattr(self._decomposer, "_reproducible", False))
+
+    def order_partitions(self, prog_ids: Sequence[Hashable]) -> list[Hashable]:
+        """Partitions ordered so each next one has the largest summed ``|J|``
+        coupling to those already placed.
+
+        Problems decomposed without the ``hybrid`` decomposer keep the given order.
+        """
+        if not self._variable_maps or self._bqm is None:
+            return list(prog_ids)
+        _variables, _h, j = bqm_to_sparse(self._bqm)
+        coo = j.tocoo()
+        couplings = ((u, v, w) for u, v, w in zip(coo.row, coo.col, coo.data) if u < v)
+        groups = [self._variable_maps[pid] for pid in prog_ids]
+        return place_by_coupling(prog_ids, groups, couplings)
 
     def initial_solution_size(self) -> int:
         """Number of variables in the global solution vector.
@@ -666,12 +684,20 @@ class BinaryOptimizationProblem(QAOAProblem):
                 "provided at construction."
             )
         h, j, _, _ = self._polish_fields()
-        x = np.asarray(solution, dtype=np.float64)
+        x = np.array(solution, dtype=np.float64)
         if x.shape != h.shape:
             raise ValueError(
                 f"Expected a solution of shape {h.shape}, got shape {x.shape}."
             )
+        self._fill_free_variables(x)
         return float(h @ x + 0.5 * (x @ (j @ x)) + self._bqm.offset)
+
+    def _fill_free_variables(self, x: np.ndarray) -> None:
+        """Set, in place, each interaction-free variable to its best response."""
+        h, j, _, _ = self._polish_fields()
+        for i in self._free_variables:
+            s, e = j.indptr[i], j.indptr[i + 1]
+            x[i] = float(h[i] + j.data[s:e] @ x[j.indices[s:e]] < 0)
 
     def postprocess_candidates(
         self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
@@ -680,7 +706,8 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         With ``local_search=True`` each candidate is refined to a local minimum by
         greedy single-bit-flip descent against the full QUBO; otherwise the
-        dwave-hybrid composer is run.
+        dwave-hybrid composer is run. Variables of partitions without couplings
+        take their best value given the rest of the candidate.
 
         Returns:
             Tuples ``(solution, energy)`` where ``solution`` is an ``int32`` ndarray
@@ -696,6 +723,8 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     def _compose_solution(self, solution):
         """Run a single solution through the hybrid composer pipeline."""
+        solution = np.array(solution)
+        self._fill_free_variables(solution)
         states_copy = {}
         for prog_id, bqm_subproblem_state in self._bqm_subproblem_states.items():
             variables = list(bqm_subproblem_state.subproblem.variables)

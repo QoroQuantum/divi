@@ -10,18 +10,17 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Sequence
 from functools import cached_property, partial
 from itertools import combinations
-from typing import Literal
+from typing import Any, Literal
 
 import networkx as nx
 import numpy as np
-import numpy.typing as npt
 import rustworkx as rx
-import scipy.sparse as sps
-import scipy.sparse.linalg as spla
 
-from ._base import QAOAProblem
+from ._base import QAOAProblem, place_by_coupling
 from ._binary import BinaryOptimizationProblem
-from ._graph_hamiltonians import _edge_weight, _wire_edges
+from ._graph_hamiltonians import _read_edge_weight
+from ._graph_partitioning_utils import _canonical_edges, _partition_graph_by_nodes
+from ._partitioning_config import GraphPartitioningConfig
 
 _Edge = tuple[int, int]
 
@@ -41,8 +40,12 @@ def _matching_edges(
 
     Endpoints are positions into the node ids, so a rustworkx graph and the
     networkx graph labelled by its node indices give identical output. Weights
-    follow :func:`_edge_weight` and default to 1; parallel edges collapse into
-    one carrying the last weight.
+    follow :func:`_canonical_edges` and default to 1; parallel edges collapse
+    into one carrying the last weight.
+
+    Raises:
+        TypeError: If ``graph`` is directed or not a graph.
+        ValueError: If an edge weight is NaN or infinite.
     """
     if isinstance(graph, (nx.DiGraph, rx.PyDiGraph)) or not isinstance(
         graph, (nx.Graph, rx.PyGraph)
@@ -51,13 +54,9 @@ def _matching_edges(
             f"Expected an undirected graph (nx.Graph or rx.PyGraph), got "
             f"{type(graph).__name__}."
         )
-    ids, wire_edges = _wire_edges(graph)
-    weighted = sorted(
-        ((min(u, v), max(u, v), _edge_weight(payload)) for u, v, payload in wire_edges),
-        key=lambda edge: edge[:2],
-    )
+    ids, weighted = _canonical_edges(graph)
     edges = [(u, v) for u, v, _ in weighted]
-    weights = [1.0 if weight is None else weight for _, _, weight in weighted]
+    weights = [_read_edge_weight(weight) for _, _, weight in weighted]
     return ids, edges, weights
 
 
@@ -69,7 +68,9 @@ def _construct_matching_qubo(
     """QUBO terms encoding maximum-weight matching over edge qubits ``0..len(edges)-1``.
 
     Linear terms ``-w_e`` reward edge weight. Each pair of edges sharing a node
-    costs ``penalty_weight * sum(weights)``, enforcing at most one edge per node.
+    costs ``penalty_weight * max|w|`` (``penalty_weight`` when every weight is
+    0); with ``penalty_weight > 1`` every selection with a shared node costs
+    more than the same selection without one of its edges.
 
     Args:
         edges: Edges as node pairs; qubit ``i`` is ``edges[i]``.
@@ -79,7 +80,7 @@ def _construct_matching_qubo(
     Returns:
         Polynomial terms ``{(i,): -w_i, (i, j): penalty}`` with ``i < j``.
     """
-    penalty = penalty_weight * sum(weights)
+    penalty = penalty_weight * (max(map(abs, weights), default=0.0) or 1.0)
     terms: dict[tuple[Hashable, ...], float] = {(i,): -w for i, w in enumerate(weights)}
     incident: defaultdict[int, list[int]] = defaultdict(list)
     for i, (u, v) in enumerate(edges):
@@ -158,161 +159,60 @@ def _edge_index_graph(edges: Sequence[_Edge]) -> rx.PyGraph:
     return graph
 
 
-def _partition_graph_by_edges(
-    edges: Sequence[_Edge],
-    weights: Sequence[float],
+def _conflict_graph(edges: Sequence[_Edge], weights: Sequence[float]) -> rx.PyGraph:
+    """Graph on edge indices joining two positive-weight edges that share a node,
+    weighted by the lighter of the two.
+
+    Non-positive edges, which no maximum-weight matching needs, join nothing.
+    """
+    graph = rx.PyGraph()
+    graph.add_nodes_from(range(len(edges)))
+    incident: defaultdict[int, list[int]] = defaultdict(list)
+    for i, (u, v) in enumerate(edges):
+        if weights[i] > 0:
+            incident[u].append(i)
+            incident[v].append(i)
+    graph.add_edges_from(
+        [
+            (i, j, min(weights[i], weights[j]))
+            for indices in incident.values()
+            for i, j in combinations(indices, 2)
+        ]
+    )
+    return graph
+
+
+def _partition_edges(
+    conflicts: rx.PyGraph,
     max_edges: int,
-    algorithm: Literal["kernighan_lin", "spectral"] = "kernighan_lin",
-    seed: int | None = 0,
+    algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral",
 ) -> list[list[int]]:
-    """Recursively partition a graph until each part has <= *max_edges* edges.
+    """Group the edges joined in the :func:`_conflict_graph` ``conflicts`` into
+    partitions of at most ``max_edges`` edges.
 
-    Isolated nodes are dropped and connected components are partitioned
-    separately. Edges cut by a bisection belong to no partition.
-
-    Args:
-        edges: Edges as position pairs ``(u, v)`` with ``u < v``.
-        weights: Weight of each edge.
-        max_edges: Maximum number of edges per partition.
-        algorithm: ``"kernighan_lin"`` (weight-aware) or ``"spectral"``
-            (weighted-Laplacian Fiedler vector).
-        seed: Random seed for reproducibility.
+    Partitions ``conflicts`` with :func:`_partition_graph_by_nodes`, cutting the
+    lightest conflicts. Every joined edge lands in exactly one partition;
+    conflicts between partitions are left to aggregation.
 
     Returns:
-        Ascending edge indices of each partition, each with at least one and
-        at most *max_edges* edges.
+        Ascending edge indices of each partition, ordered by first index; empty
+        when ``conflicts`` has no edges.
 
     Raises:
-        ValueError: If ``algorithm`` is unsupported, or a connected subgraph
-            above *max_edges* edges cannot be bisected.
+        ValueError: If ``algorithm`` is unsupported.
     """
-    if algorithm not in ("kernighan_lin", "spectral"):
-        raise ValueError(
-            f"Unsupported partitioning algorithm: {algorithm!r}. "
-            "Supported: 'kernighan_lin', 'spectral'."
-        )
-    return _split_by_edges(
-        _edge_index_graph(edges), weights, max_edges, algorithm, seed
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=max_edges, partitioning_algorithm=algorithm
     )
-
-
-def _split_by_edges(
-    graph: rx.PyGraph,
-    weights: Sequence[float],
-    max_edges: int,
-    algorithm: Literal["kernighan_lin", "spectral"],
-    seed: int | None,
-) -> list[list[int]]:
-    """:func:`_partition_graph_by_edges` on an :func:`_edge_index_graph` subgraph."""
-    n_edges = graph.num_edges()
-    if n_edges <= max_edges:
-        return [sorted(graph.edges())] if n_edges else []
-
-    components = sorted(
-        sorted(component)
-        for component in rx.connected_components(graph)
-        if len(component) > 1
-    )
-    if len(components) > 1 or len(components[0]) < graph.num_nodes():
-        return [
-            part
-            for component in components
-            for part in _split_by_edges(
-                graph.subgraph(component), weights, max_edges, algorithm, seed
-            )
-        ]
-
-    if algorithm == "kernighan_lin":
-        part_a, part_b = _kl_bisect(graph, weights, seed=seed)
-    else:
-        part_a, part_b = _spectral_bisect(graph, weights)
-
-    if sorted(part_b) < sorted(part_a):
-        part_a, part_b = part_b, part_a
-
-    if not part_a or not part_b:
-        raise ValueError(
-            f"Cannot split a connected subgraph of {n_edges} edges to meet "
-            f"max_edges={max_edges}: {algorithm!r} bisection left one side empty."
-        )
-
-    index_of = {graph[node]: node for node in graph.node_indices()}
-    return [
-        part
-        for side in (part_a, part_b)
-        for part in _split_by_edges(
-            graph.subgraph(sorted(index_of[position] for position in side)),
-            weights,
-            max_edges,
-            algorithm,
-            seed,
-        )
-    ]
-
-
-def _kl_bisect(
-    graph: rx.PyGraph, weights: Sequence[float], seed: int | None = None
-) -> tuple[set[int], set[int]]:
-    """Kernighan-Lin bisection minimising the total weight of cut edges.
-
-    Low-weight edges are cut in preference, keeping high-weight edges within
-    partitions. Runs :func:`networkx.algorithms.community.kernighan_lin_bisection`
-    on the position-labelled graph and returns the positions of each side.
-    """
-    kl_graph = nx.Graph()
-    kl_graph.add_nodes_from(sorted(graph.nodes()))
-    kl_graph.add_weighted_edges_from(
-        (graph[u], graph[v], weights[index])
-        for u, v, index in sorted(graph.weighted_edge_list(), key=lambda e: e[2])
-    )
-    part_a, part_b = nx.community.kernighan_lin_bisection(
-        kl_graph, weight="weight", seed=seed
-    )
-    return set(part_a), set(part_b)
-
-
-def _spectral_bisect(
-    graph: rx.PyGraph, weights: Sequence[float]
-) -> tuple[set[int], set[int]]:
-    """Fiedler-vector bisection on the weighted graph Laplacian.
-
-    The ``ceil(n / 2)`` nodes with the lowest Fiedler entries form the first
-    part, so both parts are non-empty even when entries tie. Returns the
-    positions of each side.
-    """
-    nodes = list(graph.node_indices())
-    local = {node: i for i, node in enumerate(nodes)}
-    edge_list = graph.weighted_edge_list()
-    rows = [local[u] for u, _, _ in edge_list]
-    cols = [local[v] for _, v, _ in edge_list]
-    data = [weights[index] for _, _, index in edge_list]
-    n = len(nodes)
-    adjacency = sps.coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
-    adjacency = adjacency + adjacency.T
-    laplacian = sps.diags(np.asarray(adjacency.sum(axis=1)).ravel()) - adjacency
-    v0 = np.linspace(1.0, 2.0, n)
-    _eigenvalues, eigenvectors = spla.eigsh(laplacian, k=2, which="SM", v0=v0)
-    fiedler = eigenvectors[:, 1]
-
-    order = np.argsort(fiedler, kind="stable")
-    positions = [graph[node] for node in nodes]
-    part_a = {positions[i] for i in order[: (n + 1) // 2]}
-    part_b = set(positions) - part_a
-    return part_a, part_b
+    if conflicts.num_edges() == 0:
+        return []
+    clusters = _partition_graph_by_nodes(conflicts, config, merge_edgeless=False)
+    return sorted(sorted(ids) for _sub, ids in clusters)
 
 
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
-
-
-def _count_conflicts(solution: npt.ArrayLike, edges: npt.ArrayLike) -> int:
-    """Count matching constraint violations in a solution vector."""
-    selected = np.asarray(edges, dtype=np.intp).reshape(-1, 2)[
-        np.asarray(solution, dtype=bool)
-    ]
-    counts = np.bincount(selected.ravel())
-    return int(counts.sum() - np.count_nonzero(counts))
 
 
 def _integer_weights(weights: Sequence[float]) -> list[int]:
@@ -382,6 +282,39 @@ def _repair_matching(
     return sorted(valid)
 
 
+class _MatchingPartition(BinaryOptimizationProblem):
+    """The matching QUBO of one partition's edges, whose candidates aggregation
+    repairs into matchings and ranks by weight."""
+
+    candidate_feasibility = "repair"
+
+    def __init__(
+        self, edges: Sequence[_Edge], weights: Sequence[float], penalty_weight: float
+    ):
+        super().__init__(_construct_matching_qubo(edges, weights, penalty_weight))
+        self._edges = list(edges)
+        self._weights = list(weights)
+
+    def _selected(self, bitstring: str) -> list[int]:
+        return [i for i, bit in enumerate(bitstring) if bit == "1"]
+
+    def is_feasible(self, bitstring: str) -> bool:
+        """Whether the selected edges form a matching."""
+        return is_valid_matching([self._edges[i] for i in self._selected(bitstring)])
+
+    def compute_energy(self, bitstring: str) -> float:
+        """Negated weight of the selected edges."""
+        return -math.fsum(self._weights[i] for i in self._selected(bitstring))
+
+    def repair_infeasible_bitstring(self, bitstring: str) -> tuple[str, Any, float]:
+        """The matching kept by :func:`_repair_matching`, its decoding and energy."""
+        kept = set(
+            _repair_matching(self._selected(bitstring), self._edges, self._weights)
+        )
+        repaired = "".join("1" if i in kept else "0" for i in range(len(bitstring)))
+        return repaired, self.decode_fn(repaired), self.compute_energy(repaired)
+
+
 # ------------------------------------------------------------------
 # MaxWeightMatchingProblem
 # ------------------------------------------------------------------
@@ -396,7 +329,13 @@ class MaxWeightMatchingProblem(QAOAProblem):
     Can be used directly with :class:`~divi.qprog.algorithms.QAOA` for
     small graphs, or with
     :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` for large
-    graphs via edge-based partitioning.
+    graphs via edge-based partitioning: every positive-weight edge that shares
+    a node with another belongs to exactly one partition, and conflicts between
+    partitions are resolved when their solutions are combined. Each
+    partition's candidates are repaired into matchings and ranked by weight,
+    and combinations are scored by their weight after the same repair. Edges no
+    partition solves are added to every combination, and non-positive edges
+    are never selected.
 
     Qubit ``i`` is the ``i``-th edge in ascending order of its endpoints'
     node positions. A decoded matching lists each edge as a pair of node
@@ -407,20 +346,27 @@ class MaxWeightMatchingProblem(QAOAProblem):
             ``rx.PyGraph`` nodes are identified by node index, and an edge payload
             that is a number, or a dict with a ``"weight"`` entry, is its
             weight; other edges weigh 1.
-        penalty_weight: Strength of matching constraint penalties in the
-            QUBO formulation.  Higher values enforce constraints more
-            strictly.
-        max_edges_per_partition: Maximum edges per partition.  Setting
-            this enables :meth:`decompose` for partitioned solving.
-        partition_algorithm: Edge partitioning strategy.
-            ``"kernighan_lin"`` (default, weight-aware) or ``"spectral"``.
+        penalty_weight: Cost of two selected edges sharing a node, as a
+            multiple of the largest edge weight magnitude. Must be greater
+            than 1, so that every shared node costs more than any edge earns.
+        max_edges_per_partition: Maximum edges per partition, at least 2.
+            Setting this enables :meth:`decompose` for partitioned solving.
+        partition_algorithm: Algorithm that splits the edges, cutting the
+            lightest conflicts: ``"spectral"`` (default), ``"metis"`` or
+            ``"kernighan_lin"``, as in
+            :class:`~divi.qprog.problems.GraphPartitioningConfig`.
         use_classical_cleanup: If ``True`` (default), fill unmatched
             residual nodes via :func:`~rustworkx.max_weight_matching` during
             :meth:`postprocess_candidates`. It runs on integer weights scaled
             so the heaviest edge has 100 bits: weights down to ``2**-47`` of
             the heaviest are exact and lighter ones round to a step of at most
             ``2**-99`` of it.
-        seed: Random seed for partitioning reproducibility.
+
+    Raises:
+        TypeError: If ``graph`` is directed.
+        ValueError: If the graph has a self-loop or a non-finite edge weight,
+            ``penalty_weight`` is not a finite number above 1, or
+            ``max_edges_per_partition`` is below 2.
 
     Example::
 
@@ -449,38 +395,36 @@ class MaxWeightMatchingProblem(QAOAProblem):
         penalty_weight: float = 10.0,
         *,
         max_edges_per_partition: int | None = None,
-        partition_algorithm: Literal["kernighan_lin", "spectral"] = "kernighan_lin",
+        partition_algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral",
         use_classical_cleanup: bool = True,
-        seed: int | None = 0,
     ):
         self._input_graph = graph
         node_ids, self._edges, self._weights = _matching_edges(graph)
         if any(u == v for u, v in self._edges):
             raise ValueError("Graph contains self-loops")
-        if max_edges_per_partition is not None and max_edges_per_partition < 1:
+        penalty_weight = float(penalty_weight)
+        if not math.isfinite(penalty_weight) or penalty_weight <= 1:
             raise ValueError(
-                "max_edges_per_partition must be at least 1, got "
+                f"penalty_weight must be a finite number above 1, got {penalty_weight}."
+            )
+        if max_edges_per_partition is not None and max_edges_per_partition < 2:
+            raise ValueError(
+                "max_edges_per_partition must be at least 2, got "
                 f"{max_edges_per_partition}."
             )
         self._penalty_weight = penalty_weight
         self._max_edges_per_partition = max_edges_per_partition
         self._partition_algorithm = partition_algorithm
         self._use_classical_cleanup = use_classical_cleanup
-        self._seed = seed
 
-        self._edge_to_qubit: dict[_Edge, int] = {
-            edge: i for i, edge in enumerate(self._edges)
-        }
         self._labelled_edges = [(node_ids[u], node_ids[v]) for u, v in self._edges]
-        self._edge_array = np.array(self._edges, dtype=np.intp).reshape(-1, 2)
-        self._weight_array = np.array(self._weights, dtype=float)
 
         self._bop = BinaryOptimizationProblem(
             _construct_matching_qubo(self._edges, self._weights, penalty_weight)
         )
 
-        # Decomposition state (populated by decompose())
         self._edge_index_maps: dict[Hashable, list[int]] = {}
+        self._preset_edges: list[int] = []
 
     # ------------------------------------------------------------------
     # QAOAProblem interface (delegated to internal BinaryOptimizationProblem)
@@ -504,7 +448,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
 
         Treat as read-only: edge weights are read into cached state at
         construction. Changing edge weights or structure afterwards will not
-        update the cached average-weight penalty, so ``evaluate_global_solution``
+        update the cached conflict penalty, so ``evaluate_global_solution``
         would return stale scores. Build a new problem instead.
         """
         return self._input_graph
@@ -545,27 +489,51 @@ class MaxWeightMatchingProblem(QAOAProblem):
                 "Cannot decompose: max_edges_per_partition was not set at construction."
             )
 
-        parts = _partition_graph_by_edges(
-            self._edges,
-            self._weights,
+        parts = _partition_edges(
+            self._conflicts,
             max_edges=self._max_edges_per_partition,
             algorithm=self._partition_algorithm,
-            seed=self._seed,
         )
+        if not parts:
+            raise ValueError(
+                "Cannot decompose: no two positive-weight edges share a node, so "
+                "the best matching holds every positive-weight edge. Solve the "
+                "problem without partitioning."
+            )
 
+        conflicted = [
+            indices
+            for indices in parts
+            if self._conflicts.subgraph(indices).num_edges() > 0
+        ]
+        solved = {i for indices in conflicted for i in indices}
+        self._preset_edges = [
+            i
+            for i, weight in enumerate(self._weights)
+            if weight > 0 and i not in solved
+        ]
         self._edge_index_maps = {}
         sub_problems: dict[Hashable, QAOAProblem] = {}
-        for i, indices in enumerate(parts):
+        for i, indices in enumerate(conflicted):
             prog_id = (f"P{i}", len(indices))
             self._edge_index_maps[prog_id] = indices
-            qubo = _construct_matching_qubo(
+            sub_problems[prog_id] = _MatchingPartition(
                 [self._edges[j] for j in indices],
                 [self._weights[j] for j in indices],
                 self._penalty_weight,
             )
-            sub_problems[prog_id] = BinaryOptimizationProblem(qubo)
 
         return sub_problems
+
+    def order_partitions(self, prog_ids: Sequence[Hashable]) -> list[Hashable]:
+        """Partitions ordered so each next one shares the most conflict weight
+        with those already placed."""
+        groups = [self._edge_index_maps[pid] for pid in prog_ids]
+        return place_by_coupling(prog_ids, groups, self._conflicts.weighted_edge_list())
+
+    @cached_property
+    def _conflicts(self) -> rx.PyGraph:
+        return _conflict_graph(self._edges, self._weights)
 
     def initial_solution_size(self) -> int:
         return len(self._edges)
@@ -582,10 +550,13 @@ class MaxWeightMatchingProblem(QAOAProblem):
             extended[global_idx] = int(candidate_decoded[local_idx])
         return extended
 
-    @cached_property
-    def _avg_weight(self) -> float:
-        """Mean edge weight of the (immutable) graph; the conflict penalty."""
-        return sum(self._weights) / max(len(self._weights), 1)
+    def _complete(self, selected: Sequence[int]) -> list[int]:
+        """``selected`` plus every preset edge, repaired greedily by weight when
+        two share a node."""
+        combined = sorted(set(selected).union(self._preset_edges))
+        if self._is_matching(combined):
+            return combined
+        return _repair_matching(combined, self._edges, self._weights)
 
     @cached_property
     def _matching_weights(self) -> list[int]:
@@ -593,34 +564,28 @@ class MaxWeightMatchingProblem(QAOAProblem):
         return _integer_weights(self._weights)
 
     def evaluate_global_solution(self, solution: Sequence[int]) -> float:
-        """Score a solution: negative (weight - conflict_penalty * conflicts).
+        """Negated weight of the matching :meth:`postprocess_candidates` makes of
+        ``solution`` before classical cleanup. Lower is better; a solution the
+        repair changes scores ``1e-9 * max|w|`` worse per dropped edge, so
+        valid solutions win ties."""
+        raw = [i for i, bit in enumerate(solution) if bit]
+        selected = self._complete(raw)
+        dropped = len(set(raw).union(self._preset_edges)) - len(selected)
+        return -math.fsum(self._weights[i] for i in selected) + dropped * self._tie_step
 
-        Lower is better for beam search.  Maximising weight while minimising
-        conflicts.
-        """
-        mask = np.asarray(solution, dtype=bool)
-        weight = float(self._weight_array[mask].sum())
-        conflicts = _count_conflicts(mask, self._edge_array)
-
-        # Negate: beam search keeps lowest scores
-        return -(weight - self._avg_weight * conflicts)
+    @cached_property
+    def _tie_step(self) -> float:
+        return 1e-9 * (max(map(abs, self._weights), default=0.0) or 1.0)
 
     def _postprocess_solution(self, solution: list[int]) -> tuple[list[tuple], float]:
-        """Repair conflicts, apply cleanup, compute weight."""
-        # Repair first (fix conflicts), then cleanup (fill gaps)
-        selected = [i for i, bit in enumerate(solution) if bit]
-        if not self._is_matching(selected):
-            selected = _repair_matching(selected, self._edges, self._weights)
-            solution = [0] * len(self._edges)
-            for i in selected:
-                solution[i] = 1
-
+        """Complete and repair ``solution``, then apply the classical cleanup."""
+        selected = self._complete([i for i, bit in enumerate(solution) if bit])
         if self._use_classical_cleanup:
-            solution = _fill_unmatched_nodes(
-                solution, self._edges, self._matching_weights
-            )
-            selected = [i for i, bit in enumerate(solution) if bit]
-
+            bits = [0] * len(self._edges)
+            for i in selected:
+                bits[i] = 1
+            bits = _fill_unmatched_nodes(bits, self._edges, self._matching_weights)
+            selected = [i for i, bit in enumerate(bits) if bit]
         return self._matching_and_weight(selected)
 
     def postprocess_candidates(
@@ -628,9 +593,11 @@ class MaxWeightMatchingProblem(QAOAProblem):
     ) -> list[tuple[list[tuple], float]]:
         """Post-process matching candidates, optionally hard-filtering invalid ones.
 
-        With ``strict=False``, invalid raw candidates are repaired and may be
-        improved by classical cleanup. With ``strict=True``, invalid raw
-        candidates are discarded before repair or cleanup.
+        Every candidate gains the positive-weight edges no partition solves,
+        keeping the heaviest edge at each shared node. With ``strict=False``,
+        invalid raw candidates are repaired and may be improved by classical
+        cleanup. With ``strict=True``, invalid raw candidates are discarded
+        before repair or cleanup.
         """
         formatted = []
         invalid_seen = False
@@ -639,7 +606,9 @@ class MaxWeightMatchingProblem(QAOAProblem):
             valid = self._is_matching(selected)
             if strict:
                 if valid:
-                    formatted.append(self._matching_and_weight(selected))
+                    formatted.append(
+                        self._matching_and_weight(self._complete(selected))
+                    )
             else:
                 invalid_seen = invalid_seen or not valid
                 formatted.append(self._postprocess_solution(solution))

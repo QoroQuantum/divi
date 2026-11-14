@@ -24,6 +24,7 @@ D-Wave's ``EnergyImpactDecomposer``), and the asset clustering of the portfolio
 problems.
 """
 
+import heapq
 from typing import cast
 
 import numpy as np
@@ -31,8 +32,9 @@ import scipy.sparse as sps
 from networkx import Graph
 from networkx.algorithms.community import louvain_communities
 from scipy.sparse.csgraph import connected_components, laplacian
-from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
+from scipy.sparse.linalg import ArpackError, eigsh
 from sklearn.cluster import KMeans
+from threadpoolctl import threadpool_limits
 
 from ._partitioning_config import (
     GraphPartitioningConfig,
@@ -70,7 +72,8 @@ def _view_features(W: sps.csr_matrix, k: int) -> np.ndarray | None:
 
     Returns ``None`` for an empty view (no couplings of that sign). Uses dense
     ``eigh`` for moderate sizes and sparse shift-invert ``eigsh`` above
-    :data:`_DENSE_EIGH_MAX`, falling back to dense on solver failure.
+    :data:`_DENSE_EIGH_MAX`, falling back to dense on solver failure. Repeated
+    calls return identical features.
     """
     if W.nnz == 0:
         return None
@@ -87,15 +90,19 @@ def _view_features(W: sps.csr_matrix, k: int) -> np.ndarray | None:
         return vecs[:, :k]
 
     try:
-        vals, vecs = eigsh(L.tocsc(), k=k, sigma=-1e-6, which="LM")
+        v0 = np.random.default_rng(0).uniform(-1.0, 1.0, m)
+        vals, vecs = eigsh(L.tocsc(), k=k, sigma=-1e-6, which="LM", v0=v0)
         return vecs[:, np.argsort(vals)]
-    except (ArpackError, ArpackNoConvergence, np.linalg.LinAlgError):
+    except (ArpackError, np.linalg.LinAlgError):
         _vals, vecs = np.linalg.eigh(np.asarray(L.todense()))
         return vecs[:, :k]
 
 
 def _multiview_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
-    """Signed multi-view spectral clustering into ``k`` groups (arXiv 2502.16212)."""
+    """Signed multi-view spectral clustering into ``k`` groups (arXiv 2502.16212).
+
+    Repeated calls return identical labels.
+    """
     n = sigma.shape[0]
     if k >= n:
         return np.arange(n)
@@ -116,9 +123,10 @@ def _multiview_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
     if not features:
         return np.zeros(n, dtype=int)
 
-    return KMeans(n_clusters=k, n_init=10, random_state=seed).fit_predict(
-        np.hstack(features)
-    )
+    with threadpool_limits(limits=1, user_api="openmp"):
+        return KMeans(n_clusters=k, n_init=10, random_state=seed).fit_predict(
+            np.hstack(features)
+        )
 
 
 def _louvain_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
@@ -127,8 +135,8 @@ def _louvain_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
     ``k`` is ignored — Louvain derives the community count from the graph itself.
     Edge weights are coupling *magnitudes* (Louvain requires non-negative weights),
     so strongly-coupled variables of either sign are grouped together. A uniform
-    complete (structureless) block collapses to one community, which the caller's
-    balanced-split fallback then handles; non-uniform complete blocks (e.g. rank-1
+    complete (structureless) block collapses to one community, which the caller
+    then cuts along its Fiedler vector; non-uniform complete blocks (e.g. rank-1
     number-partitioning) can still fragment.
     """
     n = sigma.shape[0]
@@ -156,8 +164,9 @@ def _split_to_budget(
     """Cluster ``idx`` until every group has at most ``budget`` members.
 
     Iterative (worklist) bisection-to-budget, mirroring the graph partitioner's
-    size predicate, using ``labeler`` for the clustering step. Falls back to a
-    balanced hard split when the labeler fails to separate or makes no progress.
+    size predicate, using ``labeler`` for the clustering step. When the labeler
+    makes no progress, the group is cut into ``k`` equal runs along its Fiedler
+    vector.
     """
     out: list[np.ndarray] = []
     stack: list[np.ndarray] = [idx]
@@ -171,18 +180,98 @@ def _split_to_budget(
         labels = labeler(cast(sps.csr_matrix, sigma[np.ix_(cur, cur)]), k, seed)
         groups = [cur[labels == lbl] for lbl in np.unique(labels)]
 
-        # Degenerate (single group, i.e. no progress) → balanced hard split, which
-        # strictly shrinks and respects the budget. Iterative worklist avoids any
-        # recursion-depth limit. (A tighter anti-"singleton-peeling" guard was
-        # tried and reverted: forcing balance on near-degenerate/rank-1
-        # single-sign blocks measurably worsened unpolished number-partitioning
-        # results, and local_search erases the difference.)
         if len(groups) < 2:
-            step = int(np.ceil(len(cur) / k))
-            groups = [cur[i : i + step] for i in range(0, len(cur), step)]
+            groups = _split_along_fiedler(sigma, cur, k)
 
         stack.extend(groups)
     return out
+
+
+def sort_by_fiedler_vector(sigma: sps.csr_matrix, idx: np.ndarray) -> np.ndarray:
+    """``idx`` sorted along the Fiedler vector of their coupling-magnitude graph.
+
+    Strongly coupled variables end up next to each other, so cutting the result
+    into contiguous runs groups them. The vector's sign is fixed by its largest
+    entry, so the order does not depend on the eigensolver. ``idx`` is returned unchanged when its
+    variables share no coupling.
+    """
+    sub = abs(sps.csr_matrix(sigma[np.ix_(idx, idx)]))
+    sub.setdiag(0)
+    sub.eliminate_zeros()
+    features = _view_features(sub, 2)
+    if features is None or features.shape[1] < 2:
+        return idx
+    fiedler = features[:, 1]
+    fiedler = fiedler * np.sign(fiedler[np.argmax(np.abs(fiedler))])
+    return idx[np.argsort(fiedler, kind="stable")]
+
+
+def _split_along_fiedler(
+    sigma: sps.csr_matrix, idx: np.ndarray, k: int
+) -> list[np.ndarray]:
+    """``idx`` cut into ``k`` runs of near-equal size along its Fiedler vector,
+    each run ascending."""
+    return [
+        np.sort(run) for run in np.array_split(sort_by_fiedler_vector(sigma, idx), k)
+    ]
+
+
+def _merge_clusters_to_budget(
+    coupling: sps.csr_matrix,
+    clusters: list[np.ndarray],
+    budget: int,
+    minimum: int | None,
+) -> list[np.ndarray]:
+    """Merge clusters into the neighbour they couple to most while the union
+    has at most ``budget`` members.
+
+    Coupling between clusters is the summed ``|coupling|`` across them. The
+    smallest cluster with a fitting coupled neighbour merges first; ties go to
+    the smaller neighbour, then the earlier one. Merging stops at ``minimum``
+    clusters. Surviving clusters keep their order, merged ones are ascending.
+    """
+    if not clusters:
+        return []
+    n_clusters = len(clusters)
+    members = np.concatenate(clusters)
+    owner = np.repeat(np.arange(n_clusters), [len(c) for c in clusters])
+    membership = sps.csr_matrix(
+        (np.ones(len(members)), (members, owner)),
+        shape=(coupling.shape[0], n_clusters),
+    )
+    between = (membership.T @ abs(coupling) @ membership).tocoo()
+    links: list[dict[int, float]] = [{} for _ in range(n_clusters)]
+    for i, j, weight in zip(
+        between.row.tolist(), between.col.tolist(), between.data.tolist()
+    ):
+        if i != j and weight > 0:
+            links[i][j] = links[i].get(j, 0.0) + weight
+
+    clusters = list(clusters)
+    sizes = [len(c) for c in clusters]
+    queue = [(size, i) for i, size in enumerate(sizes)]
+    heapq.heapify(queue)
+    alive = n_clusters
+    while queue and alive > max(minimum or 1, 1):
+        size, small = heapq.heappop(queue)
+        if size != sizes[small]:
+            continue
+        fits = [j for j in links[small] if size + sizes[j] <= budget]
+        if not fits:
+            continue
+        big = max(fits, key=lambda j: (links[small][j], -sizes[j], -j))
+        for j, weight in links[small].items():
+            del links[j][small]
+            if j != big:
+                links[big][j] = links[big].get(j, 0.0) + weight
+                links[j][big] = links[j].get(big, 0.0) + weight
+        links[small] = {}
+        clusters[big] = np.sort(np.concatenate((clusters[big], clusters[small])))
+        sizes[big] += size
+        sizes[small] = -1
+        heapq.heappush(queue, (sizes[big], big))
+        alive -= 1
+    return [clusters[i] for i in range(n_clusters) if sizes[i] >= 0]
 
 
 def _ensure_min_clusters(
@@ -203,8 +292,7 @@ def _ensure_min_clusters(
         labels = labeler(cast(sps.csr_matrix, sigma[np.ix_(idx, idx)]), 2, seed)
         groups = [idx[labels == lbl] for lbl in np.unique(labels)]
         if len(groups) < 2:
-            mid = len(idx) // 2
-            groups = [idx[:mid], idx[mid:]]
+            groups = _split_along_fiedler(sigma, idx, 2)
         clusters.extend(groups)
     return clusters
 
@@ -216,7 +304,8 @@ def _partition(
 
     Connected components are separated first (a zero-cost exact reduction), then
     each component is clustered with ``labeler`` to honour ``config``'s
-    ``max_cluster_size`` budget and ``minimum_n_clusters`` floor.
+    ``max_cluster_size`` budget and ``minimum_n_clusters`` floor, and coupled
+    clusters that fit the budget together are merged.
     """
     if (
         config.minimum_n_clusters is not None
@@ -236,6 +325,10 @@ def _partition(
         else:
             clusters.append(idx)
 
+    if config.max_cluster_size is not None:
+        clusters = _merge_clusters_to_budget(
+            sigma, clusters, config.max_cluster_size, config.minimum_n_clusters
+        )
     if config.minimum_n_clusters is not None:
         clusters = _ensure_min_clusters(
             sigma, clusters, config.minimum_n_clusters, seed, labeler

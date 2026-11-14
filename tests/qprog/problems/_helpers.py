@@ -7,6 +7,7 @@
 import contextlib
 import itertools
 import signal
+import sys
 
 import dimod
 import networkx as nx
@@ -14,7 +15,13 @@ import numpy as np
 import pytest
 import rustworkx as rx
 
+from divi._optional import import_if_available
 from divi.qprog.problems import BinaryOptimizationProblem
+
+skip_without_pymetis = pytest.mark.skipif(
+    sys.platform == "win32" and import_if_available("pymetis") is None,
+    reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
+)
 
 
 def nx_twin(graph: rx.PyGraph | rx.PyDiGraph) -> nx.Graph:

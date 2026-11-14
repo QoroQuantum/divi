@@ -28,12 +28,19 @@ class GraphPartitioningConfig:
     Attributes:
         max_n_nodes_per_cluster: Maximum number of nodes allowed in each cluster.
             If None, no upper limit is enforced. Must be a positive integer.
-        minimum_n_clusters: Minimum number of clusters to create. If None, no
-            lower limit is enforced. Must be a positive integer.
-        partitioning_algorithm: Algorithm to use for partitioning. Options are:
-            - "spectral": Spectral partitioning using Fiedler vector (default)
-            - "metis": METIS graph partitioning library
-            - "kernighan_lin": Kernighan-Lin algorithm
+        minimum_n_clusters: Minimum number of clusters to create. Nodes without
+            edges belong to no cluster and are not counted. If None, no lower
+            limit is enforced. Must be a positive integer.
+        partitioning_algorithm: Algorithm to use for partitioning. All three
+            minimise the cut ``|w|``. Options are:
+
+            - "spectral": spectral clustering into k parts at once (default)
+            - "metis": METIS recursive bisection into k parts at once
+            - "kernighan_lin": repeated Kernighan-Lin bisection, sized to fill
+              clusters up to ``max_n_nodes_per_cluster``
+
+            Neighbouring clusters that fit under ``max_n_nodes_per_cluster``
+            together are merged afterwards.
 
     Note:
         At least one of `max_n_nodes_per_cluster` or `minimum_n_clusters` must be

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from types import SimpleNamespace
+
 import pytest
 
 from divi.qprog.ensembles import BeamSearchStrategy, HierarchicalStrategy
@@ -15,10 +17,12 @@ from divi.qprog.mixins import SolutionEntry
 class _MockProgram:
     """Minimal mock that implements get_top_solutions."""
 
+    problem = SimpleNamespace(candidate_feasibility="ignore")
+
     def __init__(self, candidates: list[SolutionEntry]):
         self._candidates = candidates
 
-    def get_top_solutions(self, n=10, *, include_decoded=False):
+    def get_top_solutions(self, n=10, *, include_decoded=False, feasibility="ignore"):
         return self._candidates[:n]
 
 
@@ -257,7 +261,7 @@ def test_fetch_count_follows_n_partition_candidates_not_beam_width(mocker):
     )
 
     for spy in spies.values():
-        spy.assert_called_once_with(n=2, include_decoded=True)
+        spy.assert_called_once_with(n=2, include_decoded=True, feasibility="ignore")
 
 
 def test_beam_wider_than_reachable_returns_only_reachable_solutions():
@@ -298,7 +302,9 @@ def test_default_strategy_uses_balanced_search(mocker):
         evaluate_fn=_neg_sum_evaluate,
     )
 
-    get_top_solutions.assert_called_once_with(n=6, include_decoded=True)
+    get_top_solutions.assert_called_once_with(
+        n=6, include_decoded=True, feasibility="ignore"
+    )
     assert result == [(pytest.approx(-1.0), [1, 0])]
 
 
@@ -796,7 +802,9 @@ class TestBeamSearchAggregateTopN:
             top_n=10,
         )
 
-        get_top_solutions.assert_called_once_with(n=10, include_decoded=True)
+        get_top_solutions.assert_called_once_with(
+            n=10, include_decoded=True, feasibility="ignore"
+        )
         assert len(results) == 10
 
 
@@ -1277,4 +1285,4 @@ def test_hierarchical_fetches_k_per_partition_candidates(mocker):
     )
 
     for spy in spies:
-        spy.assert_called_once_with(n=1, include_decoded=True)
+        spy.assert_called_once_with(n=1, include_decoded=True, feasibility="ignore")

@@ -16,16 +16,18 @@ import pytest
 import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.qprog.problems import MaxWeightCycleProblem
+from divi.qprog.problems import (
+    MaxCliqueProblem,
+    MaxIndependentSetProblem,
+    MaxWeightCycleProblem,
+    MinVertexCoverProblem,
+)
 from divi.qprog.problems._graph_hamiltonians import (
     cycle_mixer_spo,
     edges_to_wires,
     loss_hamiltonian_spo,
-    max_clique_hamiltonians,
-    max_independent_set_hamiltonians,
     max_weight_cycle_hamiltonians,
     maxcut_hamiltonians,
-    min_vertex_cover_hamiltonians,
     net_flow_constraint_spo,
     out_flow_constraint_spo,
     wires_to_edges,
@@ -63,6 +65,11 @@ def _neighbourhoods(graph: nx.Graph) -> dict[int, list[int]]:
     return {vertex: list(graph.neighbors(vertex)) for vertex in graph.nodes()}
 
 
+def _build_problem_hamiltonians(problem_cls, graph, constrained):
+    problem = problem_cls(graph, use_constrained_mixer=constrained)
+    return problem.cost_hamiltonian, problem.mixer_hamiltonian
+
+
 @pytest.mark.parametrize("name,factory", _GRAPHS, ids=_GRAPH_IDS)
 def test_maxcut_cost_counts_cut_edges(name, factory):
     """``H_C = 0.5 * sum (Z_i Z_j - I)`` has eigenvalue ``-|cut|`` exactly, so
@@ -78,13 +85,63 @@ def test_maxcut_cost_counts_cut_edges(name, factory):
     assert_transitions(mixer, single_flip_transitions(graph.number_of_nodes()))
 
 
+def _weighted_cut(graph: nx.Graph, bits) -> float:
+    return sum(
+        data.get("weight", 1.0)
+        for left, right, data in graph.edges(data=True)
+        if left != right and bits[left] != bits[right]
+    )
+
+
+def _weighted_path() -> nx.Graph:
+    graph = nx.Graph()
+    graph.add_weighted_edges_from([(0, 1, 2.5), (1, 2, -1.0), (2, 3, 0.5)])
+    graph.add_edge(3, 4)
+    return graph
+
+
+def test_maxcut_cost_is_minus_the_weighted_cut():
+    graph = _weighted_path()
+    cost, _mixer = maxcut_hamiltonians(graph)
+
+    assert_diagonal_scores(cost, lambda bits: -_weighted_cut(graph, bits), offset=0.0)
+
+
+def test_maxcut_cost_drops_self_loops():
+    graph = nx.path_graph(3)
+    graph.add_edge(1, 1)
+    cost, _mixer = maxcut_hamiltonians(graph)
+
+    assert_diagonal_scores(cost, lambda bits: -_weighted_cut(graph, bits), offset=0.0)
+
+
+def test_maxcut_reads_rustworkx_weights_like_networkx():
+    graph = rx.PyGraph()
+    graph.add_nodes_from(range(4))
+    graph.add_edges_from([(0, 1, 2.0), (1, 2, {"weight": -3.0}), (2, 3, None)])
+    twin = nx.Graph()
+    twin.add_weighted_edges_from([(0, 1, 2.0), (1, 2, -3.0)])
+    twin.add_edge(2, 3)
+
+    assert maxcut_hamiltonians(graph)[0] == maxcut_hamiltonians(twin)[0]
+
+
+@pytest.mark.parametrize("weight", [float("nan"), float("inf"), float("-inf")])
+def test_maxcut_rejects_non_finite_weights(weight):
+    graph = nx.Graph()
+    graph.add_weighted_edges_from([(0, 1, 1.0), (1, 2, weight)])
+
+    with pytest.raises(ValueError, match="non-finite weight"):
+        maxcut_hamiltonians(graph)
+
+
 @pytest.mark.parametrize("name,factory", _GRAPHS, ids=_GRAPH_IDS)
 def test_max_independent_set_constrained_scores_set_size(name, factory):
     """The constrained formulation leaves independence to the mixer: the cost
     only counts the chosen vertices, and the bit-flip mixer refuses to select a
     vertex whose neighbours are not all unselected."""
     graph = factory()
-    cost, mixer = max_independent_set_hamiltonians(graph, constrained=True)
+    cost, mixer = _build_problem_hamiltonians(MaxIndependentSetProblem, graph, True)
 
     assert_diagonal_scores(
         cost, lambda bits: sum(1 - 2 * bit for bit in bits), offset=0.0
@@ -100,7 +157,7 @@ def test_max_independent_set_unconstrained_penalises_adjacent_selections(name, f
     """Dropping the constraint moves independence into the cost: every edge with
     both endpoints selected costs 3, against a reward of 2 per selected vertex."""
     graph = factory()
-    cost, mixer = max_independent_set_hamiltonians(graph, constrained=False)
+    cost, mixer = _build_problem_hamiltonians(MaxIndependentSetProblem, graph, False)
 
     assert_diagonal_scores(
         cost,
@@ -114,7 +171,7 @@ def test_min_vertex_cover_constrained_scores_cover_size(name, factory):
     """Cover validity is the mixer's job: a vertex may leave the cover only when
     all of its neighbours are already in it."""
     graph = factory()
-    cost, mixer = min_vertex_cover_hamiltonians(graph, constrained=True)
+    cost, mixer = _build_problem_hamiltonians(MinVertexCoverProblem, graph, True)
 
     assert_diagonal_scores(
         cost, lambda bits: -sum(1 - 2 * bit for bit in bits), offset=0.0
@@ -130,7 +187,7 @@ def test_min_vertex_cover_unconstrained_penalises_uncovered_edges(name, factory)
     """Every edge with neither endpoint selected costs 3, against a cost of 2
     per selected vertex — so the minimum is the smallest valid cover."""
     graph = factory()
-    cost, mixer = min_vertex_cover_hamiltonians(graph, constrained=False)
+    cost, mixer = _build_problem_hamiltonians(MinVertexCoverProblem, graph, False)
 
     assert_diagonal_scores(
         cost,
@@ -147,7 +204,7 @@ def test_max_clique_constrained_scores_clique_size(name, factory):
     """A clique in ``graph`` is an independent set in its complement, so the
     mixer runs the bit-flip rule over the complement's neighbourhoods."""
     graph = factory()
-    cost, mixer = max_clique_hamiltonians(graph, constrained=True)
+    cost, mixer = _build_problem_hamiltonians(MaxCliqueProblem, graph, True)
 
     assert_diagonal_scores(
         cost, lambda bits: sum(1 - 2 * bit for bit in bits), offset=0.0
@@ -165,7 +222,7 @@ def test_max_clique_unconstrained_penalises_non_adjacent_selections(name, factor
     """Selecting two vertices that are *not* adjacent in ``graph`` costs 3."""
     graph = factory()
     complement = nx.complement(graph)
-    cost, mixer = max_clique_hamiltonians(graph, constrained=False)
+    cost, mixer = _build_problem_hamiltonians(MaxCliqueProblem, graph, False)
 
     assert_diagonal_scores(
         cost,

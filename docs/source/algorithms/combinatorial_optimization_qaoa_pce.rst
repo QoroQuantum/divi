@@ -67,7 +67,9 @@ Builders for ``mixer_hamiltonian`` include
 
 Override ``is_feasible``, ``compute_energy``, or
 ``repair_infeasible_bitstring`` as needed for feasibility-aware
-post-processing. See the base-class API for the full contract.
+post-processing. To build the mixer layer from gates instead of a Hamiltonian,
+override ``apply_mixer`` and ``mixer_parameter_frequency``. See the base-class
+API for the full contract.
 
 Single-Instance QAOA
 --------------------
@@ -87,8 +89,13 @@ When ``initial_state`` is omitted, QAOA uses the problem's
 for portfolio selection with ``use_constrained_mixer=True``,
 :class:`~divi.qprog.initial_states.SuperpositionState` for other QUBO/HUBO problems.
 
-QAOA always uses the problem's ``mixer_hamiltonian``, whatever the initial
-state. A :class:`~divi.qprog.initial_states.WState` or
+QAOA always uses the problem's mixer, whatever the initial state. The
+constrained mixers of :class:`~divi.qprog.problems.MaxIndependentSetProblem`,
+:class:`~divi.qprog.problems.MinVertexCoverProblem` and
+:class:`~divi.qprog.problems.MaxCliqueProblem` are applied as one
+multi-controlled ``Rx`` per node, so their cost grows with each node's degree
+rather than exponentially in it; assigning ``QAOA.mixer_hamiltonian`` replaces
+the problem's mixer. A :class:`~divi.qprog.initial_states.WState` or
 :class:`~divi.qprog.initial_states.DickeState` keeps its one-hot or fixed-weight
 subspace only if that mixer conserves it, e.g. an
 :func:`~divi.hamiltonians.xy_mixer`.
@@ -151,9 +158,9 @@ Built-in graph problems include:
    * - Problem class
      - Description
    * - :class:`~divi.qprog.problems.MaxCutProblem`\ ``(graph)``
-     - Divides a graph into two subsets to maximise the number of edges between them.
-       Edge weights are ignored; use
-       :class:`~divi.qprog.problems.BinaryOptimizationProblem` for weighted MaxCut.
+     - Divides a graph into two subsets to maximise the total weight of the edges between
+       them. An edge without a weight counts ``1``, a negative weight penalises cutting
+       that edge, and self-loops are ignored.
    * - :class:`~divi.qprog.problems.MaxCliqueProblem`\ ``(graph)``
      - Finds the largest complete subgraph where every node is connected to every other.
    * - :class:`~divi.qprog.problems.MaxIndependentSetProblem`\ ``(graph)``
@@ -812,10 +819,22 @@ Edge-based partitioning is enabled with ``max_edges_per_partition``:
    matching, weight = ensemble.aggregate_results()
    print(f"Matching: {matching}, weight: {weight}")
 
-The partitioned workflow splits the graph by edges using Kernighan-Lin or spectral
-bisection, solves each partition independently, stitches results via beam search,
-and optionally fills unmatched residual nodes using classical
-:func:`~rustworkx.max_weight_matching`.
+``penalty_weight`` is the cost of two selected edges sharing a node, as a
+multiple of the largest edge weight magnitude, and must exceed 1.
+
+The partitioned workflow groups the edges so that each positive-weight edge
+sharing a node with another belongs to exactly one partition, cutting the
+lightest of those shared nodes (``partition_algorithm`` is ``"spectral"``, the
+default, ``"metis"`` or ``"kernighan_lin"``). Each partition is solved
+independently; its
+sampled bitstrings are repaired into matchings, keeping the heaviest edge at
+each shared node, and ranked by weight. Beam search combines the partitions,
+scoring each combination by the weight left after the same repair. Edges no
+partition solves, because they share no node with another positive-weight edge
+or with another edge of their partition, are added to every combination, and
+non-positive edges are never selected. Classical
+:func:`~rustworkx.max_weight_matching` optionally fills nodes the result leaves
+unmatched.
 
 Iterative QAOA
 --------------
@@ -975,7 +994,7 @@ partitions a graph problem configured for partitioning via
    # Aggregate results from all partitions
    quantum_solution, energy = ensemble.aggregate_results()
 
-   print(f"Cut edges: {-energy}")
+   print(f"Cut weight: {-energy}")
    print(f"Total circuits executed: {ensemble.total_circuit_count}")
 
 ``aggregate_results`` and ``get_top_solutions`` name nodes the same way a
@@ -985,6 +1004,14 @@ indices are partitioned identically by every algorithm, and both read edge
 weights the same way: the ``"weight"`` attribute in ``networkx``, and a numeric
 payload or the ``"weight"`` entry of a dict payload in ``rustworkx``.
 ``MaxWeightCycleProblem`` cannot be partitioned, since its variables are edges.
+
+Nodes without any edge belong to no partition; the global solution gives each
+its trivially optimal value (selected for ``MaxIndependentSetProblem``, left out
+for the other problems, except that ``MaxCliqueProblem`` selects one when the
+result would otherwise be empty). ``MaxCliqueProblem``,
+``MaxIndependentSetProblem`` and ``MinVertexCoverProblem`` score global
+solutions with the penalised cost whatever the mixer, and repair infeasible
+aggregated solutions greedily, or drop them with ``get_top_solutions(strict=True)``.
 
 QUBO Partitioning (QAOA or PCE)
 -------------------------------
@@ -1109,6 +1136,10 @@ It is configured with a :class:`~divi.qprog.problems.QUBOPartitioningConfig`:
 option (not part of the decomposer): it adds a greedy single-bit-flip polish of each
 aggregated solution and works with any decomposer, including
 ``EnergyImpactDecomposer``.
+
+A partition without couplings gets no quantum program; each of its variables
+takes the value that minimises the QUBO given the rest of the aggregated
+solution.
 
 .. code-block:: python
 

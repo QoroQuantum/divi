@@ -33,11 +33,11 @@ from divi.qprog.initial_states import (
     build_block_xy_mixer_graph,
 )
 
-from ._base import QAOAProblem
+from ._base import QAOAProblem, place_by_coupling
 from ._binary import BinaryOptimizationProblem
 from ._constraints import LinearConstraint, _UnreachableBoundError
 from ._partitioning_config import QUBOPartitioningConfig
-from ._qubo_partitioning_utils import partition_by_method
+from ._qubo_partitioning_utils import partition_by_method, sort_by_fiedler_vector
 
 _MAX_DOUBLE_TRANSFERS = 2_000_000
 _EPS = 1e-12
@@ -403,12 +403,13 @@ class _PortfolioBase(BinaryOptimizationProblem):
             raise ValueError(
                 "Cannot decompose: no partitioning config was provided at construction."
             )
-        clusters = partition_by_method(sps.csr_matrix(self._sigma), config)
+        sigma = sps.csr_matrix(self._sigma)
+        clusters = partition_by_method(sigma, config)
         # Group uncorrelated assets, within the size limit and above the floor.
         singles = [c for c in clusters if len(c) == 1]
         if len(singles) > 1:
             multi = [c for c in clusters if len(c) > 1]
-            flat = np.concatenate(singles)
+            flat = sort_by_fiedler_vector(sigma, np.concatenate(singles))
             n_groups = math.ceil(len(flat) / (config.max_cluster_size or len(flat)))
             n_groups = max(n_groups, (config.minimum_n_clusters or 0) - len(multi))
             clusters = multi + np.array_split(flat, min(n_groups, len(flat)))
@@ -431,6 +432,14 @@ class _PortfolioBase(BinaryOptimizationProblem):
             "Every asset cluster has a single possible holding, leaving nothing "
             "to solve; solve the problem without partitioning."
         )
+
+    def order_partitions(self, prog_ids: Sequence[Hashable]) -> list[Hashable]:
+        """Asset clusters ordered so each next one has the largest summed
+        ``|covariance|`` to those already placed."""
+        rows, cols = np.triu_indices(self.n_assets, k=1)
+        couplings = zip(rows.tolist(), cols.tolist(), self._sigma[rows, cols].tolist())
+        groups = [self._clusters[pid][0] for pid in prog_ids]
+        return place_by_coupling(prog_ids, groups, couplings)
 
     def _cluster_shares(
         self, clusters: Sequence[np.ndarray], *, relaxed: bool

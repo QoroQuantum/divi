@@ -34,6 +34,7 @@ def _make_stub_problem(mocker, solution_size=4):
     problem = mocker.MagicMock()
     problem.decompose.return_value = {}
     problem.initial_solution_size.return_value = solution_size
+    problem.order_partitions.side_effect = list
     problem.extend_solution.side_effect = lambda current, prog_id, decoded: [
         int(decoded[i]) if i < len(decoded) else current[i] for i in range(len(current))
     ]
@@ -47,6 +48,7 @@ def _make_stub_problem(mocker, solution_size=4):
 def _make_mock_program(mocker, best_probs, top_solutions):
     """Create a mock VQA program with the given best_probs and top_solutions."""
     prog = mocker.MagicMock(spec=QAOA)
+    prog.problem = BinaryOptimizationProblem({(0,): -1.0})
     prog.best_probs = best_probs
     prog.losses_history = [1.0]
     prog.results = {"some": "result"}
@@ -95,8 +97,8 @@ def _make_matching_conflict_ensemble(mocker, backend, best_probs, top_solutions)
     graph.add_weighted_edges_from([(0, 1, 10.0), (1, 2, 10.0)])
     problem = MaxWeightMatchingProblem(graph)
     problem._edge_index_maps = {
-        "A": [problem._edge_to_qubit[(0, 1)]],
-        "B": [problem._edge_to_qubit[(1, 2)]],
+        "A": [problem._edges.index((0, 1))],
+        "B": [problem._edges.index((1, 2))],
     }
     ensemble = _make_ensemble(problem, backend)
     for pid in ("A", "B"):
@@ -317,6 +319,22 @@ class TestPartitioningProgramEnsemble:
         ensemble = _make_ensemble(problem, dummy_simulator)
         verify_basic_program_ensemble_behaviour(ensemble, mocker)
 
+    def test_aggregation_places_partitions_in_the_problem_order(
+        self, mocker, dummy_simulator
+    ):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        problem.order_partitions.side_effect = lambda prog_ids: prog_ids[::-1]
+        ensemble = _make_ensemble(problem, dummy_simulator)
+        ensemble.create_programs()
+        for pid in ("A", "B"):
+            ensemble._programs[pid] = _make_mock_program(
+                mocker, best_probs={"1": 1.0}, top_solutions=_CONFLICT_CANDIDATES
+            )
+        ensemble.aggregate_results()
+
+        placed = [call.args[1] for call in problem.extend_solution.call_args_list]
+        assert placed[0] == "B" and placed[-1] == "A"
+
 
 class TestStrictAggregation:
     """Strict mode is passed to problem-specific post-processing only."""
@@ -392,7 +410,9 @@ class TestStrictAggregation:
             strict=True,
         )
 
-        prog.get_top_solutions.assert_called_once_with(n=2**20, include_decoded=True)
+        prog.get_top_solutions.assert_called_once_with(
+            n=2**20, include_decoded=True, feasibility="ignore"
+        )
         candidates = problem.postprocess_candidates.call_args.args[0]
         assert len(candidates) == 1
         assert candidates[0][1] == [1, 1, 1]
@@ -407,17 +427,12 @@ class TestStrictAggregation:
             top_solutions=_CONFLICT_CANDIDATES,
         )
 
-        with pytest.warns(UserWarning, match="No valid matching candidates"):
-            assert (
-                ensemble.get_top_solutions(
-                    n=1,
-                    strategy=BeamSearchStrategy(
-                        beam_width=None, n_partition_candidates=None
-                    ),
-                    strict=True,
-                )
-                == []
-            )
+        best = ensemble.get_top_solutions(
+            n=1,
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None),
+            strict=True,
+        )
+        assert best == [([(0, 1)], 10.0)]
 
         results = ensemble.get_top_solutions(
             n=3,

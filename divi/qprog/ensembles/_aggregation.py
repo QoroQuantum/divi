@@ -24,12 +24,21 @@ from heapq import nsmallest
 from operator import itemgetter
 from typing import Any
 
-from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
+from divi.qprog.algorithms import PCE, QAOA
+from divi.qprog.mixins import SolutionEntry
 
 ExtendFn = Callable[[list[int], Any, SolutionEntry], list[int]]
 EvaluateFn = Callable[[list[int]], float]
 
 _score = itemgetter(0)
+
+
+def _fetch_candidates(program: QAOA | PCE, n: int) -> list[SolutionEntry]:
+    """The top ``n`` decoded candidates of ``program``, ranked as its problem's
+    ``candidate_feasibility`` asks."""
+    return program.get_top_solutions(
+        n=n, include_decoded=True, feasibility=program.problem.candidate_feasibility
+    )
 
 
 class AggregationStrategy(ABC):
@@ -43,7 +52,7 @@ class AggregationStrategy(ABC):
     @abstractmethod
     def aggregate(
         self,
-        programs: Mapping[Any, SolutionSamplingMixin],
+        programs: Mapping[Any, QAOA | PCE],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -109,7 +118,7 @@ class BeamSearchStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: Mapping[Any, SolutionSamplingMixin],
+        programs: Mapping[Any, QAOA | PCE],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -137,7 +146,7 @@ class BeamSearchStrategy(AggregationStrategy):
         ]
 
         for prog_id, program in programs.items():
-            candidates = program.get_top_solutions(n=n_fetch, include_decoded=True)
+            candidates = _fetch_candidates(program, n_fetch)
             if not candidates:
                 continue
 
@@ -185,10 +194,10 @@ class HierarchicalStrategy(AggregationStrategy):
 
     Limitations:
 
-    - Groups are formed in decomposition order (consecutive program IDs); no
-      coupling-aware grouping is performed. The benefit over a wide beam only
-      materialises when strongly-coupled partitions happen to land in the same
-      group.
+    - Groups take consecutive programs in the order they are given;
+      :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` passes them in
+      the problem's ``order_partitions`` order, which places coupled partitions
+      next to each other. Coupling outside a group only counts at merge time.
     - Cross-group interactions in ``evaluate_fn`` (e.g. penalties spanning
       partitions in different groups) are invisible during per-group pruning and
       only surface at merge time.
@@ -229,7 +238,7 @@ class HierarchicalStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: Mapping[Any, SolutionSamplingMixin],
+        programs: Mapping[Any, QAOA | PCE],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -250,9 +259,7 @@ class HierarchicalStrategy(AggregationStrategy):
             return [(evaluate_fn(initial_list), initial_list)][:top_n]
 
         candidates_by_prog: dict[Any, list[SolutionEntry]] = {
-            pid: programs[pid].get_top_solutions(
-                n=self.k_per_partition, include_decoded=True
-            )
+            pid: _fetch_candidates(programs[pid], self.k_per_partition)
             for pid in prog_ids
         }
 

@@ -7,7 +7,9 @@
 import numbers
 import warnings
 from collections.abc import Mapping, Sequence
+from fractions import Fraction
 from itertools import pairwise
+from math import gcd, lcm
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
@@ -279,6 +281,39 @@ def _sort_hamiltonian_terms_spo(
 
 
 _HALF_PI = float(np.pi / 2)
+
+
+def _hamiltonian_parameter_frequency(
+    hamiltonian: SparsePauliOp,
+) -> tuple[float, int]:
+    """Return a harmonic frequency superset for one shared evolution angle."""
+    terms, _ = _split_identity_terms(hamiltonian)
+    frequencies = 2 * np.abs(terms.coeffs.real)
+    frequencies = frequencies[frequencies > 1e-12]
+    if frequencies.size == 0:
+        return 1.0, 1
+
+    rational = [
+        Fraction(float(value)).limit_denominator(10_000) for value in frequencies
+    ]
+    if any(
+        not np.isclose(float(value), frequency, rtol=1e-10, atol=1e-12)
+        for value, frequency in zip(rational, frequencies)
+    ):
+        raise NotImplementedError(
+            "QAOA parameter-shift gradients require commensurate Hamiltonian "
+            "coefficients. Use a gradient-free optimizer or SPSA for this problem."
+        )
+
+    common_denominator = lcm(*(value.denominator for value in rational))
+    integer_frequencies = [
+        value.numerator * (common_denominator // value.denominator)
+        for value in rational
+    ]
+    divisor = gcd(*integer_frequencies)
+    omega = divisor / common_denominator
+    order = sum(value // divisor for value in integer_frequencies)
+    return float(omega), order
 
 
 def _spo_to_qiskit_basis_gates(

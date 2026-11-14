@@ -4280,7 +4280,7 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.13,<5.0" },
     { name = "psutil", marker = "extra == 'ai'", specifier = ">=7.0,<8.0" },
     { name = "pydantic", specifier = ">=2.14,<3.0" },
-    { name = "pymetis", marker = "sys_platform != 'win32'", specifier = ">=2025.1.1,<2026.0.0" },
+    { name = "pymetis", marker = "sys_platform != 'win32'", specifier = ">=2025.2,<2026.0.0" },
     { name = "pymoo", specifier = ">=0.6,<0.7" },
     { name = "pyperclip", marker = "extra == 'ai'", specifier = ">=1.11.0,<2.0.0" },
     { name = "pyscf", marker = "sys_platform != 'win32' and extra == 'chem'", specifier = ">=2.14,<3.0" },

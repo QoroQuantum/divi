@@ -9,8 +9,11 @@ import networkx as nx
 import numpy as np
 import pytest
 import rustworkx as rx
+from qiskit.circuit import Parameter, QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.hamiltonians import x_mixer
+from divi.hamiltonians._term_ops import _spo_to_qiskit_basis_gates
 from divi.qprog.algorithms import QAOA
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensembles import (
@@ -33,6 +36,7 @@ from tests.qprog.problems._helpers import (
     make_bull_graph,
     make_string_node_graph,
     seed_zero_one_best_probs,
+    skip_without_pymetis,
 )
 
 
@@ -42,7 +46,7 @@ def _naive_diagonal_energy(problem, solution):
     Mirrors the pre-hoist implementation exactly (same term order, qubit order,
     and accumulation order) so equality with the cached path is bit-for-bit.
     """
-    spo = problem.cost_hamiltonian
+    spo = problem._scoring_hamiltonian
     energy = 0.0
     for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
         eigenvalue = 1.0
@@ -102,15 +106,21 @@ class TestEvaluateSolution:
             pytest.param(
                 nx.Graph([(0, 1, {"weight": 3.0}), (1, 2, {"weight": 5.0})]),
                 [1, 0, 1],
-                2,
-                id="weighted_counts_cut_edges",
+                8,
+                id="weighted_sums_cut_weights",
+            ),
+            pytest.param(
+                nx.Graph([(0, 1, {"weight": -2.0}), (1, 2)]),
+                [1, 0, 1],
+                -1,
+                id="negative_weight_lowers_the_cut",
             ),
             pytest.param(nx.complete_graph(3), [1, 0, 0], 2, id="triangle_best_cut"),
         ],
     )
-    def test_energy_is_minus_cut_edge_count(self, graph, solution, n_cut):
-        """The MaxCut Hamiltonian's energy is minus the number of cut edges,
-        regardless of edge weights."""
+    def test_energy_is_minus_cut_weight(self, graph, solution, n_cut):
+        """The MaxCut Hamiltonian's energy is minus the total weight of the cut
+        edges, an unweighted edge counting once."""
         problem = self._make_problem(graph)
         assert problem.evaluate_global_solution(solution) == pytest.approx(-n_cut)
 
@@ -150,6 +160,45 @@ class TestEvaluateSolution:
             ),
         ):
             problem.evaluate_global_solution([0, 1])
+
+    @pytest.mark.parametrize(
+        "problem_cls",
+        [MaxIndependentSetProblem, MinVertexCoverProblem, MaxCliqueProblem],
+    )
+    def test_vertex_subset_scores_ignore_the_mixer(self, problem_cls):
+        graph = nx.bull_graph()
+        constrained = problem_cls(graph, use_constrained_mixer=True)
+        unconstrained = problem_cls(graph, use_constrained_mixer=False)
+
+        for bitstring in _all_bitstrings(5):
+            solution = [int(bit) for bit in bitstring]
+            assert constrained.evaluate_global_solution(
+                solution
+            ) == unconstrained.evaluate_global_solution(solution)
+
+    @pytest.mark.parametrize(
+        "problem_cls",
+        [MaxIndependentSetProblem, MinVertexCoverProblem, MaxCliqueProblem],
+    )
+    @pytest.mark.parametrize("graph", [nx.path_graph(4), nx.bull_graph()])
+    def test_vertex_subset_scoring_prefers_the_best_feasible_set(
+        self, problem_cls, graph
+    ):
+        problem = problem_cls(graph)
+        bitstrings = list(_all_bitstrings(len(graph)))
+        scores = [
+            problem.evaluate_global_solution([int(bit) for bit in bits])
+            for bits in bitstrings
+        ]
+        best = [bits for bits, score in zip(bitstrings, scores) if score == min(scores)]
+        optimum = min(
+            problem.compute_energy(bits)
+            for bits in bitstrings
+            if problem.is_feasible(bits)
+        )
+
+        assert all(problem.is_feasible(bits) for bits in best)
+        assert all(problem.compute_energy(bits) == optimum for bits in best)
 
 
 def _string_label_graph():
@@ -233,17 +282,23 @@ def test_feasibility_and_energy_match_direct_definition(
 def test_compute_energy_orders_feasible_solutions_like_cost_hamiltonian(
     problem_cls, is_valid, sign
 ):
-    """On feasible bitstrings the constrained cost Hamiltonian is an increasing
-    affine function of ``compute_energy``, so both rank solutions identically."""
+    """On feasible bitstrings the global score is an increasing affine function of
+    ``compute_energy``, so both rank solutions identically."""
     graph = nx.bull_graph()
     problem = problem_cls(graph)
-    n = graph.number_of_nodes()
+    feasible = [
+        bitstring
+        for bitstring in _all_bitstrings(graph.number_of_nodes())
+        if problem.is_feasible(bitstring)
+    ]
+    reference = feasible[0]
+    reference_cost = problem.evaluate_global_solution([int(bit) for bit in reference])
 
-    for bitstring in _all_bitstrings(n):
-        if not problem.is_feasible(bitstring):
-            continue
+    for bitstring in feasible:
         cost = problem.evaluate_global_solution([int(bit) for bit in bitstring])
-        assert cost == pytest.approx(2 * problem.compute_energy(bitstring) - sign * n)
+        assert cost - reference_cost == pytest.approx(
+            2 * (problem.compute_energy(bitstring) - problem.compute_energy(reference))
+        )
 
 
 def test_qaoa_filter_returns_only_independent_sets(
@@ -419,6 +474,65 @@ class TestDecomposeGraph:
             all_original_nodes |= set(problem._reverse_index_maps[prog_id].values())
         assert all_original_nodes == set(problem.graph.nodes())
 
+    @pytest.mark.parametrize("backend", ["nx", "rx"])
+    def test_decompose_carries_edge_weights_into_sub_problems(self, backend):
+        weights = {
+            frozenset((u, v)): 1.0 + u + 2 * v for u, v in nx.cycle_graph(8).edges
+        }
+        if backend == "nx":
+            graph = nx.Graph()
+            graph.add_weighted_edges_from(
+                (*sorted(edge), weight) for edge, weight in weights.items()
+            )
+        else:
+            graph = rx.PyGraph()
+            graph.add_nodes_from(range(8))
+            graph.add_edges_from(
+                [(*sorted(edge), weight) for edge, weight in weights.items()]
+            )
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
+                minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+            ),
+        )
+
+        for prog_id, sub in problem.decompose().items():
+            reverse = problem._reverse_index_maps[prog_id]
+            for bitstring in _all_bitstrings(len(reverse)):
+                bits = [int(bit) for bit in bitstring]
+                expected = -sum(
+                    weights[frozenset((reverse[u], reverse[v]))]
+                    for u, v in _nx_view(sub.graph).edges
+                    if bits[u] != bits[v]
+                )
+                assert sub.evaluate_global_solution(bits) == pytest.approx(expected)
+
+    @skip_without_pymetis
+    def test_partitions_are_placed_next_to_those_they_couple_to(self):
+        # Triangles A, B and C, chained A–C–B: B never touches A.
+        graph = nx.disjoint_union_all([nx.complete_graph(3)] * 3)
+        graph.add_edges_from([(0, 6), (1, 7), (6, 3), (7, 4)])
+        problem = MaxCutProblem(
+            graph,
+            config=GraphPartitioningConfig(
+                max_n_nodes_per_cluster=3, partitioning_algorithm="metis"
+            ),
+        )
+        prog_ids = list(problem.decompose())
+        assert sorted(
+            sorted(problem._reverse_index_maps[pid].values()) for pid in prog_ids
+        ) == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+
+        for order in (prog_ids, prog_ids[::-1]):
+            seen: set = set()
+            for pid in problem.order_partitions(order):
+                nodes = set(problem._reverse_index_maps[pid].values())
+                assert not seen or any(
+                    graph.has_edge(u, v) for u in nodes for v in seen
+                )
+                seen |= nodes
+
     def test_decompose_raises_without_partitioning_config(self):
         graph = nx.complete_graph(6)
         problem = MaxCutProblem(graph)
@@ -504,6 +618,50 @@ class TestPostprocessCandidatesGraph:
         formatted = problem.postprocess_candidates(results)
 
         assert formatted == [([0, 2], -5.0), ([1, 3], -3.0)]
+
+    @pytest.mark.parametrize(
+        "problem_cls, candidate, objective",
+        [
+            pytest.param(MaxIndependentSetProblem, [1, 1, 1, 1], -2.0, id="mis"),
+            pytest.param(MinVertexCoverProblem, [0, 0, 0, 0], 2.0, id="mvc"),
+            pytest.param(MaxCliqueProblem, [1, 1, 1, 1], -2.0, id="clique"),
+        ],
+    )
+    def test_infeasible_candidates_are_repaired_greedily(
+        self, problem_cls, candidate, objective
+    ):
+        problem = problem_cls(nx.path_graph(4))
+
+        (nodes, score), *rest = problem.postprocess_candidates([(0.0, candidate)])
+
+        assert not rest
+        assert problem.is_feasible(
+            "".join("1" if i in nodes else "0" for i in range(4))
+        )
+        assert score == objective
+
+    @pytest.mark.parametrize(
+        "problem_cls, candidate",
+        [
+            (MaxIndependentSetProblem, [1, 1, 0, 0]),
+            (MinVertexCoverProblem, [0, 0, 0, 0]),
+            (MaxCliqueProblem, [1, 1, 1, 1]),
+        ],
+    )
+    def test_strict_drops_infeasible_candidates(self, problem_cls, candidate):
+        problem = problem_cls(nx.path_graph(4))
+
+        assert problem.postprocess_candidates([(0.0, candidate)], strict=True) == []
+
+    def test_feasible_candidates_are_ranked_by_objective_without_duplicates(self):
+        problem = MaxIndependentSetProblem(nx.path_graph(4))
+
+        results = problem.postprocess_candidates(
+            [(0.0, [1, 0, 0, 0]), (0.0, [1, 0, 1, 0]), (0.0, [1, 0, 1, 0])],
+            strict=True,
+        )
+
+        assert results == [([0, 2], -2.0), ([0], -1.0)]
 
 
 class TestGraphInput:
@@ -1006,3 +1164,233 @@ class TestGraphPartitioningEnsemble:
             sorted(nodes) for nodes, _ in beam
         ]
         assert [e for _, e in hier] == pytest.approx([e for _, e in beam])
+
+
+def _seed_partitions_selecting(ensemble, selected_nodes):
+    """Seed each program with the one bitstring selecting ``selected_nodes``."""
+    for prog_id, program in ensemble.programs.items():
+        reverse = ensemble._problem._reverse_index_maps[prog_id]
+        bitstring = "".join(
+            "1" if reverse[local] in selected_nodes else "0"
+            for local in range(program.n_qubits)
+        )
+        program._results["best_probs"] = {"tag": {bitstring: 1.0}}
+        program._losses_history = [{"dummy_loss": 0.0}]
+
+
+_SPLIT_PATH_CONFIG = GraphPartitioningConfig(
+    minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+)
+
+
+@pytest.mark.filterwarnings("ignore:Heuristic-risk graph partitioning objective")
+class TestPartitionedFeasibility:
+    """Partitions that are each feasible can still combine into an infeasible set."""
+
+    @pytest.mark.parametrize(
+        "problem_cls, selected, is_valid",
+        [
+            pytest.param(MaxIndependentSetProblem, {1, 2}, _is_independent, id="mis"),
+            pytest.param(MinVertexCoverProblem, {0, 3}, _is_vertex_cover, id="mvc"),
+            pytest.param(MaxCliqueProblem, {0, 1, 2, 3}, _is_clique, id="clique"),
+        ],
+    )
+    def test_aggregated_solution_is_feasible(
+        self, problem_cls, selected, is_valid, dummy_simulator
+    ):
+        graph = nx.path_graph(4)
+        ensemble = PartitioningProgramEnsemble(
+            **{
+                **_ENSEMBLE_ARGS,
+                "problem": problem_cls(graph, config=_SPLIT_PATH_CONFIG),
+                "backend": dummy_simulator,
+            }
+        )
+        ensemble.create_programs()
+        _seed_partitions_selecting(ensemble, selected)
+
+        nodes, score = ensemble.aggregate_results()
+
+        assert is_valid(graph, nodes)
+        assert score == ensemble._problem.compute_energy(
+            "".join("1" if node in nodes else "0" for node in graph)
+        )
+        assert ensemble.get_top_solutions(n=1, strict=True) == []
+
+    @skip_without_pymetis
+    def test_regular_graph_aggregation_with_metis_is_feasible(self, dummy_simulator):
+        graph = nx.random_regular_graph(3, 12, seed=1)
+        problem = MaxIndependentSetProblem(
+            graph,
+            config=GraphPartitioningConfig(
+                max_n_nodes_per_cluster=4, partitioning_algorithm="metis"
+            ),
+        )
+        ensemble = PartitioningProgramEnsemble(
+            **{**_ENSEMBLE_ARGS, "problem": problem, "backend": dummy_simulator}
+        )
+        ensemble.create_programs()
+        _seed_partitions_selecting(ensemble, set(graph.nodes))
+
+        nodes, _score = ensemble.aggregate_results()
+
+        assert _is_independent(graph, nodes)
+
+
+@pytest.mark.filterwarnings("ignore:Heuristic-risk graph partitioning objective")
+class TestIsolatedNodes:
+    """Degree-0 nodes sit outside every partition and take their trivial value."""
+
+    @staticmethod
+    def _decompose_path_and_lone_node(problem_cls, self_loop=False):
+        graph = nx.path_graph(4)
+        graph.add_node(4)
+        if self_loop:
+            graph.add_edge(4, 4)
+        problem = problem_cls(graph, config=_SPLIT_PATH_CONFIG)
+        problem.decompose()
+        return problem, next(iter(problem._reverse_index_maps))
+
+    @pytest.mark.parametrize(
+        "problem_cls, candidate, expected",
+        [
+            (MinVertexCoverProblem, [0, 1, 1, 0, 0], [1, 2, 4]),
+            (MaxIndependentSetProblem, [1, 0, 1, 0, 1], [0, 2]),
+        ],
+    )
+    def test_node_with_only_a_self_loop_takes_the_value_its_loop_forces(
+        self, problem_cls, candidate, expected
+    ):
+        problem, _ = self._decompose_path_and_lone_node(problem_cls, self_loop=True)
+
+        ((nodes, _score),) = problem.postprocess_candidates(
+            [(0.0, candidate)], strict=True
+        )
+
+        assert nodes == expected
+
+    @pytest.mark.parametrize(
+        "problem_cls, value",
+        [
+            (MaxCutProblem, 0),
+            (MaxIndependentSetProblem, 1),
+            (MinVertexCoverProblem, 0),
+            (MaxCliqueProblem, 0),
+        ],
+    )
+    def test_extend_and_evaluate_set_the_trivial_value(self, problem_cls, value):
+        problem, prog_id = self._decompose_path_and_lone_node(problem_cls)
+
+        assert all(
+            4 not in mapping.values()
+            for mapping in problem._reverse_index_maps.values()
+        )
+        extended = problem.extend_solution([1 - value] * 5, prog_id, [])
+        assert extended[4] == value
+        base = [0, 1, 0, 1, value]
+        assert problem.evaluate_global_solution(
+            base[:4] + [1 - value]
+        ) == problem.evaluate_global_solution(base)
+
+    @pytest.mark.parametrize(
+        "problem_cls, expected",
+        [
+            (MaxIndependentSetProblem, [0, 2, 4]),
+            (MinVertexCoverProblem, [1, 2]),
+            (MaxCliqueProblem, [4]),
+        ],
+    )
+    def test_postprocess_sets_the_trivial_value(self, problem_cls, expected):
+        problem, _ = self._decompose_path_and_lone_node(problem_cls)
+        candidate = {
+            MaxIndependentSetProblem: [1, 0, 1, 0, 0],
+            MinVertexCoverProblem: [0, 1, 1, 0, 1],
+            MaxCliqueProblem: [0, 0, 0, 0, 0],
+        }[problem_cls]
+
+        ((nodes, _score),) = problem.postprocess_candidates([(0.0, candidate)])
+
+        assert nodes == expected
+
+
+_CONSTRAINED_PROBLEMS = [
+    MaxIndependentSetProblem,
+    MinVertexCoverProblem,
+    MaxCliqueProblem,
+]
+
+
+def _mixer_state(simulator, apply, n_qubits, beta):
+    """Statevector of a fixed product state after one mixer layer."""
+    angle = Parameter("β")
+    circuit = QuantumCircuit(n_qubits)
+    for qubit in range(n_qubits):
+        circuit.ry(0.3 + 0.2 * qubit, qubit)
+    apply(circuit, angle, list(range(n_qubits)))
+    return simulator.statevector(circuit.assign_parameters({angle: beta}))
+
+
+class TestConstrainedMixerGates:
+    """Constrained vertex-subset mixers are applied as multi-controlled rotations."""
+
+    @pytest.mark.parametrize("problem_cls", _CONSTRAINED_PROBLEMS)
+    @pytest.mark.parametrize(
+        "graph", [nx.bull_graph(), nx.star_graph(4), nx.path_graph(5)], ids=str
+    )
+    def test_gates_match_the_expanded_hamiltonian(
+        self, problem_cls, graph, make_maestro_simulator
+    ):
+        simulator = make_maestro_simulator()
+        problem = problem_cls(graph)
+        n_qubits = len(graph)
+
+        gates = _mixer_state(simulator, problem.apply_mixer, n_qubits, 0.37)
+        expanded = _mixer_state(
+            simulator,
+            lambda circuit, beta, qubits: _spo_to_qiskit_basis_gates(
+                circuit, problem.mixer_hamiltonian, beta, qubits
+            ),
+            n_qubits,
+            0.37,
+        )
+
+        assert abs(np.vdot(gates, expanded)) == pytest.approx(1.0, abs=1e-10)
+
+    def test_high_degree_clique_builds_without_the_hamiltonian(
+        self, dummy_simulator, default_optimizer
+    ):
+        problem = MaxCliqueProblem(nx.random_regular_graph(3, 30, seed=0))
+        qaoa = QAOA(problem, backend=dummy_simulator, optimizer=default_optimizer)
+
+        assert qaoa.cost_circuit.circuit_bodies
+        with pytest.raises(ValueError, match="has 26 neighbours"):
+            problem.mixer_hamiltonian
+
+    @pytest.mark.parametrize("problem_cls", _CONSTRAINED_PROBLEMS)
+    def test_mixer_frequency_is_linear_in_the_node_count(
+        self, problem_cls, dummy_simulator, default_optimizer
+    ):
+        qaoa = QAOA(
+            problem_cls(nx.bull_graph()),
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+
+        assert qaoa._parameter_frequencies()[1] == (1.0, 10)
+
+    def test_unconstrained_problem_uses_the_x_mixer(self, make_maestro_simulator):
+        simulator = make_maestro_simulator()
+        problem = MaxIndependentSetProblem(nx.bull_graph(), use_constrained_mixer=False)
+
+        applied = _mixer_state(simulator, problem.apply_mixer, 5, 0.37)
+        expanded = _mixer_state(
+            simulator,
+            lambda circuit, beta, qubits: _spo_to_qiskit_basis_gates(
+                circuit, x_mixer(5), beta, qubits
+            ),
+            5,
+            0.37,
+        )
+
+        assert not problem._applies_mixer_as_gates
+        assert abs(np.vdot(applied, expanded)) == pytest.approx(1.0, abs=1e-10)

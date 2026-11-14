@@ -10,12 +10,14 @@ import pytest
 import scipy.sparse as sps
 from networkx.algorithms.community import louvain_communities
 from sklearn.cluster import KMeans
+from threadpoolctl import threadpool_limits
 
 from divi.qprog.problems import GraphPartitioningConfig, QUBOPartitioningConfig
 from divi.qprog.problems import _qubo_partitioning_utils as qpu
 from divi.qprog.problems._qubo_partitioning_utils import (
     _ensure_min_clusters,
     _louvain_labels,
+    _merge_clusters_to_budget,
     _multiview_labels,
     _partition,
     _view_features,
@@ -157,6 +159,28 @@ def test_all_positive_partition_is_seed_deterministic():
     assert [sorted(map(int, c)) for c in first] == [sorted(map(int, c)) for c in second]
 
 
+@pytest.mark.parametrize("rng_seed", [4, 17, 31])
+def test_spectral_partition_is_identical_across_repeated_calls(rng_seed):
+    rng = np.random.default_rng(rng_seed)
+    n = int(rng.integers(20, 80))
+    density = rng.uniform(0.05, 0.25)
+    a = np.triu(rng.normal(size=(n, n)) * (rng.random((n, n)) < density), 1)
+    sigma = sps.csr_matrix(a + a.T)
+    config = QUBOPartitioningConfig(
+        max_n_variables_per_cluster=6, method="spectral", seed=0
+    )
+
+    with threadpool_limits(limits=8, user_api="openmp"):
+        partitions = {
+            tuple(
+                sorted(tuple(cl.tolist()) for cl in partition_by_method(sigma, config))
+            )
+            for _ in range(12)
+        }
+
+    assert len(partitions) == 1
+
+
 def test_min_clusters_exceeding_n_raises():
     sigma = _block_matrix([[0, 1, 2, 3]], intra=1.0)
     config = GraphPartitioningConfig(minimum_n_clusters=10)  # > 4 variables
@@ -202,7 +226,7 @@ def test_louvain_recovers_planted_communities(planted_kwargs):
 
 def test_louvain_uniform_complete_block_does_not_fragment():
     # A near-uniform complete (rank-1) block has no community structure, so Louvain
-    # returns a single community and the balanced-split fallback yields sized
+    # returns a single community and the Fiedler-cut fallback yields sized
     # clusters rather than a swarm of singletons. (Strongly non-uniform complete
     # QUBOs can still fragment under modularity — polish equalizes the outcome.)
     rng = np.random.default_rng(0)
@@ -255,6 +279,18 @@ def test_view_features_sparse_path_matches_dense(eigsh_fails, mocker):
 
     assert features.shape == (4, 2)
     np.testing.assert_allclose(np.abs(features), np.abs(dense), atol=1e-8)
+
+
+def test_view_features_sparse_path_is_identical_across_calls(mocker):
+    mocker.patch.object(qpu, "_DENSE_EIGH_MAX", 50)
+    rng = np.random.default_rng(1)
+    a = sps.triu(sps.random(120, 120, density=0.05, random_state=1), 1)
+    view = sps.csr_matrix(a + a.T + _path(120) * rng.uniform(0.5, 1.0))
+
+    first = _view_features(view, 4)
+    second = _view_features(view, 4)
+
+    np.testing.assert_array_equal(first, second)
 
 
 def test_view_features_at_dense_limit_uses_dense_solver(mocker):
@@ -340,6 +376,97 @@ def test_ensure_min_clusters_bisects_largest_without_couplings():
     result = _ensure_min_clusters(sps.csr_matrix((8, 8)), clusters, 4, 0)
 
     assert _id_groups(result) == [[0, 1], [6, 7], [2, 3], [4, 5]]
+
+
+def test_unseparated_group_is_cut_along_its_couplings():
+    sigma = _adjacency(6, [(0, 3), (3, 4), (4, 1), (1, 5), (5, 2)])
+
+    result = _ensure_min_clusters(sigma, [np.arange(6)], 2, 0, labeler=_labels_none)
+
+    assert sorted(_id_groups(result)) == [[0, 3, 4], [1, 2, 5]]
+
+
+def _singletons(n):
+    return [np.array([i]) for i in range(n)]
+
+
+def _labels_none(sub, _k, _seed):
+    return np.zeros(sub.shape[0], dtype=int)
+
+
+def _labels_each(sub, _k, _seed):
+    return np.arange(sub.shape[0])
+
+
+@pytest.mark.parametrize("weight", [1.0, -1.0], ids=["positive", "negative"])
+def test_coupled_clusters_merge_while_they_fit_the_budget(weight):
+    sigma = _adjacency(6, [(0, 1), (1, 2), (2, 3), (4, 5)], weight=weight)
+    clusters = [np.array([0]), np.array([1, 2]), np.array([3]), np.array([4, 5])]
+
+    merged = _merge_clusters_to_budget(sigma, clusters, 3, None)
+
+    assert _id_groups(merged) == [[0, 1, 2], [3], [4, 5]]
+
+
+def test_merged_clusters_carry_their_members_couplings():
+    sigma = _adjacency(4, [(0, 1), (1, 2), (2, 3)])
+
+    merged = _merge_clusters_to_budget(sigma, _singletons(4), 4, None)
+
+    assert _id_groups(merged) == [[0, 1, 2, 3]]
+
+
+def test_cluster_merging_breaks_ties_towards_the_smaller_neighbour():
+    sigma = _adjacency(4, [(0, 1), (0, 2)])
+    clusters = [np.array([0]), np.array([1, 3]), np.array([2])]
+
+    merged = _merge_clusters_to_budget(sigma, clusters, 3, None)
+
+    assert _id_groups(merged) == [[1, 3], [0, 2]]
+
+
+def test_merging_no_clusters_returns_an_empty_list():
+    assert _merge_clusters_to_budget(sps.csr_matrix((0, 0)), [], 3, None) == []
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected"),
+    [(3, [[0, 3, 4], [1, 2, 5]]), (2, [[0, 3], [1, 4], [2, 5]])],
+    ids=["halves", "thirds"],
+)
+def test_budget_split_without_labels_follows_the_couplings(budget, expected):
+    sigma = _adjacency(6, [(0, 3), (3, 4), (4, 1), (1, 5), (5, 2)])
+    config = GraphPartitioningConfig(max_n_nodes_per_cluster=budget)
+
+    clusters = _partition(sigma, config, 0, _labels_none)
+
+    assert sorted(_id_groups(clusters)) == expected
+
+
+@pytest.mark.parametrize(
+    ("minimum", "expected"),
+    [(None, [[0, 1], [2, 3], [4, 5]]), (4, [[0], [1], [2, 3], [4, 5]])],
+    ids=["merged", "held-at-minimum"],
+)
+def test_partition_merges_labeler_fragments_under_the_budget(minimum, expected):
+    sigma = _adjacency(6, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)])
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=3, minimum_n_clusters=minimum
+    )
+
+    clusters = _partition(sigma, config, 0, _labels_each)
+
+    assert sorted(_id_groups(clusters)) == expected
+
+
+def test_cluster_merging_stops_at_the_minimum():
+    sigma = _adjacency(4, [(0, 1), (1, 2), (2, 3)])
+    clusters = [np.array([0, 1]), np.array([2, 3])]
+
+    assert _id_groups(_merge_clusters_to_budget(sigma, clusters, 4, 2)) == [
+        [0, 1],
+        [2, 3],
+    ]
 
 
 def test_ensure_min_clusters_stops_when_only_singletons_remain():

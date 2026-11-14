@@ -12,6 +12,8 @@ entry of :func:`_node_ids`, its node labels for networkx and its node indices
 for rustworkx.
 """
 
+import functools
+import math
 from collections import defaultdict
 from collections.abc import Sequence
 from numbers import Real
@@ -20,15 +22,20 @@ from typing import Any, TypeAlias
 import networkx as nx
 import numpy as np
 import rustworkx as rx
+from qiskit.circuit import Parameter, QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits._conversions import lower_to_basis_gates
 from divi.hamiltonians import (
     bit_driver,
-    bit_flip_mixer,
     edge_driver,
     x_mixer,
 )
-from divi.hamiltonians._mixers import build_multi_pauli_label, build_single_pauli_label
+from divi.hamiltonians._mixers import (
+    build_multi_pauli_label,
+    build_single_pauli_label,
+    build_two_pauli_label,
+)
 
 GraphLike: TypeAlias = nx.Graph | rx.PyGraph
 DiGraphLike: TypeAlias = nx.DiGraph | rx.PyDiGraph
@@ -54,8 +61,16 @@ def _edge_weight(payload: Any) -> float | None:
     return None
 
 
-def _qubit_edges(graph: GraphLike) -> tuple[int, list[tuple[int, int]]]:
-    """Qubit count and the edges of an undirected graph as qubit pairs."""
+def _read_edge_weight(payload: Any) -> float:
+    """:func:`_edge_weight`, with ``1`` for an edge that carries no weight."""
+    weight = _edge_weight(payload)
+    return 1.0 if weight is None else weight
+
+
+def _undirected_wire_edges(
+    graph: GraphLike,
+) -> tuple[list, list[tuple[int, int, Any]]]:
+    """:func:`_wire_edges` restricted to undirected graphs."""
     if isinstance(graph, (nx.DiGraph, rx.PyDiGraph)) or not isinstance(
         graph, (nx.Graph, rx.PyGraph)
     ):
@@ -63,7 +78,12 @@ def _qubit_edges(graph: GraphLike) -> tuple[int, list[tuple[int, int]]]:
             f"Expected an undirected graph (nx.Graph or rx.PyGraph), got "
             f"{type(graph).__name__}."
         )
-    ids, edges = _wire_edges(graph)
+    return _wire_edges(graph)
+
+
+def _qubit_edges(graph: GraphLike) -> tuple[int, list[tuple[int, int]]]:
+    """Qubit count and the edges of an undirected graph as qubit pairs."""
+    ids, edges = _undirected_wire_edges(graph)
     return len(ids), [(source, target) for source, target, _ in edges]
 
 
@@ -129,81 +149,88 @@ def _directed_wire_edges(
 
 
 def maxcut_hamiltonians(graph: GraphLike) -> tuple[SparsePauliOp, SparsePauliOp]:
-    """Cost and mixer for MaxCut.
+    """Cost and mixer for weighted MaxCut.
 
     .. math::
-        H_C = \\frac{1}{2} \\sum_{(i,j) \\in E} (Z_i Z_j - I), \\quad
+        H_C = \\frac{1}{2} \\sum_{(i,j) \\in E} w_{ij} (Z_i Z_j - I), \\quad
         H_M = \\sum_v X_v
+
+    An edge without a weight has ``w = 1``; negative weights are allowed and
+    self-loops never cross a cut, so they are dropped.
+
+    Raises:
+        ValueError: If an edge weight is NaN or infinite.
     """
-    n_qubits, edges = _qubit_edges(graph)
-    cost = edge_driver(
-        edges, ["10", "01"], n_qubits=n_qubits
-    ) + SparsePauliOp.from_list([("I" * n_qubits, -0.5 * len(edges))])
-    return cost, x_mixer(n_qubits)
+    ids, wire_edges = _undirected_wire_edges(graph)
+    n_qubits = len(ids)
+    terms: list[tuple[str, float]] = []
+    total = 0.0
+    for source, target, payload in wire_edges:
+        weight = _read_edge_weight(payload)
+        if not math.isfinite(weight):
+            raise ValueError(
+                f"MaxCut edge ({ids[source]!r}, {ids[target]!r}) has a "
+                f"non-finite weight {weight}."
+            )
+        if source != target:
+            terms.append(
+                (build_two_pauli_label(n_qubits, source, target, "Z"), 0.5 * weight)
+            )
+            total += weight
+    terms.append(("I" * n_qubits, -0.5 * total))
+    return SparsePauliOp.from_list(terms), x_mixer(n_qubits)
 
 
-def _vertex_subset_hamiltonians(
+@functools.lru_cache(maxsize=None)
+def _lowered_controlled_rx(n_controls: int) -> tuple[QuantumCircuit, Parameter]:
+    """``Rx(θ)`` on the last qubit controlled on the first ``n_controls`` being
+    ``|1⟩``, in divi's basis gates, with its angle parameter ``θ``."""
+    theta = Parameter("θ")
+    circuit = QuantumCircuit(n_controls + 1)
+    if n_controls:
+        circuit.mcrx(theta, list(range(n_controls)), n_controls)
+    else:
+        circuit.rx(theta, 0)
+    return lower_to_basis_gates(circuit), theta
+
+
+def apply_bit_flip_mixer(
+    circuit: QuantumCircuit, graph: nx.Graph, b: int, beta, qubits: Sequence[int]
+) -> None:
+    """Append ``exp(-i·beta·H)`` of :func:`~divi.hamiltonians.bit_flip_mixer` as gates.
+
+    Each vertex ``v``, in node order, gets ``Rx(2·beta)`` controlled on every
+    neighbour being ``|b⟩``: the evolution of its ``2^{d(v)}`` commuting
+    Pauli terms, built from ``O(d(v))`` gates. Graph nodes are positions into
+    ``qubits``.
+    """
+    for vertex in graph.nodes():
+        neighbours = [qubits[w] for w in graph.neighbors(vertex)]
+        template, theta = _lowered_controlled_rx(len(neighbours))
+        flipped = neighbours if b == 0 else []
+        for qubit in flipped:
+            circuit.x(qubit)
+        circuit.compose(
+            template.assign_parameters({theta: 2 * beta}),
+            qubits=[*neighbours, qubits[vertex]],
+            inplace=True,
+        )
+        for qubit in flipped:
+            circuit.x(qubit)
+
+
+def _build_vertex_subset_cost(
     graph: nx.Graph,
     n_qubits: int,
     *,
-    constrained: bool,
     cost_bit: int,
     penalised_edge_states: Sequence[str],
-) -> tuple[SparsePauliOp, SparsePauliOp]:
-    """Cost and mixer for a vertex-subset problem on ``graph``.
-
-    Constrained: ``bit_driver`` cost with a ``bit_flip_mixer`` that preserves
-    feasibility. Otherwise: ``edge_driver`` penalty on ``penalised_edge_states``
-    plus ``bit_driver``, with an X mixer.
-    """
-    if constrained:
-        return bit_driver(n_qubits, b=cost_bit), bit_flip_mixer(graph, b=1 - cost_bit)
-    cost = 3.0 * edge_driver(
+) -> SparsePauliOp:
+    """Penalised cost of a vertex-subset problem: ``edge_driver`` on
+    ``penalised_edge_states`` over ``graph``, plus ``bit_driver``."""
+    return 3.0 * edge_driver(
         graph, penalised_edge_states, n_qubits=n_qubits
     ) + bit_driver(n_qubits, b=cost_bit)
-    return cost, x_mixer(n_qubits)
-
-
-def max_independent_set_hamiltonians(
-    graph: GraphLike, *, constrained: bool = True
-) -> tuple[SparsePauliOp, SparsePauliOp]:
-    """Cost and mixer for Maximum Independent Set."""
-    n_qubits, edges = _qubit_edges(graph)
-    return _vertex_subset_hamiltonians(
-        _qubit_graph(n_qubits, edges),
-        n_qubits,
-        constrained=constrained,
-        cost_bit=1,
-        penalised_edge_states=["10", "01", "00"],
-    )
-
-
-def min_vertex_cover_hamiltonians(
-    graph: GraphLike, *, constrained: bool = True
-) -> tuple[SparsePauliOp, SparsePauliOp]:
-    """Cost and mixer for Minimum Vertex Cover."""
-    n_qubits, edges = _qubit_edges(graph)
-    return _vertex_subset_hamiltonians(
-        _qubit_graph(n_qubits, edges),
-        n_qubits,
-        constrained=constrained,
-        cost_bit=0,
-        penalised_edge_states=["11", "10", "01"],
-    )
-
-
-def max_clique_hamiltonians(
-    graph: GraphLike, *, constrained: bool = True
-) -> tuple[SparsePauliOp, SparsePauliOp]:
-    """Cost and mixer for Maximum Clique. The mixer acts on the complement graph."""
-    n_qubits, edges = _qubit_edges(graph)
-    return _vertex_subset_hamiltonians(
-        nx.complement(_qubit_graph(n_qubits, edges)),
-        n_qubits,
-        constrained=constrained,
-        cost_bit=1,
-        penalised_edge_states=["10", "01", "00"],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -408,8 +435,5 @@ __all__ = [
     "out_flow_constraint_spo",
     "net_flow_constraint_spo",
     "maxcut_hamiltonians",
-    "max_independent_set_hamiltonians",
-    "min_vertex_cover_hamiltonians",
-    "max_clique_hamiltonians",
     "max_weight_cycle_hamiltonians",
 ]

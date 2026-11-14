@@ -382,8 +382,8 @@ class TestDecomposeQUBO:
 
         assert sub_problems == {}
         ((bits, energy),) = problem.postprocess_candidates([(0.0, [1, 0, 1, 1])])
-        np.testing.assert_array_equal(bits, [1, 0, 1, 1])
-        assert energy == pytest.approx(-3.0)
+        np.testing.assert_array_equal(bits, [1, 1, 1, 1])
+        assert energy == pytest.approx(-4.0)
 
 
 def test_returns_number_of_variables(sample_qubo_matrix):
@@ -1292,6 +1292,20 @@ class TestCommunityDecomposer:
         assert energy < raw
         assert energy == pytest.approx(-1.5 * scale)
         np.testing.assert_array_equal(bits, [1, 1, 0, 0])
+
+    @pytest.mark.parametrize("local_search", [False, True], ids=["composer", "polish"])
+    def test_interaction_free_cluster_takes_its_best_response(self, local_search):
+        qubo = {(i,): b for i, b in enumerate([-1.0, -1.0, -5.0, -1.0, -1.0])}
+        qubo[(0, 1)] = qubo[(3, 4)] = 2.0
+        problem = self._community_problem(qubo, local_search=local_search)
+        problem.decompose()
+        candidate = [1, 0, 0, 0, 1]
+
+        assert problem.evaluate_global_solution(candidate) == pytest.approx(-7.0)
+        ((bits, energy),) = problem.postprocess_candidates([(0.0, candidate)])
+
+        assert bits[2] == 1
+        assert energy == pytest.approx(-7.0)
 
     @pytest.mark.parametrize("seed", range(4))
     @pytest.mark.parametrize(

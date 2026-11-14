@@ -1219,7 +1219,54 @@ class TestSplitCitiesIntoClusters:
         assert clusters == _split_cities_into_clusters(cost, max_size)
 
 
+def patch_cycles_reference(cycle_groups, cost_matrix):
+    cycles = [list(cycle) for cycle in cycle_groups]
+    while len(cycles) > 1:
+        best = (math.inf, 0, 1, 0, 0, False)
+        for ia, ib in itertools.combinations(range(len(cycles)), 2):
+            a, b = cycles[ia], cycles[ib]
+            for i, j in itertools.product(range(len(a)), range(len(b))):
+                a0, a1 = a[i], a[(i + 1) % len(a)]
+                b0, b1 = b[j], b[(j + 1) % len(b)]
+                removed = cost_matrix[a0, a1] + cost_matrix[b0, b1]
+                for reverse, added in (
+                    (False, cost_matrix[a0, b1] + cost_matrix[b0, a1]),
+                    (True, cost_matrix[a0, b0] + cost_matrix[b1, a1]),
+                ):
+                    if added - removed < best[0]:
+                        best = (added - removed, ia, ib, i, j, reverse)
+        _, ia, ib, i, j, reverse = best
+        a, b = cycles[ia], cycles[ib]
+        spliced = b[j::-1] + b[:j:-1] if reverse else b[j + 1 :] + b[: j + 1]
+        merged = a[: i + 1] + spliced + a[i + 1 :]
+        cycles = [c for k, c in enumerate(cycles) if k not in (ia, ib)] + [merged]
+    return cycles[0]
+
+
+def split_into_random_cycles(rng, n):
+    cities = rng.permutation(n).tolist()
+    n_cuts = rng.integers(0, min(n, 8))
+    cuts = sorted(rng.choice(np.arange(1, n), size=n_cuts, replace=False))
+    return [cities[a:b] for a, b in zip([0, *cuts], [*cuts, n])]
+
+
 class TestPatchCyclesIntoTour:
+    @pytest.mark.parametrize("seed", range(40))
+    @pytest.mark.parametrize("kind", ["euclidean", "asymmetric", "integer-ties"])
+    def test_matches_reference_patching(self, seed, kind):
+        rng = np.random.default_rng(seed)
+        n = int(rng.integers(2, 26))
+        if kind == "euclidean":
+            cost = build_euclidean_cost(rng.random((n, 2)))
+        elif kind == "asymmetric":
+            cost = rng.random((n, n))
+        else:
+            cost = rng.integers(0, 4, (n, n)).astype(float)
+        cycles = split_into_random_cycles(rng, n)
+        assert _patch_cycles_into_tour(cycles, cost) == patch_cycles_reference(
+            cycles, cost
+        )
+
     @pytest.mark.parametrize("cycles", [[], [[0, 1], []]], ids=["none", "empty-cycle"])
     def test_rejects_missing_cities(self, cycles):
         with pytest.raises(ValueError, match="non-empty"):
@@ -1231,6 +1278,29 @@ class TestPatchCyclesIntoTour:
 
 
 class TestTSPPartitioning:
+    @pytest.mark.parametrize("seed", range(10))
+    def test_evaluate_global_solution_matches_reference_patching(self, seed):
+        rng = np.random.default_rng(seed)
+        n = int(rng.integers(8, 40))
+        cost = build_euclidean_cost(rng.random((n, 2)))
+        problem = TSPProblem(
+            cost, start_city=int(rng.integers(n)), max_cities_per_partition=5
+        )
+        for _ in range(5):
+            solution = [0] * n
+            for cluster in problem._clusters:
+                n_placed = rng.integers(0, len(cluster) + 1)
+                placed = rng.choice(cluster, size=n_placed, replace=False)
+                for position, city in enumerate(placed, start=1):
+                    solution[city] = position
+            cycles = [sorted(c, key=solution.__getitem__) for c in problem._clusters]
+            tour = patch_cycles_reference(cycles, cost)
+            start = tour.index(problem._start_city)
+            tour = [*tour[start:], *tour[:start], problem._start_city]
+            assert problem.evaluate_global_solution(solution) == compute_tour_cost(
+                tour, cost
+            )
+
     def test_decompose_requires_max_cities(self, three_city_cost):
         with pytest.raises(ValueError, match="max_cities_per_partition was not set"):
             TSPProblem(three_city_cost).decompose()

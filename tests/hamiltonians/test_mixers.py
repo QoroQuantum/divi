@@ -242,6 +242,18 @@ def test_bit_flip_mixer_flips_a_vertex_only_when_its_neighbours_sit_at_b(
     )
 
 
+def test_bit_flip_mixer_refuses_a_vertex_whose_expansion_is_too_large():
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Vertex 0 has 17 neighbours; its bit-flip mixer would expand into "
+            "2**17 Pauli terms. Problems apply this mixer as gates through "
+            "QAOAProblem.apply_mixer instead."
+        ),
+    ):
+        bit_flip_mixer(nx.star_graph(17), b=0)
+
+
 def test_bit_flip_mixer_rejects_non_nx_graph():
     with pytest.raises(
         TypeError, match=exact_match("bit_flip_mixer requires a networkx.Graph.")

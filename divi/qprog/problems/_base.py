@@ -10,12 +10,51 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable, Sequence
 from typing import Any, Literal
 
+import numpy as np
+from qiskit.circuit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import x_mixer
-from divi.hamiltonians._term_ops import _require_qiskit_num_qubits
+from divi.hamiltonians._term_ops import (
+    _hamiltonian_parameter_frequency,
+    _require_qiskit_num_qubits,
+    _spo_to_qiskit_basis_gates,
+    to_spo,
+)
 from divi.qprog.initial_states import InitialState, SuperpositionState
 from divi.qprog.mixins import SolutionEntry
+
+
+def place_by_coupling(
+    prog_ids: Sequence[Hashable],
+    groups: Sequence[Iterable[int]],
+    edges: Iterable[tuple[int, int, float]],
+) -> list[Hashable]:
+    """``prog_ids`` in placement order: the first, then always the one whose
+    group is most strongly coupled (summed ``|w|``) to those already placed.
+
+    ``groups[i]`` holds the variable positions of ``prog_ids[i]`` and ``edges``
+    are ``(u, v, w)`` over positions; ties keep the given order.
+    """
+    if not groups:
+        return []
+    owner = {position: g for g, members in enumerate(groups) for position in members}
+    link = np.zeros((len(groups), len(groups)))
+    for u, v, w in edges:
+        a, b = owner.get(u), owner.get(v)
+        if a is not None and b is not None and a != b:
+            link[a, b] += abs(w)
+            link[b, a] += abs(w)
+    order = [0]
+    placed = np.zeros(len(groups), dtype=bool)
+    placed[0] = True
+    pull = link[0].copy()
+    for _ in range(len(groups) - 1):
+        nxt = int(np.argmax(np.where(placed, -np.inf, pull)))
+        order.append(nxt)
+        placed[nxt] = True
+        pull += link[nxt]
+    return [prog_ids[i] for i in order]
 
 
 class QAOAProblem(ABC):
@@ -42,6 +81,30 @@ class QAOAProblem(ABC):
         constrained feasible subspaces or problem-specific mixers.
         """
         return x_mixer(_require_qiskit_num_qubits(self.cost_hamiltonian.num_qubits))
+
+    def apply_mixer(self, circuit: QuantumCircuit, beta, qubits: Sequence[int]) -> None:
+        """Append one mixer layer ``exp(-i·beta·H_M)`` to ``circuit`` on ``qubits``.
+
+        Defaults to :attr:`mixer_hamiltonian`, one Pauli rotation per term in
+        term order. Override to apply the mixer as gates without building its
+        Hamiltonian.
+        """
+        _spo_to_qiskit_basis_gates(
+            circuit, to_spo(self.mixer_hamiltonian), beta, qubits
+        )
+
+    def mixer_parameter_frequency(self) -> tuple[float, int]:
+        """``(omega, order)`` of the mixer angle's harmonic spectrum, for
+        parameter-shift gradients.
+
+        Defaults to the frequencies of :attr:`mixer_hamiltonian`.
+        """
+        return _hamiltonian_parameter_frequency(to_spo(self.mixer_hamiltonian))
+
+    @property
+    def _applies_mixer_as_gates(self) -> bool:
+        """Whether :meth:`apply_mixer` builds its layer without :attr:`mixer_hamiltonian`."""
+        return False
 
     @property
     @abstractmethod
@@ -166,6 +229,18 @@ class QAOAProblem(ABC):
             f"{type(self).__name__} does not support decomposition. "
             "Override decompose() to enable partitioning workflows."
         )
+
+    candidate_feasibility: Literal["ignore", "filter", "repair"] = "ignore"
+    """How partition aggregation ranks this problem's candidates when it is a
+    partition: the ``feasibility`` passed to the program's ``get_top_solutions``.
+    ``"ignore"`` ranks by probability."""
+
+    def order_partitions(self, prog_ids: Sequence[Hashable]) -> list[Hashable]:
+        """Order in which aggregation places the partitions.
+
+        Defaults to ``prog_ids`` as given.
+        """
+        return list(prog_ids)
 
     def initial_solution_size(self) -> int:
         """Size of the global solution vector (e.g. number of graph nodes)."""

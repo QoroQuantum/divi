@@ -4,9 +4,7 @@
 
 import logging
 from collections.abc import Mapping
-from fractions import Fraction
 from functools import cached_property
-from math import gcd, lcm
 from numbers import Integral
 from typing import Any, Literal, Self
 
@@ -19,7 +17,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._term_ops import (
     ObservableLike,
-    _split_identity_terms,
+    _hamiltonian_parameter_frequency,
     _spo_to_qiskit_basis_gates,
     _spo_wires,
     to_spo,
@@ -42,39 +40,6 @@ from divi.reporting._events import ProgressEvent
 logger = logging.getLogger(__name__)
 
 _MAX_PARAMETER_SHIFT_EVALUATIONS = 256
-
-
-def _hamiltonian_parameter_frequency(
-    hamiltonian: SparsePauliOp,
-) -> tuple[float, int]:
-    """Return a harmonic frequency superset for one shared evolution angle."""
-    terms, _ = _split_identity_terms(hamiltonian)
-    frequencies = 2 * np.abs(terms.coeffs.real)
-    frequencies = frequencies[frequencies > 1e-12]
-    if frequencies.size == 0:
-        return 1.0, 1
-
-    rational = [
-        Fraction(float(value)).limit_denominator(10_000) for value in frequencies
-    ]
-    if any(
-        not np.isclose(float(value), frequency, rtol=1e-10, atol=1e-12)
-        for value, frequency in zip(rational, frequencies)
-    ):
-        raise NotImplementedError(
-            "QAOA parameter-shift gradients require commensurate Hamiltonian "
-            "coefficients. Use a gradient-free optimizer or SPSA for this problem."
-        )
-
-    common_denominator = lcm(*(value.denominator for value in rational))
-    integer_frequencies = [
-        value.numerator * (common_denominator // value.denominator)
-        for value in rational
-    ]
-    divisor = gcd(*integer_frequencies)
-    omega = divisor / common_denominator
-    order = sum(value // divisor for value in integer_frequencies)
-    return float(omega), order
 
 
 class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
@@ -175,7 +140,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.n_qubits = len(self._circuit_wires)
 
         self.cost_hamiltonian = cost_hamiltonian
-        self.mixer_hamiltonian = problem.mixer_hamiltonian
+        self._mixer_override: SparsePauliOp | None = None
+        if not problem._applies_mixer_as_gates:
+            self._check_width("mixer_hamiltonian", to_spo(problem.mixer_hamiltonian))
 
         # Algorithm parameters
         self.n_layers = n_layers
@@ -194,12 +161,18 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     @property
     def mixer_hamiltonian(self) -> SparsePauliOp:
-        """Mixer Hamiltonian, validated and coerced to ``SparsePauliOp`` on assignment."""
-        return self._mixer_hamiltonian
+        """The mixer Hamiltonian, the problem's unless one was assigned.
+
+        An assigned Hamiltonian is validated, coerced to ``SparsePauliOp`` and
+        replaces the problem's mixer layer, gate-level mixers included.
+        """
+        if self._mixer_override is not None:
+            return self._mixer_override
+        return to_spo(self.problem.mixer_hamiltonian)
 
     @mixer_hamiltonian.setter
     def mixer_hamiltonian(self, hamiltonian: ObservableLike) -> None:
-        self._mixer_hamiltonian = self._check_width(
+        self._mixer_override = self._check_width(
             "mixer_hamiltonian", to_spo(hamiltonian)
         )
         self._drop_built_circuits()
@@ -259,7 +232,11 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             )
         per_layer = [
             _hamiltonian_parameter_frequency(self.cost_hamiltonian),
-            _hamiltonian_parameter_frequency(self.mixer_hamiltonian),
+            (
+                self.problem.mixer_parameter_frequency()
+                if self._mixer_override is None
+                else _hamiltonian_parameter_frequency(self._mixer_override)
+            ),
         ]
         evaluation_counts = [2 * order for _frequency, order in per_layer]
         limit = self.max_shift_evaluations_per_parameter
@@ -377,8 +354,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """
         n_qubits = self.n_qubits
         cost_qubits = list(range(n_qubits))
-        # The mixer SPO is built over the same dense qubit space as the cost
-        # SPO; use straight 0..n-1 indexing.
         mixer_qubits = list(range(n_qubits))
 
         qc = QuantumCircuit(n_qubits)
@@ -387,7 +362,10 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         for layer_params in self._params:
             gamma, beta = layer_params
             _spo_to_qiskit_basis_gates(qc, cost_spo, gamma, cost_qubits)
-            _spo_to_qiskit_basis_gates(qc, self.mixer_hamiltonian, beta, mixer_qubits)
+            if self._mixer_override is None:
+                self.problem.apply_mixer(qc, beta, mixer_qubits)
+            else:
+                _spo_to_qiskit_basis_gates(qc, self._mixer_override, beta, mixer_qubits)
 
         return qc
 

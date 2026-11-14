@@ -146,9 +146,9 @@ def _print_maxcut_results(
     print(f"{'Hierarchical (group_size=2)':<32} {hierarchical_ratio:>14.6f}")
 
     print("\nTop-5 solutions:")
-    for i, sol in enumerate(top_solutions, 1):
-        ratio = _cut_ratio(sol, classical_cut_size, graph)
-        print(f"  {i}. cut/classical={ratio:.6f}  nodes={sol}")
+    for i, (nodes, _value) in enumerate(top_solutions, 1):
+        ratio = _cut_ratio(nodes, classical_cut_size, graph)
+        print(f"  {i}. cut/classical={ratio:.6f}  nodes={nodes}")
 
 
 def _print_qubo_comparison(
@@ -242,15 +242,15 @@ if __name__ == "__main__":
 
     classical_cut_size, _ = nx.approximation.one_exchange(graph, seed=1)
 
-    greedy_sol = maxcut_ensemble.aggregate_results(
+    greedy_sol, _ = maxcut_ensemble.aggregate_results(
         strategy=BeamSearchStrategy(beam_width=1, n_partition_candidates=5)
     )
-    beam_sol = maxcut_ensemble.aggregate_results(
+    beam_sol, _ = maxcut_ensemble.aggregate_results(
         strategy=BeamSearchStrategy(beam_width=3, n_partition_candidates=5)
     )
     # Hierarchical aggregation: solve groups of partitions independently, then
     # merge pairwise — useful when a global left-to-right beam commits too early.
-    hierarchical_sol = maxcut_ensemble.aggregate_results(
+    hierarchical_sol, _ = maxcut_ensemble.aggregate_results(
         strategy=HierarchicalStrategy(group_size=2, k_per_partition=5)
     )
     top_solutions = maxcut_ensemble.get_top_solutions(
@@ -331,7 +331,6 @@ if __name__ == "__main__":
         penalty_weight=10.0,
         max_edges_per_partition=10,
         partition_algorithm="kernighan_lin",
-        seed=42,
     )
 
     matching_ensemble = PartitioningProgramEnsemble(

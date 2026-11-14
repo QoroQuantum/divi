@@ -203,6 +203,9 @@ def edge_driver(
     return SparsePauliOp.from_list(terms)
 
 
+_MAX_BIT_FLIP_DEGREE = 16
+
+
 def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
     """Bit-flip mixer over ``graph`` (per Hadfield et al. 2019).
 
@@ -214,6 +217,10 @@ def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
     expanded into ``2^{d(v)}`` Pauli terms per vertex.
 
     The graph nodes must be non-negative integer qubit indices.
+
+    Raises:
+        ValueError: If a vertex has more than ``16`` neighbours, which would
+            expand into more than ``2^16`` Pauli terms for that vertex.
     """
     if b not in (0, 1):
         raise ValueError(f"'b' must be either 0 or 1, got {b}")
@@ -221,6 +228,13 @@ def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
         raise TypeError("bit_flip_mixer requires a networkx.Graph.")
     nodes = list(graph.nodes())
     _validate_int_nodes(nodes, "bit_flip_mixer")
+    for vertex, degree in graph.degree():
+        if degree > _MAX_BIT_FLIP_DEGREE:
+            raise ValueError(
+                f"Vertex {vertex} has {degree} neighbours; its bit-flip mixer "
+                f"would expand into 2**{degree} Pauli terms. Problems apply this "
+                "mixer as gates through QAOAProblem.apply_mixer instead."
+            )
 
     n_qubits = (int(max(nodes)) + 1) if nodes else 0
     if n_qubits == 0:

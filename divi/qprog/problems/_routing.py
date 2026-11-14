@@ -1681,6 +1681,24 @@ def _split_cities_into_clusters(
     return sorted((cluster for cluster in members if cluster), key=lambda c: c[0])
 
 
+def _compute_exchange_deltas(
+    heads: npt.NDArray[np.intp],
+    tails: npt.NDArray[np.intp],
+    cost: npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
+    """Cost change of exchanging edge ``p`` with edge ``q``, for edges
+    ``(heads[k], tails[k])``, shaped ``(n_edges, n_edges, 2)``: splicing straight,
+    then reversed."""
+    removed = cost[heads, tails][:, None] + cost[heads, tails][None, :]
+    straight = (
+        cost[heads[:, None], tails[None, :]] + (cost[heads[None, :], tails[:, None]])
+    )
+    reversed_ = (
+        cost[heads[:, None], heads[None, :]] + (cost[tails[None, :], tails[:, None]])
+    )
+    return np.stack((straight - removed, reversed_ - removed), axis=2)
+
+
 def _patch_cycles_into_tour(
     cycle_groups: Sequence[Sequence[int]], cost_matrix: npt.NDArray[np.floating]
 ) -> list[int]:
@@ -1693,21 +1711,26 @@ def _patch_cycles_into_tour(
     cycles: list[list[int]] = [list(cycle) for cycle in cycle_groups]
     if not cycles or not all(cycles):
         raise ValueError("cycles must be non-empty and each hold at least one city.")
+    cost = np.asarray(cost_matrix)
     while len(cycles) > 1:
-        best = (math.inf, 0, 1, 0, 0, False)
-        for ia, ib in combinations(range(len(cycles)), 2):
-            a, b = cycles[ia], cycles[ib]
-            for i, j in product(range(len(a)), range(len(b))):
-                a0, a1 = a[i], a[(i + 1) % len(a)]
-                b0, b1 = b[j], b[(j + 1) % len(b)]
-                removed = cost_matrix[a0, a1] + cost_matrix[b0, b1]
-                for reverse, added in (
-                    (False, cost_matrix[a0, b1] + cost_matrix[b0, a1]),
-                    (True, cost_matrix[a0, b0] + cost_matrix[b1, a1]),
-                ):
-                    if added - removed < best[0]:
-                        best = (added - removed, ia, ib, i, j, reverse)
-        _, ia, ib, i, j, reverse = best
+        heads = np.concatenate([np.array(c, dtype=np.intp) for c in cycles])
+        tails = np.concatenate(
+            [np.roll(np.array(c, dtype=np.intp), -1) for c in cycles]
+        )
+        bounds = np.cumsum([0, *map(len, cycles)])
+        deltas = _compute_exchange_deltas(heads, tails, cost)
+        pair_best = np.minimum.reduceat(
+            np.minimum.reduceat(deltas.min(axis=2), bounds[:-1], axis=0),
+            bounds[:-1],
+            axis=1,
+        )
+        rows, cols = np.triu_indices(len(cycles), 1)
+        pick = int(np.argmin(pair_best[rows, cols]))
+        ia, ib = int(rows[pick]), int(cols[pick])
+        block = deltas[bounds[ia] : bounds[ia + 1], bounds[ib] : bounds[ib + 1]]
+        i, j, reverse = (
+            int(v) for v in np.unravel_index(int(np.argmin(block)), block.shape)
+        )
         a, b = cycles[ia], cycles[ib]
         spliced = b[j::-1] + b[:j:-1] if reverse else b[j + 1 :] + b[: j + 1]
         merged = a[: i + 1] + spliced + a[i + 1 :]

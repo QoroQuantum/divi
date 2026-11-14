@@ -844,6 +844,29 @@ class TestPortfolioPartitioning:
         assert sorted(len(a) for a, _ in problem._clusters.values()) == program_sizes
         assert len(problem._fixed_units) == n_fixed
 
+    def test_pooled_one_asset_clusters_group_correlated_assets(self, mocker):
+        # Assets 0 and 2, and 1 and 3, are correlated.
+        cov = np.diag([0.04, 0.05, 0.06, 0.07])
+        cov[0, 2] = cov[2, 0] = 0.03
+        cov[1, 3] = cov[3, 1] = 0.035
+        mocker.patch(
+            "divi.qprog.problems._portfolio.partition_by_method",
+            return_value=[np.array([i]) for i in range(4)],
+        )
+        problem = PortfolioSelectionProblem(
+            np.full(4, 0.1),
+            cov,
+            2,
+            config=QUBOPartitioningConfig(max_n_variables_per_cluster=2),
+        )
+
+        problem.decompose()
+
+        assert sorted(sorted(a.tolist()) for a, _ in problem._clusters.values()) == [
+            [0, 2],
+            [1, 3],
+        ]
+
     @pytest.mark.parametrize(
         "make, shares, decoded, expected_units",
         [

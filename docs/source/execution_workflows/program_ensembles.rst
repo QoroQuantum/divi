@@ -58,9 +58,11 @@ and ``get_top_solutions`` accept a ``strategy`` — an
 Beam search
 ~~~~~~~~~~~
 
-:class:`~divi.qprog.ensembles.BeamSearchStrategy` explores candidates left-to-right across
-partitions, keeping the best partial solutions at each step. It takes two
-parameters:
+:class:`~divi.qprog.ensembles.BeamSearchStrategy` explores candidates across
+partitions one at a time, keeping the best partial solutions at each step. Graph,
+QUBO and portfolio problems order the partitions so that each next one is the
+most strongly coupled to those already visited, which lets the beam score
+cross-partition terms early. It takes two parameters:
 
 - ``beam_width`` — how many partial solutions are kept after each partition step
   (defaults to 256).

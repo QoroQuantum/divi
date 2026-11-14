@@ -163,8 +163,9 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         def _extend_fn(current, prog_id, candidate):
             return self._problem.extend_solution(current, prog_id, candidate.decoded)
 
+        order = self._problem.order_partitions(list(self._programs))
         return strategy.aggregate(
-            programs=self._programs,
+            programs={prog_id: self._programs[prog_id] for prog_id in order},
             initial_solution=[0] * self._problem.initial_solution_size(),
             extend_fn=_extend_fn,
             evaluate_fn=self._problem.evaluate_global_solution,

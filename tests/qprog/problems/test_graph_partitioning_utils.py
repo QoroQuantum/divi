@@ -3,16 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
-import sys
 import warnings
 from collections.abc import Sequence
-
-try:
-    import pymetis
-except ImportError:
-    pymetis = None
-
-PYMETIS_AVAILABLE = pymetis is not None
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -20,11 +12,6 @@ import numpy as np
 import pytest
 import rustworkx as rx
 from matplotlib.colors import to_rgba
-
-_skip_no_pymetis = pytest.mark.skipif(
-    sys.platform == "win32" and not PYMETIS_AVAILABLE,
-    reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
-)
 
 from divi.qprog.problems import (
     GraphPartitioningConfig,
@@ -36,14 +23,19 @@ from divi.qprog.problems import (
 from divi.qprog.problems._graph_hamiltonians import _node_ids
 from divi.qprog.problems._graph_partitioning_utils import (
     _apply_split_with_relabel,
-    _bisect_with_predicate,
+    _build_metis_inputs,
     _build_relabeled_subgraph_with_ids,
+    _build_spectral_inputs,
     _canonical_edges,
+    _merge_adjacent_clusters,
     _merge_edgeless_clusters,
     _partition_graph_by_nodes,
     _split_graph,
+    _split_to_minimum,
+    _split_with_predicate,
 )
 from tests._helpers import exact_match
+from tests.qprog.problems._helpers import skip_without_pymetis
 
 
 def _make_pygraph_cycle(n: int) -> rx.PyGraph:
@@ -91,12 +83,15 @@ def _sorted_id_groups(clusters) -> list[list]:
     return sorted(sorted(ids) for _sub, ids in clusters)
 
 
-def _assert_balanced_cycle_arcs(cycle: nx.Graph, clusters, arc_size: int):
-    """Clusters partition ``cycle`` into connected arcs of ``arc_size`` nodes, cutting
-    one edge per arc."""
+def _cluster_sizes(clusters) -> list[int]:
+    return [len(ids) for _sub, ids in clusters]
+
+
+def _assert_cycle_arcs(cycle: nx.Graph, clusters):
+    """Clusters partition ``cycle`` into at least two connected arcs, cutting one
+    edge per arc."""
     id_groups = [list(ids) for _sub, ids in clusters]
     assert sorted(i for ids in id_groups for i in ids) == list(cycle.nodes)
-    assert [len(ids) for ids in id_groups] == [arc_size] * len(id_groups)
     assert all(nx.is_connected(cycle.subgraph(ids)) for ids in id_groups)
     internal = sum(cycle.subgraph(ids).number_of_edges() for ids in id_groups)
     assert cycle.number_of_edges() - internal == len(id_groups)
@@ -117,7 +112,7 @@ def _split_nodes_at(graph, cut: int):
     )
 
 
-def _split_halves(graph, _config):
+def _split_halves(graph, _config, _n_parts=2):
     return _split_nodes_at(graph, len(graph) // 2)
 
 
@@ -229,7 +224,7 @@ class TestGraphPartitioningConfig:
         "algorithm",
         [
             "spectral",
-            pytest.param("metis", marks=_skip_no_pymetis),
+            pytest.param("metis", marks=skip_without_pymetis),
         ],
     )
     def test_apply_split_with_relabel_mocked(self, algorithm, graph_factories, mocker):
@@ -268,7 +263,7 @@ class TestGraphPartitioningConfig:
         [
             pytest.param(
                 True,
-                marks=pytest.mark.skipif(not PYMETIS_AVAILABLE, reason="needs pymetis"),
+                marks=skip_without_pymetis,
                 id="present",
             ),
             pytest.param(False, id="absent"),
@@ -306,25 +301,18 @@ class TestGraphPartitioningConfig:
 
         clusters = _apply_split_with_relabel(cycle, "spectral", 3)
 
-        _assert_balanced_cycle_arcs(cycle, clusters, arc_size=4)
+        assert len(clusters) == 3
+        _assert_cycle_arcs(cycle, clusters)
 
-    def test_apply_split_with_relabel_drops_empty_clusters_with_warning(self, mocker):
+    @pytest.mark.filterwarnings("error")
+    def test_apply_split_with_relabel_drops_empty_clusters(self, mocker):
         G = nx.cycle_graph(6)
         mock_cls = mocker.patch(
             f"{_graph_partitioning_utils.__name__}.SpectralClustering"
         )
-        # All 6 nodes assigned to cluster 0; cluster 1 is empty.
         mock_cls.return_value.fit_predict.return_value = [0, 0, 0, 0, 0, 0]
 
-        with pytest.warns(
-            UserWarning,
-            match=exact_match(
-                "_apply_split_with_relabel: 'spectral' requested 2 clusters but "
-                "produced 1 non-empty cluster(s); empty clusters were dropped from "
-                "the result."
-            ),
-        ):
-            result = _apply_split_with_relabel(G, algorithm="spectral", n_clusters=2)
+        result = _apply_split_with_relabel(G, algorithm="spectral", n_clusters=2)
 
         assert len(result) == 1
         sub, ids = result[0]
@@ -333,25 +321,95 @@ class TestGraphPartitioningConfig:
 
     @pytest.mark.parametrize("algorithm", ["metis", "spectral"])
     @pytest.mark.parametrize(
-        ("constraint", "expected_n_clusters"),
+        ("n_parts", "expected_n_parts"),
         [
-            pytest.param({"minimum_n_clusters": 3}, 3, id="minimum"),
-            pytest.param({"max_n_nodes_per_cluster": 4}, 2, id="bisection-default"),
+            pytest.param((), 2, id="bisection-default"),
+            pytest.param((5,), 5, id="k-way"),
         ],
     )
-    def test_split_graph(self, algorithm, constraint, expected_n_clusters, mocker):
-        """_split_graph routes to _apply_split_with_relabel with the correct args."""
+    def test_split_graph(self, algorithm, n_parts, expected_n_parts, mocker):
+        """_split_graph routes to _apply_split_with_relabel with the requested part count."""
         G = nx.path_graph(9)
-        config = GraphPartitioningConfig(**constraint, partitioning_algorithm=algorithm)
-
-        mock_split = mocker.patch(
-            f"{_apply_split_with_relabel.__module__}.{_apply_split_with_relabel.__name__}"
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=3, partitioning_algorithm=algorithm
         )
 
-        result = _split_graph(G, config)
+        mock_split = mocker.patch(
+            f"{_apply_split_with_relabel.__module__}.{_apply_split_with_relabel.__name__}",
+            return_value=_split_nodes_at(G, 4),
+        )
 
-        assert result is mock_split.return_value
-        mock_split.assert_called_once_with(G, algorithm, expected_n_clusters)
+        result = _split_graph(G, config, *n_parts)
+
+        assert [ids for _sub, ids in result] == [list(range(4)), list(range(4, 9))]
+        mock_split.assert_called_once_with(G, algorithm, expected_n_parts)
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_disconnected_split_parts_become_their_components(self, algorithm, mocker):
+        graph = nx.path_graph(4)
+        mocker.patch(
+            f"{_apply_split_with_relabel.__module__}.{_apply_split_with_relabel.__name__}",
+            return_value=(_build_relabeled_subgraph_with_ids(graph, [0, 3]),),
+        )
+        mocker.patch.object(
+            nx.algorithms.community,
+            "kernighan_lin_bisection",
+            return_value=([0, 3], [1, 2]),
+        )
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=3, partitioning_algorithm=algorithm
+        )
+
+        assert [ids for _sub, ids in _split_graph(graph, config)][:2] == [[0], [3]]
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_skewed_weights_still_give_clusters_with_edges(self, algorithm):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 1.0), (1, 2, 3.0), (2, 3, 1.0)])
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=3, partitioning_algorithm=algorithm
+        )
+
+        clusters = _partition_graph_by_nodes(graph, config)
+
+        _assert_partitions_correct(graph, clusters)
+        assert all(sub.number_of_edges() for sub, _ids in clusters)
+        assert all(len(ids) <= 3 for _sub, ids in clusters)
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_zero_weight_edges_keep_their_nodes_in_a_cluster(self, algorithm):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from(
+            [("a", "b", 0.0), ("b", "c", 0.0), ("c", "d", 1.0)]
+        )
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=2, partitioning_algorithm=algorithm
+        )
+
+        clusters = _partition_graph_by_nodes(graph, config)
+
+        assert _sorted_id_groups(clusters) == [["a", "b"], ["c", "d"]]
 
     def test_split_graph_kernighan_lin(self, mocker):
         G = nx.path_graph(6)
@@ -367,8 +425,11 @@ class TestGraphPartitioningConfig:
         assert set(result[0][1]) | set(result[1][1]) == set(G.nodes)
         split.assert_called_once()
         (kl_graph,), kwargs = split.call_args
+        assert sorted(map(len, kwargs.pop("partition"))) == [3, 3]
         assert kwargs == {"seed": 0}
-        assert nx.utils.graphs_equal(kl_graph, G)
+        assert sorted(kl_graph.edges(data="weight")) == [
+            (u, v, 1.0) for u, v in G.edges
+        ]
 
     def test_split_graph_kernighan_lin_returns_copies(self):
         """Subgraphs returned by _split_graph are independent copies, not views."""
@@ -442,7 +503,7 @@ class TestGraphPartitioningConfig:
             called_args.append((subgraph, list(others)))
             return False
 
-        _bisect_with_predicate(initial, predicate, partitioning_config=None)
+        _split_with_predicate(initial, predicate, partitioning_config=None)
 
         # Ensure predicate was called at least once with a non-empty others list.
         assert len(called_args) == 2
@@ -469,7 +530,7 @@ class TestGraphPartitioningConfig:
         def predicate(_, __):
             return False
 
-        result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
+        result = _split_with_predicate(initial, predicate, partitioning_config=None)
 
         assert len(result) == 1
         _assert_partitions_correct(G, [(result[0][2], result[0][3])], 1)
@@ -483,7 +544,7 @@ class TestGraphPartitioningConfig:
 
         _patch_split_graph(mocker, _split_halves)
 
-        result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
+        result = _split_with_predicate(initial, predicate, partitioning_config=None)
 
         for _, _, sg, _ in result:
             assert sg.number_of_nodes() <= 2
@@ -495,12 +556,12 @@ class TestGraphPartitioningConfig:
         initial = [(-6, 0, G, list(G.nodes()))]
         _patch_split_graph(
             mocker,
-            lambda graph, _config: _split_nodes_at(
+            lambda graph, _config, _n_parts: _split_nodes_at(
                 graph, 2 if len(graph) > 2 else len(graph) // 2
             ),
         )
 
-        result = _bisect_with_predicate(
+        result = _split_with_predicate(
             initial, lambda _, others: len(others) < 2, partitioning_config=None
         )
 
@@ -508,14 +569,14 @@ class TestGraphPartitioningConfig:
         _assert_partitions_correct(G, [(r[2], r[3]) for r in result], 3)
 
     def test_bisect_with_no_partitions_returns_empty(self):
-        assert _bisect_with_predicate([], lambda _, __: True, None) == []
+        assert _split_with_predicate([], lambda _, __: True, None) == []
 
     def test_child_counters_do_not_collide_with_initial_entries(self, mocker):
         big, small = nx.path_graph(4), nx.path_graph(2)
         initial = [(-4, 0, big, [0, 1, 2, 3]), (-2, 1, small, [4, 5])]
         _patch_split_graph(mocker, _split_halves)
 
-        result = _bisect_with_predicate(
+        result = _split_with_predicate(
             initial, lambda graph, _: len(graph) == 4, partitioning_config=None
         )
 
@@ -546,7 +607,8 @@ class TestGraphPartitioningConfig:
 
         clusters = _partition_graph_by_nodes(g, config)
 
-        _assert_balanced_cycle_arcs(nx.cycle_graph(6), clusters, arc_size=3)
+        _assert_cycle_arcs(nx.cycle_graph(6), clusters)
+        assert _cluster_sizes(clusters) == [3, 3]
 
     def test_kernighan_lin_max_nodes_bisects_path_once(self):
         config = GraphPartitioningConfig(
@@ -572,7 +634,7 @@ class TestGraphPartitioningConfig:
     def test_min_clusters_undershot_by_edgeless_merge_warns(self, mocker):
         graph = nx.cycle_graph(6)
         mocker.patch(
-            f"{_bisect_with_predicate.__module__}.{_bisect_with_predicate.__name__}",
+            f"{_split_to_minimum.__module__}.{_split_to_minimum.__name__}",
             return_value=[
                 (0, 0, nx.Graph([(0, 1), (1, 2)]), [0, 1, 2]),
                 (0, 1, nx.Graph([(0, 1)]), [3, 4]),
@@ -583,7 +645,11 @@ class TestGraphPartitioningConfig:
         config = GraphPartitioningConfig(minimum_n_clusters=3)
 
         with pytest.warns(
-            UserWarning, match="below the requested 'minimum_n_clusters'"
+            UserWarning,
+            match=exact_match(
+                "Partitioning produced 2 cluster(s), below the requested "
+                "'minimum_n_clusters'=3."
+            ),
         ):
             result = _partition_graph_by_nodes(graph, config)
 
@@ -594,7 +660,7 @@ class TestGraphPartitioningConfig:
         "algorithm",
         [
             "spectral",
-            pytest.param("metis", marks=_skip_no_pymetis),
+            pytest.param("metis", marks=skip_without_pymetis),
             "kernighan_lin",
         ],
     )
@@ -624,7 +690,7 @@ class TestGraphPartitioningConfig:
         "algorithm",
         [
             "spectral",
-            pytest.param("metis", marks=_skip_no_pymetis),
+            pytest.param("metis", marks=skip_without_pymetis),
             "kernighan_lin",
         ],
     )
@@ -647,7 +713,7 @@ class TestGraphPartitioningConfig:
         "algorithm",
         [
             "spectral",
-            pytest.param("metis", marks=_skip_no_pymetis),
+            pytest.param("metis", marks=skip_without_pymetis),
             "kernighan_lin",
         ],
     )
@@ -672,6 +738,337 @@ class TestGraphPartitioningConfig:
             assert _num_nodes(sub) <= max_nodes
 
         _assert_partitions_correct(G, partitions)
+
+    @pytest.mark.parametrize("sign", [1.0, -1.0], ids=["positive", "negative"])
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_partition_cuts_the_weakest_couplings_whatever_their_sign(
+        self, algorithm, sign
+    ):
+        # An 8-cycle whose only weak edges, (1, 2) and (5, 6), sit opposite.
+        cycle = nx.cycle_graph(8)
+        for u, v in cycle.edges:
+            cycle[u][v]["weight"] = sign * (0.1 if {u, v} in ({1, 2}, {5, 6}) else 10.0)
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=4, partitioning_algorithm=algorithm
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            clusters = _partition_graph_by_nodes(cycle, config)
+
+        assert _sorted_id_groups(clusters) == [[0, 1, 6, 7], [2, 3, 4, 5]]
+
+    def test_metis_inputs_carry_coupling_strengths_as_positive_integers(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, -2.0), (1, 2, 0.5), (2, 2, 3.0)])
+        graph.add_edge(2, 3, weight=0.0)
+
+        xadj, adjncy, eweights, _ids = _build_metis_inputs(graph)
+
+        assert xadj == [0, 1, 3, 5, 6]
+        assert adjncy == [1, 0, 2, 1, 3, 2]
+        assert eweights == [1600, 1600, 400, 400, 1, 1]
+
+    def test_metis_inputs_of_an_unweighted_graph_have_no_weights(self):
+        _xadj, _adjncy, eweights, _ids = _build_metis_inputs(nx.path_graph(4))
+
+        assert eweights is None
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [pytest.param("metis", marks=skip_without_pymetis), "kernighan_lin"],
+    )
+    def test_cap_splits_a_cycle_into_the_fewest_full_arcs(self, algorithm):
+        cycle = nx.cycle_graph(40)
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=10, partitioning_algorithm=algorithm
+        )
+
+        clusters = _partition_graph_by_nodes(cycle, config)
+
+        _assert_cycle_arcs(cycle, clusters)
+        assert _cluster_sizes(clusters) == [10] * 4
+
+    def test_spectral_cap_splits_a_cycle_into_arcs_under_the_cap(self):
+        cycle = nx.cycle_graph(40)
+        config = GraphPartitioningConfig(max_n_nodes_per_cluster=10)
+
+        clusters = _partition_graph_by_nodes(cycle, config)
+
+        _assert_cycle_arcs(cycle, clusters)
+        assert max(_cluster_sizes(clusters)) <= 10
+
+    @skip_without_pymetis
+    @pytest.mark.parametrize("cap", [None, 16], ids=["minimum-only", "with-cap"])
+    def test_minimum_n_clusters_is_met_without_overshooting(self, cap):
+        cycle = nx.cycle_graph(42)
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=6,
+            max_n_nodes_per_cluster=cap,
+            partitioning_algorithm="metis",
+        )
+
+        clusters = _partition_graph_by_nodes(cycle, config)
+
+        _assert_cycle_arcs(cycle, clusters)
+        assert _cluster_sizes(clusters) == [7] * 6
+
+    @pytest.mark.parametrize("cap", [None, 16], ids=["minimum-only", "with-cap"])
+    def test_spectral_meets_minimum_n_clusters_with_arcs(self, cap):
+        cycle = nx.cycle_graph(42)
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=6, max_n_nodes_per_cluster=cap
+        )
+
+        clusters = _partition_graph_by_nodes(cycle, config)
+
+        _assert_cycle_arcs(cycle, clusters)
+        assert len(clusters) >= 6
+
+    @pytest.mark.parametrize(
+        ("minimum", "expected"),
+        [
+            (None, [list(range(6)), list(range(6, 12))]),
+            (3, [list(range(4)), [4, 5], list(range(6, 12))]),
+        ],
+        ids=["merged", "held-at-minimum"],
+    )
+    def test_partitioning_merges_fragments_under_the_cap(
+        self, mocker, minimum, expected
+    ):
+        path = nx.path_graph(12)
+        fragments = ([0, 1, 2, 3], [4, 5], list(range(6, 12)))
+        _patch_split_graph(
+            mocker,
+            lambda graph, _config, _n_parts: _clusters_from_ids(graph, fragments),
+        )
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=6, minimum_n_clusters=minimum
+        )
+
+        clusters = _partition_graph_by_nodes(path, config)
+
+        assert _sorted_id_groups(clusters) == expected
+
+    @pytest.mark.parametrize("factories", GRAPH_FACTORIES)
+    def test_neighbouring_clusters_that_fit_the_cap_are_merged(self, factories):
+        path = factories[2](12)
+        clusters = _clusters_from_ids(path, [[0, 1, 2, 3], [4, 5], list(range(6, 12))])
+
+        merged = _merge_adjacent_clusters(path, clusters, 6, None)
+
+        assert _sorted_id_groups(merged) == [list(range(6)), list(range(6, 12))]
+        assert merged[1] is clusters[2]
+
+    def test_merging_follows_string_node_ids(self):
+        path = nx.relabel_nodes(nx.path_graph(6), dict(enumerate("abcdef")))
+        clusters = _clusters_from_ids(path, [["a", "b", "c", "d"], ["e", "f"]])
+
+        merged = _merge_adjacent_clusters(path, clusters, 6, None)
+
+        assert _sorted_id_groups(merged) == [list("abcdef")]
+
+    def test_merging_prefers_the_most_strongly_coupled_neighbour(self):
+        path = nx.Graph()
+        path.add_weighted_edges_from([(0, 1, 1.0), (1, 2, 5.0)])
+        clusters = _clusters_from_ids(path, [[1], [0], [2]])
+
+        merged = _merge_adjacent_clusters(path, clusters, 2, None)
+
+        assert _sorted_id_groups(merged) == [[0], [1, 2]]
+
+    def test_merging_stops_at_minimum_n_clusters(self):
+        path = nx.path_graph(6)
+        clusters = _clusters_from_ids(path, [[0, 1], [2, 3], [4, 5]])
+
+        merged = _merge_adjacent_clusters(path, clusters, 6, 2)
+
+        assert _sorted_id_groups(merged) == [[0, 1, 2, 3], [4, 5]]
+
+    def test_kernighan_lin_bisects_in_proportion_to_the_requested_parts(self):
+        path = nx.Graph()
+        path.add_nodes_from(range(12))
+        nx.add_path(path, [(i * 5) % 12 for i in range(12)])
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=3, partitioning_algorithm="kernighan_lin"
+        )
+
+        parts = _split_graph(path, config, n_parts=3)
+
+        assert sorted(len(ids) for _sub, ids in parts) == [4, 8]
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_connected_components_are_split_apart_first(self, algorithm):
+        graph = nx.disjoint_union(nx.cycle_graph(6), nx.cycle_graph(5))
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=8, partitioning_algorithm=algorithm
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            clusters = _partition_graph_by_nodes(graph, config)
+
+        assert _sorted_id_groups(clusters) == [list(range(6)), list(range(6, 11))]
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_isolated_nodes_belong_to_no_cluster_and_do_not_count_to_the_minimum(
+        self, algorithm
+    ):
+        graph = nx.gnp_random_graph(34, 0.1, seed=2)
+        connected = {node for node in graph if graph.degree(node)}
+        assert len(connected) < len(graph)
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=3, partitioning_algorithm=algorithm
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            clusters = _partition_graph_by_nodes(graph, config)
+
+        assert len(clusters) >= 3
+        assert {node for _sub, ids in clusters for node in ids} == connected
+
+    @pytest.mark.parametrize(
+        "algorithm",
+        [
+            "spectral",
+            pytest.param("metis", marks=skip_without_pymetis),
+            "kernighan_lin",
+        ],
+    )
+    def test_isolated_node_does_not_make_the_cap_unreachable(self, algorithm):
+        graph = nx.path_graph(4)
+        graph.add_node(4)
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=2, partitioning_algorithm=algorithm
+        )
+
+        clusters = _partition_graph_by_nodes(graph, config)
+
+        assert sorted(node for _sub, ids in clusters for node in ids) == [0, 1, 2, 3]
+        assert all(len(ids) <= 2 for _sub, ids in clusters)
+
+    def test_graph_without_edges_cannot_be_partitioned(self):
+        graph = nx.empty_graph(4)
+
+        with pytest.raises(ValueError, match="without edges"):
+            _partition_graph_by_nodes(
+                graph, GraphPartitioningConfig(max_n_nodes_per_cluster=2)
+            )
+
+    def test_spectral_split_into_as_many_parts_as_nodes_does_not_crash(self):
+        clusters = _apply_split_with_relabel(nx.cycle_graph(6), "spectral", 6)
+
+        assert sorted(node for _sub, ids in clusters for node in ids) == list(range(6))
+
+    def test_spectral_minimum_close_to_the_node_count(self):
+        graph = nx.disjoint_union(nx.path_graph(7), nx.path_graph(2))
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=8, partitioning_algorithm="spectral"
+        )
+
+        with pytest.warns(
+            UserWarning, match="below the requested 'minimum_n_clusters'=8"
+        ):
+            clusters = _partition_graph_by_nodes(graph, config)
+
+        assert sorted(node for _sub, ids in clusters for node in ids) == list(range(9))
+
+    def test_metis_weights_keep_light_edges_apart_from_a_heavy_outlier(self):
+        graph = nx.cycle_graph(8)
+        for (u, v), weight in zip(
+            graph.edges, [1e4, 0.1, 0.5, 1.0, 0.2, 0.9, 0.4, 0.7]
+        ):
+            graph[u][v]["weight"] = weight
+
+        _xadj, _adjncy, eweights, _ids = _build_metis_inputs(graph)
+
+        light = sorted(set(eweights))[:-1]
+        assert min(light) >= 100
+        assert len(set(light)) == 7
+        assert max(eweights) <= 2**31 - 1
+
+    def test_metis_weights_cannot_overflow_integer_sums(self):
+        graph = nx.cycle_graph(6)
+        for u, v in graph.edges:
+            graph[u][v]["weight"] = 1e300 if (u, v) == (0, 1) else 1.0
+
+        _xadj, _adjncy, eweights, _ids = _build_metis_inputs(graph)
+
+        assert sum(eweights) < 2**31
+        assert min(eweights) >= 1
+
+    def test_spectral_affinity_keeps_zero_couplings_as_the_weakest_link(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 2.0), (1, 2, 0.0), (2, 3, -1.0)])
+
+        adjacency, _ids = _build_spectral_inputs(graph)
+
+        assert adjacency[1, 2] == pytest.approx(2e-9)
+        assert (adjacency[0, 1], adjacency[2, 3]) == (2.0, 1.0)
+
+    def test_zero_couplings_are_cut_first(self):
+        graph = nx.disjoint_union(nx.complete_graph(3), nx.complete_graph(3))
+        graph.add_edge(2, 3, weight=0.0)
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=2, partitioning_algorithm="spectral"
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            clusters = _partition_graph_by_nodes(graph, config)
+
+        assert _sorted_id_groups(clusters) == [[0, 1, 2], [3, 4, 5]]
+
+    def test_node_reached_only_by_zero_couplings_joins_a_neighbouring_cluster(self):
+        graph = nx.path_graph(3)
+        graph.add_edge(2, 3, weight=0.0)
+        config = GraphPartitioningConfig(max_n_nodes_per_cluster=4)
+
+        clusters = _partition_graph_by_nodes(graph, config)
+
+        assert _sorted_id_groups(clusters) == [[0, 1, 2, 3]]
+
+    @pytest.mark.parametrize("seed", range(8))
+    def test_spectral_partition_of_a_graph_with_zero_couplings_is_repeatable(
+        self, seed
+    ):
+        rng = np.random.default_rng(seed)
+        graph = rx.undirected_gnp_random_graph(14, 0.3, seed=seed)
+        for index in graph.edge_indices():
+            graph.update_edge_by_index(index, float(rng.choice([0.0, 0.0, 1.0, 2.0])))
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=5, partitioning_algorithm="spectral"
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            outcomes = [
+                _partition_outcome(graph, config, list(range(14))) for _ in range(3)
+            ]
+
+        assert outcomes[0] == outcomes[1] == outcomes[2]
 
 
 def test_decompose_with_pygraph_input():
@@ -777,21 +1174,25 @@ def test_merge_edgeless_raises_when_no_cluster_has_room():
         _merge_edgeless_clusters(graph, clusters, config)
 
 
-def test_merge_edgeless_warns_when_dropping_below_min_clusters():
+def test_merge_edgeless_borrows_a_neighbour_when_no_cluster_has_room():
+    graph = nx.Graph([(0, 1), (1, 2), (2, 3)])
+    clusters = _clusters_from_ids(graph, [[0, 1, 2], [3]])
+    config = GraphPartitioningConfig(max_n_nodes_per_cluster=3)
+
+    merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert _sorted_id_groups(merged) == [[0, 1], [2, 3]]
+    _assert_partitions_correct(graph, merged)
+
+
+def test_merge_edgeless_may_leave_fewer_clusters_than_the_minimum():
     graph = nx.Graph([(0, 1), (2, 3), (4, 0)])
     clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
     config = GraphPartitioningConfig(minimum_n_clusters=3)
 
-    with pytest.warns(
-        UserWarning,
-        match=exact_match(
-            "Merging edgeless clusters left 2 cluster(s), below the requested "
-            "'minimum_n_clusters'=3."
-        ),
-    ):
-        merged = _merge_edgeless_clusters(graph, clusters, config)
+    merged = _merge_edgeless_clusters(graph, clusters, config)
 
-    assert len(merged) == 2
+    assert _sorted_id_groups(merged) == [[0, 1, 4], [2, 3]]
 
 
 def test_merge_edgeless_reaching_min_clusters_does_not_warn():
@@ -909,6 +1310,31 @@ def test_canonical_edges_read_weights_alike_for_both_backends(
     assert edges == [(0, 1, expected_weight)]
 
 
+@pytest.mark.parametrize("weight", [float("nan"), float("inf")])
+@pytest.mark.parametrize("backend", ["rx", "nx"])
+def test_canonical_edges_reject_non_finite_weights(backend, weight):
+    graph = dict(zip(("rx", "nx"), _one_edge_graphs(weight)))[backend]
+
+    with pytest.raises(ValueError, match="non-finite weight"):
+        _canonical_edges(graph)
+
+
+@pytest.mark.parametrize(
+    "algorithm",
+    ["spectral", pytest.param("metis", marks=skip_without_pymetis), "kernighan_lin"],
+)
+def test_node_with_only_a_self_loop_joins_no_cluster(algorithm):
+    graph = nx.path_graph(4)
+    graph.add_edge(4, 4)
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=2, partitioning_algorithm=algorithm
+    )
+
+    clusters = _partition_graph_by_nodes(graph, config)
+
+    assert _sorted_id_groups(clusters) == [[0, 1], [2, 3]]
+
+
 @pytest.mark.parametrize("backend", ["rx", "nx"])
 def test_canonical_edges_warn_on_non_numeric_weight(backend):
     graph = dict(zip(("rx", "nx"), _one_edge_graphs(("custom", "tuple"))))[backend]
@@ -916,8 +1342,8 @@ def test_canonical_edges_warn_on_non_numeric_weight(backend):
     with pytest.warns(
         UserWarning,
         match=exact_match(
-            "Edge weights of type(s) ['tuple'] are not real numbers; graph "
-            "partitioning treats those edges as unweighted."
+            "Edge weights of type(s) ['tuple'] are not real numbers; those "
+            "edges are treated as unweighted."
         ),
     ):
         _ids, edges = _canonical_edges(graph)
@@ -958,7 +1384,7 @@ def test_composes_non_contiguous_cluster_ids_across_two_depths(mocker):
 
     call_count = {"n": 0}
 
-    def fake_split(graph, config):
+    def fake_split(graph, config, n_parts):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return ((even_sub, even_ids), (odd_sub, odd_ids))
@@ -987,7 +1413,7 @@ def test_composes_non_contiguous_cluster_ids_across_two_depths(mocker):
 
     config = GraphPartitioningConfig(minimum_n_clusters=2)
     initial = [(-G.number_of_nodes(), 0, G, list(G.nodes()))]
-    result = _bisect_with_predicate(initial, predicate, config)
+    result = _split_with_predicate(initial, predicate, config)
 
     leaf_ids = [r[3] for r in result]
     all_ids: set = set()
@@ -1070,7 +1496,7 @@ _GRAPH_KINDS = {
 _SEEDS = (2, 5, 11, 22, 26, 38)
 _ALGORITHMS = [
     "spectral",
-    pytest.param("metis", marks=_skip_no_pymetis),
+    pytest.param("metis", marks=skip_without_pymetis),
     "kernighan_lin",
 ]
 # A cap of 4 splits every kind and seed under every algorithm; rx-generator-38 at

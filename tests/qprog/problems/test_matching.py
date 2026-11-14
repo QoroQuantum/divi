@@ -23,19 +23,16 @@ from divi.qprog.problems import (
 from divi.qprog.problems import _matching as _matching_module
 from divi.qprog.problems._matching import (
     _bitstring_to_matching,
+    _conflict_graph,
     _construct_matching_qubo,
-    _count_conflicts,
-    _edge_index_graph,
     _fill_unmatched_nodes,
     _integer_weights,
-    _kl_bisect,
     _matching_edges,
-    _partition_graph_by_edges,
+    _partition_edges,
     _repair_matching,
-    _spectral_bisect,
 )
 from tests._helpers import exact_match
-from tests.qprog.problems._helpers import nx_twin
+from tests.qprog.problems._helpers import nx_twin, skip_without_pymetis
 
 
 @pytest.fixture
@@ -88,7 +85,7 @@ def _graph_qubo(graph, penalty_weight=10.0):
 def _dense_matching_qubo(edges, weights, penalty_weight):
     """Reference symmetric QUBO matrix: ``-w`` diagonal, half the penalty per incident pair entry."""
     qubo = np.diag(-np.asarray(weights, dtype=float))
-    penalty = penalty_weight * sum(weights)
+    penalty = penalty_weight * (max(map(abs, weights), default=0.0) or 1.0)
     for i, j in itertools.combinations(range(len(edges)), 2):
         if set(edges[i]) & set(edges[j]):
             qubo[i, j] = qubo[j, i] = penalty / 2
@@ -130,10 +127,39 @@ class TestConstructMatchingQubo:
         """Every pair of triangle edges shares a node."""
         _, _, terms = _graph_qubo(triangle_graph, penalty_weight=2.0)
         assert {key: c for key, c in terms.items() if len(key) == 2} == {
-            (0, 1): 24.0,
-            (0, 2): 24.0,
-            (1, 2): 24.0,
+            (0, 1): 10.0,
+            (0, 2): 10.0,
+            (1, 2): 10.0,
         }
+
+    def test_penalty_scales_with_the_largest_weight_magnitude(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 5.0), (1, 2, 5.0), (3, 4, -20.0)])
+        _, _, terms = _graph_qubo(graph, penalty_weight=2.0)
+        assert terms[(0, 1)] == pytest.approx(40.0)
+
+    @pytest.mark.parametrize(
+        "weighted_edges",
+        [
+            pytest.param([(0, 1, 5.0), (1, 2, 5.0), (3, 4, -20.0)], id="signed"),
+            pytest.param([(0, 1, 0.0), (1, 2, 0.0)], id="all_zero"),
+            pytest.param([(0, 1, 1.0), (1, 2, 3.0), (2, 0, 2.0)], id="triangle"),
+        ],
+    )
+    def test_qubo_ground_state_is_a_matching(self, weighted_edges):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from(weighted_edges)
+        edges, _, terms = _graph_qubo(graph, penalty_weight=1.5)
+        energies = {
+            bits: _term_energy(terms, bits)
+            for bits in itertools.product((0, 1), repeat=len(edges))
+        }
+        best = min(energies.values())
+        assert all(
+            is_valid_matching([edge for edge, bit in zip(edges, bits) if bit])
+            for bits, energy in energies.items()
+            if energy == pytest.approx(best)
+        )
 
     def test_no_penalty_for_independent_edges(self):
         graph = nx.Graph()
@@ -270,7 +296,11 @@ def test_check_matching_matrix_rejects_malformed_input(
         check_matching_matrix(np.array(matching_matrix), np.array(adjacency))
 
 
-_PARTITION_ALGORITHMS = ["kernighan_lin", "spectral"]
+_PARTITION_ALGORITHMS = [
+    "kernighan_lin",
+    "spectral",
+    pytest.param("metis", marks=skip_without_pymetis),
+]
 
 
 def _triangle_with_isolated_nodes() -> nx.Graph:
@@ -284,43 +314,41 @@ def _edge_set(edges) -> list[frozenset]:
 
 
 def _partition(graph: nx.Graph, max_edges: int, algorithm="kernighan_lin"):
-    """:func:`_partition_graph_by_edges` on ``graph``, each part as an edge subgraph."""
+    """:func:`_partition_edges` on ``graph``, each part as an edge subgraph."""
     ids, edges, weights = _matching_edges(graph)
-    parts = _partition_graph_by_edges(edges, weights, max_edges, algorithm=algorithm)
+    parts = _partition_edges(_conflict_graph(edges, weights), max_edges, algorithm)
     return [
         graph.edge_subgraph((ids[edges[i][0]], ids[edges[i][1]]) for i in part)
         for part in parts
     ]
 
 
-def _bisection_input(graph: nx.Graph):
-    """The :func:`_edge_index_graph` of ``graph`` and its edge weights."""
-    _, edges, weights = _matching_edges(graph)
-    return _edge_index_graph(edges), weights
+def _conflicting_positive_edges(graph: nx.Graph) -> set[frozenset]:
+    positive = [(u, v) for u, v, w in graph.edges(data="weight", default=1.0) if w > 0]
+    return {
+        frozenset(edge)
+        for edge in positive
+        if any(edge != other and set(edge) & set(other) for other in positive)
+    }
 
 
-def _assert_partitions_within_budget(graph, parts, max_edges):
+def _assert_partitions_cover_conflicts_within_budget(graph, parts, max_edges):
     assert all(1 <= part.size() <= max_edges for part in parts)
     partition_edges = _edge_set(edge for part in parts for edge in part.edges())
     assert len(partition_edges) == len(set(partition_edges))
-    assert set(partition_edges) <= set(_edge_set(graph.edges()))
+    assert set(partition_edges) == _conflicting_positive_edges(graph)
 
 
-class TestPartitionGraphByEdges:
+class TestPartitionEdges:
     def test_small_graph_no_split(self, path_graph):
         parts = _partition(path_graph, max_edges=10)
         assert len(parts) == 1
         assert parts[0].size() == path_graph.size()
 
-    def test_splits_when_exceeding_max(self, diamond_graph):
-        parts = _partition(diamond_graph, max_edges=2)
-        assert all(sg.size() <= 2 for sg in parts)
-        # Total edges across partitions <= original (some cut edges lost)
-        assert sum(sg.size() for sg in parts) <= diamond_graph.size()
-
-    def test_spectral_algorithm(self, diamond_graph):
-        parts = _partition(diamond_graph, max_edges=2, algorithm="spectral")
-        assert all(sg.size() <= 2 for sg in parts)
+    @pytest.mark.parametrize("algorithm", _PARTITION_ALGORITHMS)
+    def test_every_edge_lands_in_one_partition(self, diamond_graph, algorithm):
+        parts = _partition(diamond_graph, max_edges=2, algorithm=algorithm)
+        _assert_partitions_cover_conflicts_within_budget(diamond_graph, parts, 2)
 
     def test_spectral_partition_is_independent_of_global_rng(self):
         graph = nx.cycle_graph(8)
@@ -333,34 +361,31 @@ class TestPartitionGraphByEdges:
         finally:
             np.random.set_state(random_state)
 
-        assert [set(part) for part in first] == [set(part) for part in second]
+        assert [set(part.edges()) for part in first] == [
+            set(part.edges()) for part in second
+        ]
 
-    def test_partition_order_does_not_depend_on_bisection_order(
-        self, diamond_graph, mocker
-    ):
-        split = mocker.patch.object(
-            _matching_module,
-            "_kl_bisect",
-            side_effect=[({2, 3}, {0, 1}), ({0, 1}, {2, 3})],
-        )
-
-        first = _partition(diamond_graph, 2)
-        second = _partition(diamond_graph, 2)
-
-        assert split.call_count == 2
-        assert [set(part) for part in first] == [set(part) for part in second]
-
-    @pytest.mark.parametrize("seed", range(3))
-    def test_kernighan_lin_keeps_heavy_edges_inside_partitions(self, seed):
+    @pytest.mark.parametrize("algorithm", _PARTITION_ALGORITHMS)
+    def test_heavy_conflicts_stay_inside_partitions(self, algorithm):
         graph = nx.Graph()
         graph.add_weighted_edges_from(
-            [(0, 1, 10.0), (1, 2, 1.0), (2, 3, 10.0), (3, 0, 1.0)]
+            [(0, 1, 10.0), (1, 2, 10.0), (2, 3, 1.0), (3, 4, 1.0)]
         )
-        part_a, part_b = _kl_bisect(*_bisection_input(graph), seed=seed)
-        assert {frozenset(part_a), frozenset(part_b)} == {
-            frozenset({0, 1}),
-            frozenset({2, 3}),
+        parts = _partition(graph, max_edges=2, algorithm=algorithm)
+        assert {frozenset(_edge_set(part.edges())) for part in parts} == {
+            frozenset(_edge_set([(0, 1), (1, 2)])),
+            frozenset(_edge_set([(2, 3), (3, 4)])),
         }
+
+    def test_non_positive_and_conflict_free_edges_join_no_partition(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from(
+            [(0, 1, 2.0), (1, 2, 3.0), (2, 3, -1.0), (3, 4, 0.0), (5, 6, 4.0)]
+        )
+        parts = _partition(graph, max_edges=5)
+        assert [set(_edge_set(part.edges())) for part in parts] == [
+            set(_edge_set([(0, 1), (1, 2)]))
+        ]
 
     def test_invalid_algorithm_raises(self, path_graph):
         with pytest.raises(ValueError, match="Unsupported"):
@@ -370,11 +395,11 @@ class TestPartitionGraphByEdges:
     def test_triangle_with_isolated_nodes_stays_within_budget(self, algorithm):
         graph = _triangle_with_isolated_nodes()
         parts = _partition(graph, max_edges=2, algorithm=algorithm)
-        _assert_partitions_within_budget(graph, parts, 2)
+        _assert_partitions_cover_conflicts_within_budget(graph, parts, 2)
         assert all(nx.is_connected(part) for part in parts)
 
     @pytest.mark.parametrize("algorithm", _PARTITION_ALGORITHMS)
-    @pytest.mark.parametrize("max_edges", [1, 2, 3, 5])
+    @pytest.mark.parametrize("max_edges", [2, 3, 5])
     @pytest.mark.parametrize("n_nodes, n_edges", [(10, 9), (12, 20)])
     @pytest.mark.parametrize("seed", range(8))
     def test_random_graphs_stay_within_budget(
@@ -382,7 +407,7 @@ class TestPartitionGraphByEdges:
     ):
         graph = nx.gnm_random_graph(n_nodes, n_edges, seed=seed)
         parts = _partition(graph, max_edges, algorithm=algorithm)
-        _assert_partitions_within_budget(graph, parts, max_edges)
+        _assert_partitions_cover_conflicts_within_budget(graph, parts, max_edges)
 
     @pytest.mark.parametrize("algorithm", _PARTITION_ALGORITHMS)
     def test_components_within_budget_keep_every_edge_once(self, algorithm):
@@ -394,32 +419,7 @@ class TestPartitionGraphByEdges:
         )
 
     def test_edgeless_graph_has_no_partitions(self):
-        assert _partition(nx.empty_graph(4), max_edges=1) == []
-
-    def test_spectral_bisection_splits_tied_fiedler_entries(self):
-        part_a, part_b = _spectral_bisect(*_bisection_input(nx.complete_graph(3)))
-        assert sorted([len(part_a), len(part_b)]) == [1, 2]
-        assert part_a | part_b == {0, 1, 2}
-
-    def test_bisection_with_an_empty_side_raises(self, path_graph, mocker):
-        mocker.patch.object(
-            _matching_module, "_kl_bisect", return_value=(set(path_graph), set())
-        )
-        with pytest.raises(ValueError, match="max_edges=2"):
-            _partition(path_graph, max_edges=2)
-
-
-@pytest.mark.parametrize(
-    "solution, edges, expected",
-    [
-        pytest.param([1, 1], [(0, 1), (2, 3)], 0, id="no_conflicts"),
-        pytest.param([1, 1], [(0, 1), (1, 2)], 1, id="one_conflict"),
-        pytest.param([1, 1], [(0, 2), (1, 2)], 1, id="conflict_on_second_node"),
-        pytest.param([0, 0], [(0, 1), (1, 2)], 0, id="all_zeros"),
-    ],
-)
-def test_count_conflicts(solution, edges, expected):
-    assert _count_conflicts(solution, edges) == expected
+        assert _partition(nx.empty_graph(4), max_edges=2) == []
 
 
 @pytest.mark.parametrize(
@@ -583,18 +583,107 @@ class TestMaxWeightMatchingProblem:
         score = p.evaluate_global_solution([1, 1])
         assert score > -2.0  # penalized, so less negative than -2
 
+    @pytest.mark.parametrize(
+        "weights",
+        [
+            pytest.param([10.0, 10.0, 0.1, 0.1, 0.1], id="heavy_conflict"),
+            pytest.param([-3.0, -1.0, -2.0, -5.0, -4.0], id="all_negative"),
+            pytest.param([1e16, -1e16, 1.0, 0.0, 2.0], id="mixed_wide"),
+            pytest.param([1.0] * 5, id="unit"),
+        ],
+    )
+    @pytest.mark.filterwarnings("ignore:At least one partition aggregate")
+    def test_score_is_the_postprocessed_weight_without_cleanup(self, weights):
+        G = nx.Graph()
+        G.add_weighted_edges_from(
+            [(0, 1, weights[0]), (1, 2, weights[1]), (2, 3, weights[2])]
+            + [(3, 4, weights[3]), (1, 4, weights[4])]
+        )
+        p = MaxWeightMatchingProblem(G, use_classical_cleanup=False)
+        for bits in itertools.product((0, 1), repeat=len(p._edges)):
+            ((_, weight),) = p.postprocess_candidates([(0.0, list(bits))])
+            assert p.evaluate_global_solution(list(bits)) == pytest.approx(
+                -weight, rel=0, abs=len(bits) * p._tie_step
+            )
+
+    def test_valid_solution_beats_an_invalid_one_with_the_same_repair(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 2.0), (1, 2, 1.0)])
+        p = MaxWeightMatchingProblem(graph)
+        assert p.evaluate_global_solution([1, 0]) < p.evaluate_global_solution([1, 1])
+
     def test_decompose_raises_without_config(self, diamond_graph):
         p = MaxWeightMatchingProblem(diamond_graph)
         with pytest.raises(ValueError, match="max_edges_per_partition"):
             p.decompose()
 
-    def test_decompose_returns_sub_problems(self, diamond_graph):
+    def test_decompose_puts_every_edge_in_one_sub_problem(self, diamond_graph):
         p = MaxWeightMatchingProblem(diamond_graph, max_edges_per_partition=2)
         subs = p.decompose()
-        # One bisection of the 4 nodes leaves two 2-node parts of at most 1 edge.
-        assert len(subs) == 2
-        for sub in subs.values():
-            assert isinstance(sub, BinaryOptimizationProblem)
+        assert all(isinstance(sub, BinaryOptimizationProblem) for sub in subs.values())
+        assert sorted(
+            [i for ids in p._edge_index_maps.values() for i in ids] + p._preset_edges
+        ) == list(range(len(p._edges)))
+
+    def test_decompose_without_conflicts_raises(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 1.0), (2, 3, 2.0), (1, 2, -1.0)])
+        p = MaxWeightMatchingProblem(graph, max_edges_per_partition=2)
+        with pytest.raises(ValueError, match="no two positive-weight edges share"):
+            p.decompose()
+
+    def test_edges_no_partition_solves_are_added_to_every_candidate(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from(
+            [(0, 1, 1.0), (1, 2, 2.0), (5, 6, 3.0), (7, 8, -1.0)]
+        )
+        p = MaxWeightMatchingProblem(
+            graph, max_edges_per_partition=2, use_classical_cleanup=False
+        )
+        (prog_id,) = p.decompose()
+        solution = p.extend_solution([0] * len(p._edges), prog_id, [0, 1])
+
+        assert p.evaluate_global_solution(solution) == pytest.approx(-5.0)
+        assert p.postprocess_candidates([(0.0, solution)]) == [([(1, 2), (5, 6)], 5.0)]
+
+    @pytest.mark.parametrize("algorithm", _PARTITION_ALGORITHMS)
+    def test_partitions_without_an_internal_conflict_are_settled_classically(
+        self, algorithm
+    ):
+        p = MaxWeightMatchingProblem(
+            nx.path_graph(6), max_edges_per_partition=2, partition_algorithm=algorithm
+        )
+        subs = p.decompose()
+        partitioned = {i for ids in p._edge_index_maps.values() for i in ids}
+
+        assert all(len(ids) == 2 for ids in p._edge_index_maps.values())
+        assert sorted(partitioned | set(p._preset_edges)) == list(range(5))
+        assert not partitioned & set(p._preset_edges)
+        assert all(sub.candidate_feasibility == "repair" for sub in subs.values())
+
+    def test_partition_repairs_candidates_into_its_heaviest_matching(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 1.0), (1, 2, 4.0), (2, 3, 1.0)])
+        p = MaxWeightMatchingProblem(graph, max_edges_per_partition=3)
+        (sub,) = p.decompose().values()
+
+        assert not sub.is_feasible("111")
+        assert sub.repair_infeasible_bitstring("111")[0] == "010"
+        assert sub.compute_energy("101") == pytest.approx(-2.0)
+
+    def test_order_partitions_follows_conflict_weight(self):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from(
+            [(0, 1, 1.0), (1, 2, 1.0), (2, 3, 9.0), (3, 4, 9.0), (4, 5, 9.0)]
+        )
+        p = MaxWeightMatchingProblem(graph, max_edges_per_partition=2)
+        p._edge_index_maps = {"light": [0, 1], "far": [4], "heavy": [2, 3]}
+
+        assert p.order_partitions(["light", "far", "heavy"]) == [
+            "light",
+            "heavy",
+            "far",
+        ]
 
     @pytest.mark.parametrize("algorithm", _PARTITION_ALGORITHMS)
     @pytest.mark.parametrize(
@@ -615,12 +704,31 @@ class TestMaxWeightMatchingProblem:
             assert 1 <= len(p._edge_index_maps[prog_id]) <= max_edges
             assert sub.cost_hamiltonian.num_qubits <= max_edges
 
-    @pytest.mark.parametrize("max_edges", [0, -1])
-    def test_rejects_non_positive_partition_budget(self, diamond_graph, max_edges):
+    @pytest.mark.parametrize("max_edges", [1, 0, -1])
+    def test_rejects_partition_budget_below_two(self, diamond_graph, max_edges):
         with pytest.raises(
-            ValueError, match="max_edges_per_partition must be at least 1"
+            ValueError, match="max_edges_per_partition must be at least 2"
         ):
             MaxWeightMatchingProblem(diamond_graph, max_edges_per_partition=max_edges)
+
+    @pytest.mark.parametrize("penalty_weight", [1.0, 0.5, -2.0, math.inf, math.nan])
+    def test_rejects_penalty_weight_not_above_one(self, diamond_graph, penalty_weight):
+        with pytest.raises(ValueError, match="penalty_weight must be a finite number"):
+            MaxWeightMatchingProblem(diamond_graph, penalty_weight=penalty_weight)
+
+    @pytest.mark.parametrize("weight", [math.nan, math.inf, -math.inf])
+    def test_rejects_non_finite_weights(self, weight):
+        graph = nx.Graph()
+        graph.add_weighted_edges_from([(0, 1, 1.0), (1, 2, weight)])
+        with pytest.raises(ValueError, match="non-finite weight"):
+            MaxWeightMatchingProblem(graph)
+
+    def test_warns_on_non_numeric_weights(self):
+        graph = nx.Graph()
+        graph.add_edge(0, 1, weight="heavy")
+        with pytest.warns(UserWarning, match="not real numbers"):
+            p = MaxWeightMatchingProblem(graph)
+        assert p._weights == [1.0]
 
     def test_rejects_self_loops(self, triangle_graph):
         triangle_graph.add_edge(0, 0, weight=1.0)
@@ -689,14 +797,12 @@ class TestMaxWeightMatchingProblem:
         ) == pytest.approx(-5.0)
 
     def test_decompose_honours_penalty_weight(self):
-        """Selecting both edges of a 2-edge path costs ``-2 + penalty_weight * 2``."""
+        """Selecting both unit edges of a path costs ``-2 + penalty_weight``."""
         p = MaxWeightMatchingProblem(
-            nx.path_graph(6), penalty_weight=3.0, max_edges_per_partition=2
+            nx.path_graph(3), penalty_weight=3.0, max_edges_per_partition=2
         )
-        subs = p.decompose()
-        assert [sub.compute_energy("11") for sub in subs.values()] == pytest.approx(
-            [4.0, 4.0]
-        )
+        (sub,) = p.decompose().values()
+        assert sub.relaxed_energy([1, 1]) == pytest.approx(1.0)
 
     def test_unweighted_edges_default_to_unit_weight(self):
         graph = nx.path_graph(4)
@@ -990,11 +1096,11 @@ def test_matching_rejects_self_loops_alike(backend):
         MaxWeightMatchingProblem(graph)
 
 
-@pytest.mark.parametrize("max_edges", [0, -1])
+@pytest.mark.parametrize("max_edges", [1, 0, -1])
 @pytest.mark.parametrize("backend", ["rx", "nx"])
-def test_matching_rejects_non_positive_budget_alike(backend, max_edges):
+def test_matching_rejects_budget_below_two_alike(backend, max_edges):
     graph = _rx_none_payloads()
-    with pytest.raises(ValueError, match="max_edges_per_partition must be at least 1"):
+    with pytest.raises(ValueError, match="max_edges_per_partition must be at least 2"):
         MaxWeightMatchingProblem(
             graph if backend == "rx" else nx_twin(graph),
             max_edges_per_partition=max_edges,
@@ -1052,13 +1158,7 @@ class TestMaxWeightMatchingProblemE2E:
         "ignore:At least one partition aggregate was not a valid matching"
     )
     def test_partitioned_e2e(self, default_test_simulator):
-        """E2E: Partitioned matching produces a valid, positive-weight result.
-
-        ``max_edges_per_partition`` is set so one bisection keeps most edges
-        inside a partition (11 of 15). Under this seed the stitched aggregate
-        conflicts across the cut and is repaired;
-        ``TestMaxWeightMatchingProblemStrict`` covers the repair path explicitly.
-        """
+        """E2E: Partitioned matching produces a valid, positive-weight result."""
         G = nx.gnm_random_graph(10, 15, seed=42)
         for u, v in G.edges():
             G[u][v]["weight"] = float(u + v)
@@ -1068,7 +1168,6 @@ class TestMaxWeightMatchingProblemE2E:
             penalty_weight=10.0,
             max_edges_per_partition=8,
             partition_algorithm="kernighan_lin",
-            seed=42,
         )
 
         default_test_simulator.set_seed(42)

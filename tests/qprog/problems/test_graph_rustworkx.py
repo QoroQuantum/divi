@@ -378,9 +378,14 @@ def test_partitioned_rx_problem_extends_and_scores_like_nx_twin(
         nx_problem.evaluate_global_solution(candidate)
     )
     selected, _ = problem.postprocess_candidates([(0.0, solution)])[0]
-    assert selected == [
-        node for node, bit in zip(graph.node_indexes(), candidate) if bit
-    ]
+    chosen = [node for node, bit in zip(graph.node_indexes(), candidate) if bit]
+    if problem_cls is MaxCutProblem:
+        assert selected == chosen
+    else:
+        assert set(selected) <= set(chosen)
+        assert nx_problem.is_feasible(
+            "".join("1" if node in selected else "0" for node in graph.node_indexes())
+        )
 
 
 def test_partitioned_rx_ensemble_returns_node_indices(
