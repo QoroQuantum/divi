@@ -669,7 +669,9 @@ recommended initial state; leave ``initial_state`` unset to use it. Slack
 qubits keep an X mixer, and other constraints are enforced only by their
 penalties. The cardinality penalty stays in the
 QUBO and is zero on every :math:`K`-asset state, so PCE can take the same
-problem.
+problem. QAOA's cost Hamiltonian leaves it out: from the Dicke state the mixer
+never leaves the :math:`K`-asset states, and the penalty would only add
+couplings between assets the covariance does not link.
 
 .. code-block:: python
 
