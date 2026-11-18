@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     # Quantum computing
-    "qiskit>=2.6",
+    "qiskit>=2.6.1",
     # Scientific computing and numerical operations
     "numpy",
     "scipy>=1.17,<2.0",

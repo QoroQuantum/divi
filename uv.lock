@@ -4285,7 +4285,7 @@ requires-dist = [
     { name = "pyperclip", marker = "extra == 'ai'", specifier = ">=1.11.0,<2.0.0" },
     { name = "pyscf", marker = "sys_platform != 'win32' and extra == 'chem'", specifier = ">=2.14,<3.0" },
     { name = "python-dotenv", specifier = ">=1.1.1,<2.0" },
-    { name = "qiskit", specifier = ">=2.6" },
+    { name = "qiskit", specifier = ">=2.6.1" },
     { name = "qiskit-aer", marker = "extra == 'aer'", specifier = ">=0.18" },
     { name = "qiskit-ibm-runtime", marker = "extra == 'aer'", specifier = ">=0.51" },
     { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
