@@ -51,6 +51,7 @@ jobs:
         with:
           python-version: "3.11"
           sync-args: --extra ai
+          save-cache: "false"
 
       - uses: ./.github/actions/build-ai-index
         with:

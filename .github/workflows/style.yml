@@ -20,6 +20,7 @@ jobs:
         with:
           python-version: "3.13"
           sync-args: --group dev --all-extras --no-extra ai
+          save-cache: "false"
 
       - name: Cache pre-commit hooks
         uses: actions/cache@v6

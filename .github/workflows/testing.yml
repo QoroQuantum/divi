@@ -103,6 +103,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           sync-args: --group testing --all-extras --no-extra ai
+          save-cache: "false"
 
       - name: Run tutorial scripts
         shell: bash
