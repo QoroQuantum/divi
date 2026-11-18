@@ -21,7 +21,20 @@ from ._config import (  # noqa: E402
     StateAveragedOrbitalUpdate,
     VQEPreparation,
 )
-from ._sqd import SQDConfig  # noqa: E402
+from ._preparation import (  # noqa: E402
+    LUCJInteraction,
+    LUCJPreparation,
+    prepare_lucj,
+)
+from ._sqd import (  # noqa: E402
+    SQDConfig,
+    SQDResult,
+    SQDSolver,
+    SQDState,
+    compute_spatial_rdm1,
+    filter_symmetry,
+    probs_to_sqd_bitstrings,
+)
 from ._state import (  # noqa: E402
     ElectronicState,
     FragmentSpec,
@@ -45,12 +58,21 @@ __all__ = [
     "LASSQDState",
     "LBFGSOrbitalUpdate",
     "LinearMethodPreparation",
+    "LUCJInteraction",
+    "LUCJPreparation",
     "OrbitalUpdate",
     "Preparation",
     "SecondOrderOrbitalUpdate",
     "SQDConfig",
+    "SQDResult",
+    "SQDSolver",
+    "SQDState",
     "StateAveragedOrbitalUpdate",
     "StateTransition",
     "StateWavefunction",
     "VQEPreparation",
+    "compute_spatial_rdm1",
+    "filter_symmetry",
+    "prepare_lucj",
+    "probs_to_sqd_bitstrings",
 ]

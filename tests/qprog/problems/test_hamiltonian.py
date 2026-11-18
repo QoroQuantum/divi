@@ -242,3 +242,154 @@ def test_from_molecule_rejects_an_open_shell_pennylane_molecule(qp, pennylane_h2
 def test_from_molecule_rejects_other_inputs():
     with pytest.raises(TypeError, match="PennyLane Molecule or PySCF"):
         MolecularProblem.from_molecule(object())
+
+
+def _water_mean_field(spin=0):
+    """Water's RHF (singlet) or ROHF (higher spin) mean field in STO-3G."""
+    gto = pytest.importorskip("pyscf.gto")
+    scf = pytest.importorskip("pyscf.scf")
+    molecule = gto.M(
+        atom="O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692",
+        basis="sto-3g",
+        spin=spin,
+        verbose=0,
+    )
+    return (scf.ROHF if spin else scf.RHF)(molecule).run(verbose=0)
+
+
+@pytest.fixture(scope="module")
+def water_active_space():
+    """Water's (4e,4o) CASCI active space."""
+    return MolecularProblem.from_casci(_water_mean_field(), 4, 4)
+
+
+def _fci_energy(problem):
+    fci = pytest.importorskip("pyscf.fci")
+    energy, _ = fci.direct_spin1.kernel(
+        problem.one_body,
+        problem.two_body,
+        problem.n_orbitals,
+        (problem.n_alpha, problem.n_beta),
+    )
+    return energy + problem.constant
+
+
+@pytest.mark.parametrize(
+    "spin, counts", [(0, (2, 2)), (2, (3, 1))], ids=["singlet", "triplet"]
+)
+def test_from_casci_gives_the_pyscf_casci_energy(spin, counts):
+    """A total electron count is split by the mean field's spin."""
+    mcscf = pytest.importorskip("pyscf.mcscf")
+    mean_field = _water_mean_field(spin)
+
+    problem = MolecularProblem.from_casci(mean_field, 4, 4)
+
+    assert (problem.n_orbitals, problem.n_alpha, problem.n_beta) == (4, *counts)
+    assert _fci_energy(problem) == pytest.approx(
+        mcscf.CASCI(mean_field, 4, 4).kernel()[0], abs=1e-9
+    )
+
+
+def _with_electrons(problem, n_alpha, n_beta, **kwargs):
+    return MolecularProblem(
+        problem.one_body,
+        problem.two_body,
+        n_alpha=n_alpha,
+        n_beta=n_beta,
+        constant=problem.constant,
+        **kwargs,
+    )
+
+
+def _assert_fcidump_round_trip(problem, path):
+    problem.to_fcidump(path)
+    loaded = MolecularProblem.from_fcidump(path)
+
+    assert (loaded.n_alpha, loaded.n_beta) == (problem.n_alpha, problem.n_beta)
+    assert loaded.constant == pytest.approx(problem.constant, abs=1e-12)
+    np.testing.assert_allclose(loaded.one_body, problem.one_body, atol=1e-12)
+    np.testing.assert_allclose(loaded.two_body, problem.two_body, atol=1e-12)
+
+
+@pytest.mark.parametrize("n_alpha, n_beta", [(2, 2), (3, 1)])
+def test_fcidump_round_trip_keeps_the_problem(
+    water_active_space, n_alpha, n_beta, tmp_path
+):
+    _assert_fcidump_round_trip(
+        _with_electrons(water_active_space, n_alpha, n_beta),
+        tmp_path / "water.fcidump",
+    )
+
+
+def test_fcidump_writes_the_integrals_of_a_molecule_built_problem(pyscf_h2, tmp_path):
+    pytest.importorskip("pyscf.tools.fcidump")
+
+    _assert_fcidump_round_trip(
+        MolecularProblem.from_molecule(pyscf_h2), tmp_path / "h2.fcidump"
+    )
+
+
+@pytest.mark.parametrize(
+    "header, match",
+    [
+        ("NORB=1,NELEC=1,", "has no MS2"),
+        ("NORB=1,NELEC=2,MS2=1,", "parities disagree"),
+    ],
+    ids=["no-ms2", "wrong-parity"],
+)
+def test_fcidump_refuses_an_unknown_spin(header, match, tmp_path):
+    pytest.importorskip("pyscf.tools.fcidump")
+    path = tmp_path / "spin.fcidump"
+    path.write_text(
+        f" &FCI {header}\n &END\n 0.5 1 1 1 1\n -0.25 1 1 0 0\n 0.1 0 0 0 0\n"
+    )
+
+    with pytest.raises(ValueError, match=match):
+        MolecularProblem.from_fcidump(path)
+
+
+@pytest.mark.parametrize(
+    "counts, kwargs, match",
+    [
+        ((1, 1), {"one_body_beta": np.eye(2)}, "alpha and beta channels differ"),
+        ((0, 1), {}, "MS2 must be non-negative"),
+    ],
+    ids=["spin-dependent", "beta-majority"],
+)
+def test_fcidump_refuses_what_it_cannot_write(counts, kwargs, match, tmp_path):
+    pytest.importorskip("pyscf.tools.fcidump")
+    one_body, two_body = _two_orbital_integrals()
+    n_alpha, n_beta = counts
+    problem = MolecularProblem(
+        one_body, two_body, n_alpha=n_alpha, n_beta=n_beta, **kwargs
+    )
+    path = tmp_path / "refused.fcidump"
+
+    with pytest.raises(ValueError, match=match):
+        problem.to_fcidump(path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("n_alpha, n_beta", [(2, 2), (3, 1)])
+def test_orbital_rotation_keeps_the_energy_and_rotates_both_spin_channels(
+    water_active_space, n_alpha, n_beta
+):
+    orbitals, _ = np.linalg.qr(np.random.default_rng(1).normal(size=(4, 4)))
+    problem = _with_electrons(water_active_space, n_alpha, n_beta)
+    shift = np.diag([0.1, -0.2, 0.0, 0.3])
+    spin_dependent = _with_electrons(
+        problem, n_alpha, n_beta, one_body_beta=problem.one_body + shift
+    )
+
+    rotated = spin_dependent.rotate_orbitals(orbitals)
+
+    assert _fci_energy(problem.rotate_orbitals(orbitals)) == pytest.approx(
+        _fci_energy(problem), abs=1e-10
+    )
+    assert (rotated.n_alpha, rotated.n_beta) == (n_alpha, n_beta)
+    assert rotated.constant == problem.constant
+    np.testing.assert_allclose(
+        rotated.one_body_beta - rotated.one_body,
+        orbitals.T @ shift @ orbitals,
+        atol=1e-12,
+    )

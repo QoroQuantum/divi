@@ -5,14 +5,17 @@
 """Hamiltonian problems: qubit Hamiltonians and molecular integrals."""
 
 from functools import cached_property
+from pathlib import Path
 from typing import Self
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
+from divi._optional import import_optional
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.hamiltonians._molecular import (
     MoleculeLike,
+    _PySCFMeanField,
     compute_molecule_integrals,
     is_pennylane_molecule,
     molecular_hamiltonian,
@@ -119,8 +122,9 @@ class MolecularProblem(HamiltonianProblem):
     partner), built on first access. For a PennyLane molecule, PennyLane's own
     Jordan-Wigner builder produces it, in the same qubit order.
 
-    Construct it from integrals directly, or from a molecule with
-    :meth:`from_molecule`. The electron counts may differ, as for a
+    Construct it from integrals directly, from a molecule with
+    :meth:`from_molecule`, from a PySCF mean field's active space with
+    :meth:`from_casci`, or from an FCIDUMP file with :meth:`from_fcidump`. The electron counts may differ, as for a
     spin-polarised fragment; :meth:`from_molecule` builds integrals for
     closed-shell molecules only, and keeps an open-shell PySCF molecule for
     :class:`~divi.qprog.ensembles.lassqd.LASSQD`.
@@ -208,6 +212,150 @@ class MolecularProblem(HamiltonianProblem):
         problem = cls.__new__(cls)
         problem._assign(None, n_alpha, n_beta, molecule=molecule)
         return problem
+
+    @classmethod
+    def from_casci(
+        cls,
+        mean_field: _PySCFMeanField,
+        n_orbitals: int,
+        n_electrons: int | tuple[int, int],
+    ) -> Self:
+        """Build the active space of a converged PySCF mean field.
+
+        The active space is PySCF's ``mcscf.CASCI`` one: the ``n_orbitals``
+        orbitals around the Fermi level, with the doubly occupied core folded
+        into :attr:`one_body` and :attr:`constant`. Requires the ``chem``
+        extra.
+
+        Args:
+            mean_field: A converged PySCF mean field.
+            n_orbitals: Active spatial orbitals.
+            n_electrons: Active electrons, as a total split by the mean
+                field's spin, or as ``(n_alpha, n_beta)``.
+        """
+        mcscf = import_optional(
+            "pyscf.mcscf", extra="chem", capability="MolecularProblem.from_casci"
+        )
+        ao2mo = import_optional(
+            "pyscf.ao2mo", extra="chem", capability="MolecularProblem.from_casci"
+        )
+        casci = mcscf.CASCI(mean_field, n_orbitals, n_electrons)
+        one_body, constant = casci.get_h1eff()
+        n_alpha, n_beta = casci.nelecas
+        return cls(
+            one_body,
+            ao2mo.restore(1, casci.get_h2eff(), n_orbitals),
+            n_alpha=int(n_alpha),
+            n_beta=int(n_beta),
+            constant=float(constant),
+        )
+
+    @classmethod
+    def from_fcidump(cls, path: str | Path) -> Self:
+        """Read a problem from an FCIDUMP file. Requires the ``chem`` extra.
+
+        ``MS2`` splits the electrons between the spins, and ``ECORE`` becomes
+        :attr:`constant` (0 when the file has no core-energy line).
+
+        Raises:
+            ValueError: If the header has no ``MS2``, or its parity disagrees
+                with ``NELEC``.
+        """
+        fcidump = import_optional(
+            "pyscf.tools.fcidump",
+            extra="chem",
+            capability="MolecularProblem.from_fcidump",
+        )
+        ao2mo = import_optional(
+            "pyscf.ao2mo", extra="chem", capability="MolecularProblem.from_fcidump"
+        )
+        data = fcidump.read(str(path), molpro_orbsym=False, verbose=False)
+        n_orbitals, n_electrons = data["NORB"], data["NELEC"]
+        if "MS2" not in data:
+            raise ValueError(
+                f"{path} has no MS2 in its header, so its spin is unknown."
+            )
+        spin = data["MS2"]
+        if (n_electrons - spin) % 2:
+            raise ValueError(
+                f"{path} has NELEC={n_electrons} and MS2={spin}, whose parities "
+                "disagree."
+            )
+        return cls(
+            data["H1"],
+            ao2mo.restore(1, data["H2"], n_orbitals),
+            n_alpha=(n_electrons + spin) // 2,
+            n_beta=(n_electrons - spin) // 2,
+            constant=float(data.get("ECORE", 0.0)),
+        )
+
+    def to_fcidump(self, path: str | Path) -> None:
+        """Write the problem as an FCIDUMP file. Requires the ``chem`` extra.
+
+        Raises:
+            ValueError: If the alpha and beta one-electron integrals differ,
+                which FCIDUMP cannot hold, or if beta electrons outnumber alpha
+                ones, which would write a negative ``MS2``.
+        """
+        fcidump = import_optional(
+            "pyscf.tools.fcidump",
+            extra="chem",
+            capability="MolecularProblem.to_fcidump",
+        )
+        ao2mo = import_optional(
+            "pyscf.ao2mo", extra="chem", capability="MolecularProblem.to_fcidump"
+        )
+        if not np.array_equal(self.one_body_beta, self.one_body):
+            raise ValueError(
+                "FCIDUMP holds one set of one-electron integrals, but this "
+                "problem's alpha and beta channels differ."
+            )
+        if self.n_beta > self.n_alpha:
+            raise ValueError(
+                f"FCIDUMP's MS2 must be non-negative, but this problem has "
+                f"n_alpha={self.n_alpha} < n_beta={self.n_beta}. Swap the counts; "
+                "with spin-independent integrals the energies are the same."
+            )
+        fcidump.from_integrals(
+            str(path),
+            self.one_body,
+            ao2mo.restore(8, self.two_body, self.n_orbitals),
+            self.n_orbitals,
+            self.n_electrons,
+            nuc=self.constant,
+            ms=self.n_alpha - self.n_beta,
+        )
+
+    def rotate_orbitals(self, orbitals: np.ndarray) -> Self:
+        """The same problem in another orbital basis.
+
+        Args:
+            orbitals: ``(n_orbitals, n_orbitals)`` matrix whose columns are the
+                new orbitals in the current basis.
+        """
+        one_body, two_body, constant, one_body_beta = self._loaded_integrals()
+
+        def rotate_one_body(matrix: np.ndarray) -> np.ndarray:
+            return orbitals.T @ matrix @ orbitals
+
+        return type(self)(
+            rotate_one_body(one_body),
+            np.einsum(
+                "pi,qj,pqrs,rk,sl->ijkl",
+                orbitals,
+                orbitals,
+                two_body,
+                orbitals,
+                orbitals,
+                optimize=True,
+            ),
+            n_alpha=self.n_alpha,
+            n_beta=self.n_beta,
+            constant=constant,
+            one_body_beta=(
+                None if one_body_beta is None else rotate_one_body(one_body_beta)
+            ),
+        )
 
     def _assign(
         self,

@@ -97,6 +97,7 @@ Derandomised
 derandomized
 diagnosable
 diagonalisation
+diagonalise
 diagonalised
 diagonalises
 diagonalising
@@ -199,6 +200,7 @@ lexicographically
 lifecycle
 lin
 linearisation
+lucj
 Lipschitz
 LLM
 Lookahead

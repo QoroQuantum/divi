@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Paper-faithful classical LUCJ preparation for LASSQD fragments."""
+"""Classical CCSD-seeded LUCJ preparation, for LASSQD fragments and single
+active spaces."""
 
 import hashlib
 import itertools
@@ -51,14 +52,38 @@ _FLAT_DIRECTION_TOL = 1e-9
 _SINGLE_THREADED_NUMERICS = SingleThreadedSection()
 
 
+#: Opposite-spin interactions of the LUCJ circuit: ``"heavy-hex"`` couples
+#: every fourth orbital, as on IBM's heavy-hex lattice; ``"all"`` couples every
+#: orbital.
+LUCJInteraction = Literal["heavy-hex", "all"]
+
+
 @dataclass(frozen=True)
 class LUCJPreparation:
-    """Optimised fragment circuit and its Hamiltonian in the sampled basis."""
+    """A CCSD-seeded LUCJ circuit and its Hamiltonian in the sampled basis.
+
+    Attributes:
+        circuit: Measured circuit on ``2 * n_orbitals`` interleaved qubits
+            (qubit ``2p`` alpha, ``2p + 1`` beta).
+        params: The circuit's ffsim LUCJ parameter vector.
+        problem: The input problem rotated into the mean-field orbitals the
+            circuit acts on; SQD must diagonalise this one.
+        orbital_rotation: Columns are those orbitals in the input basis.
+        mean_field_energy: Mean-field energy, :attr:`problem`'s constant
+            included. With spin-dependent one-electron integrals, the energy
+            of the alpha-channel Hamiltonian.
+        ccsd_energy: CCSD energy, constant included, of the same Hamiltonian.
+        ccsd_converged: Whether CCSD converged. If not, a warning was issued
+            and the circuit is seeded from the last amplitudes.
+    """
 
     circuit: QuantumCircuit
     params: np.ndarray
     problem: MolecularProblem
     orbital_rotation: np.ndarray
+    mean_field_energy: float
+    ccsd_energy: float
+    ccsd_converged: bool
 
 
 @dataclass(frozen=True)
@@ -274,16 +299,28 @@ class LUCJFragmentProgram(QuantumProgram):
         return self._terminal_result
 
 
-def build_paper_lucj_interaction_pairs(
-    n_orbitals: int,
+def build_lucj_interaction_pairs(
+    n_orbitals: int, interaction: LUCJInteraction = "heavy-hex"
 ) -> tuple[
     list[tuple[int, int]],
     list[tuple[int, int]],
     list[tuple[int, int]],
 ]:
-    """Return the spin-unbalanced local interaction graph used in the paper."""
+    """Alpha-alpha, alpha-beta and beta-beta pairs of the local LUCJ graph.
+
+    Same-spin pairs join neighbouring orbitals; ``interaction`` picks the
+    opposite-spin ones.
+
+    Raises:
+        ValueError: If ``interaction`` is neither ``"heavy-hex"`` nor ``"all"``.
+    """
+    if interaction not in ("heavy-hex", "all"):
+        raise ValueError(
+            f"interaction must be 'heavy-hex' or 'all'; got {interaction!r}."
+        )
     same_spin = list(itertools.pairwise(range(n_orbitals)))
-    opposite_spin = [(p, p) for p in range(0, n_orbitals, 4)]
+    stride = 4 if interaction == "heavy-hex" else 1
+    opposite_spin = [(p, p) for p in range(0, n_orbitals, stride)]
     return same_spin, opposite_spin, same_spin.copy()
 
 
@@ -292,7 +329,7 @@ def build_lucj_circuit(
     n_orbitals: int,
     n_electrons: tuple[int, int],
 ) -> QuantumCircuit:
-    """Build the optimised ffsim circuit on Divi's interleaved spin wires."""
+    """Build an ffsim LUCJ operator's circuit on Divi's interleaved spin wires."""
 
     circuit = QuantumCircuit(2 * n_orbitals)
     grouped_spin_wires = [
@@ -303,10 +340,12 @@ def build_lucj_circuit(
         ffsim.qiskit.PrepareHartreeFockJW(n_orbitals, n_electrons),
         grouped_spin_wires,
     )
-    circuit.append(
-        ffsim.qiskit.UCJOpSpinUnbalancedJW(operator),
-        grouped_spin_wires,
+    gate = (
+        ffsim.qiskit.UCJOpSpinBalancedJW
+        if isinstance(operator, ffsim.UCJOpSpinBalanced)
+        else ffsim.qiskit.UCJOpSpinUnbalancedJW
     )
+    circuit.append(gate(operator), grouped_spin_wires)
     classical_bits = ClassicalRegister(2 * n_orbitals)
     circuit.add_register(classical_bits)
     for index, qubit in enumerate(circuit.qubits):
@@ -317,38 +356,6 @@ def build_lucj_circuit(
         basis_gates=["x", "u", "cx"],
         optimization_level=1,
     )
-
-
-def _rotate_one_body(
-    one_body: np.ndarray,
-    orbital_rotation: np.ndarray,
-) -> np.ndarray:
-    """Rotate a spatial one-electron tensor into an MO basis."""
-    return np.einsum(
-        "pi,pq,qj->ij",
-        orbital_rotation,
-        one_body,
-        orbital_rotation,
-        optimize=True,
-    )
-
-
-def _rotate_integrals(
-    one_body: np.ndarray,
-    two_body: np.ndarray,
-    orbital_rotation: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Rotate spatial one- and two-electron integrals into an MO basis."""
-    rotated_two_body = np.einsum(
-        "pi,qj,pqrs,rk,sl->ijkl",
-        orbital_rotation,
-        orbital_rotation,
-        two_body,
-        orbital_rotation,
-        orbital_rotation,
-        optimize=True,
-    )
-    return _rotate_one_body(one_body, orbital_rotation), rotated_two_body
 
 
 def _physical_spin_amplitudes(
@@ -391,7 +398,7 @@ def _require_finite_fragment_values(
     """Reject invalid numerical preparation output with fragment context."""
     if not all(np.isfinite(value).all() for value in values):
         raise RuntimeError(
-            f"LASSQD fragment {spec.orbitals} produced non-finite {label}."
+            f"LUCJ preparation of fragment {spec.orbitals} produced non-finite {label}."
         )
 
 
@@ -579,7 +586,6 @@ def run_fragment_coupled_cluster(
     return coupled_cluster
 
 
-@_SINGLE_THREADED_NUMERICS.hold()
 def prepare_lucj_fragment(
     problem: MolecularProblem,
     spec: FragmentSpec,
@@ -587,46 +593,193 @@ def prepare_lucj_fragment(
     on_iteration: Callable[[float], None] | None = None,
     run_linear_method: bool = True,
 ) -> LUCJPreparation:
-    """Build the paper's one-repetition fragment LUCJ circuit from CCSD.
+    """Build the paper's one-repetition, spin-unbalanced fragment LUCJ circuit.
 
-    The sampled state uses the paper's alpha-channel preparation Hamiltonian.
-    ``problem`` is returned rotated into that sampled orbital basis, both spin
-    channels included, for the subsequent SQD diagonalisation.
-
-    With ``run_linear_method``, ffsim's linear method optimises the CCSD seed
-    on the exact fragment statevector; without it, the seed is the circuit.
-
+    :func:`prepare_lucj` with heavy-hex pairs and the refit factorisation.
     ``report`` receives each stage's name as it starts, and ``on_iteration``
     the energy after every linear-method iteration.
     """
+    return _prepare_lucj(
+        problem,
+        spec,
+        interaction="heavy-hex",
+        n_reps=1,
+        spin_balanced=False,
+        refit=True,
+        run_linear_method=run_linear_method,
+        report=report,
+        on_iteration=on_iteration,
+    )
+
+
+def prepare_lucj(
+    problem: MolecularProblem,
+    *,
+    interaction: LUCJInteraction = "heavy-hex",
+    n_reps: int = 1,
+    spin_balanced: bool | None = None,
+    refit: bool = True,
+    run_linear_method: bool = False,
+) -> LUCJPreparation:
+    """Build a CCSD-seeded LUCJ circuit for SQD sampling (arXiv:2405.05068).
+
+    The circuit acts on mean-field orbitals: ROHF, solved from several
+    starting occupations and checked for stability, then RHF from its density
+    for a spin-balanced circuit. Its parameters come from the CCSD amplitudes
+    (restricted when spin-balanced, unrestricted otherwise), and from ffsim's
+    linear method on the exact statevector with ``run_linear_method``. With
+    spin-dependent one-electron integrals, the mean field and linear method
+    use the alpha channel; the returned problem keeps both. Requires the
+    ``chem`` extra.
+
+    Args:
+        problem: The active-space Hamiltonian.
+        interaction: Opposite-spin pairs; same-spin pairs join neighbouring
+            orbitals.
+        n_reps: LUCJ layers. A spin-unbalanced operator fills them with
+            alpha-beta or same-spin terms, whichever are larger; a balanced
+            layer holds both.
+        spin_balanced: One set of parameters for both spins. ``None`` chooses
+            it when the spin counts and the alpha and beta one-electron
+            integrals are equal.
+        refit: Re-optimise the truncated, masked CCSD factorisation to match
+            the amplitudes (ffsim's ``optimize``), rather than truncate the
+            exact factorisation.
+        run_linear_method: Optimise the seeded parameters with ffsim's linear
+            method.
+
+    Raises:
+        ValueError: If ``spin_balanced`` is ``True`` for unequal spin counts or
+            spin-dependent one-electron integrals.
+        RuntimeError: If no mean field converges, or a stage produces
+            non-finite values.
+    """
+    return _prepare_lucj(
+        problem,
+        FragmentSpec(
+            orbitals=tuple(range(problem.n_orbitals)),
+            n_alpha=problem.n_alpha,
+            n_beta=problem.n_beta,
+        ),
+        interaction=interaction,
+        n_reps=n_reps,
+        spin_balanced=spin_balanced,
+        refit=refit,
+        run_linear_method=run_linear_method,
+    )
+
+
+def _is_spin_symmetric(problem: MolecularProblem) -> bool:
+    return problem.n_alpha == problem.n_beta and np.array_equal(
+        problem.one_body, problem.one_body_beta
+    )
+
+
+def _solve_restricted_mean_field(
+    rohf: Any, problem: MolecularProblem, spec: FragmentSpec
+):
+    """RHF converged from a closed-shell ROHF solution's density.
+
+    Raises:
+        RuntimeError: If RHF does not converge, even by Newton iterations.
+    """
+    mean_field = run_fragment_mean_field(
+        scf.RHF, problem.one_body, problem.two_body, spec
+    )
+    mean_field.kernel(dm0=np.sum(rohf.make_rdm1(), axis=0))
+    if not mean_field.converged:
+        mean_field = mean_field.newton()
+        mean_field.kernel()
+    if not mean_field.converged:
+        raise RuntimeError(f"RHF did not converge for fragment {spec.orbitals}.")
+    return mean_field
+
+
+@_SINGLE_THREADED_NUMERICS.hold()
+def _prepare_lucj(
+    problem: MolecularProblem,
+    spec: FragmentSpec,
+    *,
+    interaction: LUCJInteraction,
+    n_reps: int,
+    spin_balanced: bool | None,
+    refit: bool,
+    run_linear_method: bool,
+    report: Callable[[str], None] | None = None,
+    on_iteration: Callable[[float], None] | None = None,
+) -> LUCJPreparation:
     announce = report if report is not None else (lambda message: None)
     report_iteration = on_iteration if on_iteration is not None else (lambda _: None)
+    if spin_balanced is None:
+        spin_balanced = _is_spin_symmetric(problem)
+    elif spin_balanced and not _is_spin_symmetric(problem):
+        raise ValueError(
+            "spin_balanced=True needs equal alpha and beta electron counts and "
+            "one-electron integrals."
+        )
 
     announce("Fragment ROHF")
     mean_field = _solve_fragment_rohf(problem.one_body, problem.two_body, spec)
+    if spin_balanced:
+        mean_field = _solve_restricted_mean_field(mean_field, problem, spec)
     orbital_rotation = np.asarray(mean_field.mo_coeff)
-    h_alpha_mo, two_body_mo = _rotate_integrals(
-        problem.one_body, problem.two_body, orbital_rotation
-    )
-    h_beta_mo = _rotate_one_body(problem.one_body_beta, orbital_rotation)
+    sampled_problem = problem.rotate_orbitals(orbital_rotation)
 
     announce("CCSD seed")
-    coupled_cluster = run_fragment_coupled_cluster(cc.UCCSD, "UCCSD", mean_field, spec)
-    t1, t2 = _physical_spin_amplitudes(coupled_cluster, spec)
-    _require_finite_fragment_values((*t1, *t2), label="CCSD amplitudes", spec=spec)
-
     n_orbitals = spec.n_orbitals
     n_electrons = (spec.n_alpha, spec.n_beta)
-    n_repetitions = 1
-    interaction_pairs = build_paper_lucj_interaction_pairs(n_orbitals)
-    seed_operator = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
-        t2,
-        t1=t1,
-        n_reps=n_repetitions,
-        interaction_pairs=interaction_pairs,
-        optimize=True,
-    )
-    initial_params = seed_operator.to_parameters(interaction_pairs=interaction_pairs)
+    pairs_aa, pairs_ab, pairs_bb = build_lucj_interaction_pairs(n_orbitals, interaction)
+    build_operator: Callable[[np.ndarray], Any]
+    if spin_balanced:
+        coupled_cluster = run_fragment_coupled_cluster(
+            cc.CCSD, "CCSD", mean_field, spec
+        )
+        t1, t2 = np.asarray(coupled_cluster.t1), np.asarray(coupled_cluster.t2)
+        _require_finite_fragment_values((t1, t2), label="CCSD amplitudes", spec=spec)
+        balanced_pairs = (pairs_aa, pairs_ab)
+        initial_params = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
+            t2,
+            t1=t1,
+            n_reps=n_reps,
+            interaction_pairs=balanced_pairs,
+            optimize=refit,
+        ).to_parameters(interaction_pairs=balanced_pairs)
+
+        def build_operator(params: np.ndarray) -> Any:
+            return ffsim.UCJOpSpinBalanced.from_parameters(
+                params,
+                norb=n_orbitals,
+                n_reps=n_reps,
+                interaction_pairs=balanced_pairs,
+                with_final_orbital_rotation=True,
+            )
+
+    else:
+        coupled_cluster = run_fragment_coupled_cluster(
+            cc.UCCSD, "UCCSD", mean_field, spec
+        )
+        t1_spins, t2_spins = _physical_spin_amplitudes(coupled_cluster, spec)
+        _require_finite_fragment_values(
+            (*t1_spins, *t2_spins), label="CCSD amplitudes", spec=spec
+        )
+        unbalanced_pairs = (pairs_aa, pairs_ab, pairs_bb)
+        initial_params = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
+            t2_spins,
+            t1=t1_spins,
+            n_reps=n_reps,
+            interaction_pairs=unbalanced_pairs,
+            optimize=refit,
+        ).to_parameters(interaction_pairs=unbalanced_pairs)
+
+        def build_operator(params: np.ndarray) -> Any:
+            return ffsim.UCJOpSpinUnbalanced.from_parameters(
+                params,
+                norb=n_orbitals,
+                n_reps=n_reps,
+                interaction_pairs=unbalanced_pairs,
+                with_final_orbital_rotation=True,
+            )
+
     _require_finite_fragment_values(
         (initial_params,), label="CCSD seed parameters", spec=spec
     )
@@ -634,22 +787,17 @@ def prepare_lucj_fragment(
     if run_linear_method:
         reference_state = ffsim.hartree_fock_state(n_orbitals, n_electrons)
         hamiltonian = ffsim.linear_operator(
-            ffsim.MolecularHamiltonian(h_alpha_mo, two_body_mo, 0.0),
+            ffsim.MolecularHamiltonian(
+                sampled_problem.one_body, sampled_problem.two_body, 0.0
+            ),
             norb=n_orbitals,
             nelec=n_electrons,
         )
 
         def params_to_vec(params: np.ndarray) -> np.ndarray:
-            operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
-                params,
-                norb=n_orbitals,
-                n_reps=n_repetitions,
-                interaction_pairs=interaction_pairs,
-                with_final_orbital_rotation=True,
-            )
             return ffsim.apply_unitary(
                 reference_state,
-                operator,
+                build_operator(params),
                 norb=n_orbitals,
                 nelec=n_electrons,
             )
@@ -669,24 +817,12 @@ def prepare_lucj_fragment(
         _require_finite_fragment_values(
             (params,), label="linear-method parameters", spec=spec
         )
-    operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
-        params,
-        norb=n_orbitals,
-        n_reps=n_repetitions,
-        interaction_pairs=interaction_pairs,
-        with_final_orbital_rotation=True,
-    )
-    circuit = build_lucj_circuit(operator, n_orbitals, n_electrons)
     return LUCJPreparation(
-        circuit=circuit,
+        circuit=build_lucj_circuit(build_operator(params), n_orbitals, n_electrons),
         params=params,
-        problem=MolecularProblem(
-            h_alpha_mo,
-            two_body_mo,
-            n_alpha=problem.n_alpha,
-            n_beta=problem.n_beta,
-            constant=problem.constant,
-            one_body_beta=h_beta_mo,
-        ),
+        problem=sampled_problem,
         orbital_rotation=orbital_rotation,
+        mean_field_energy=float(mean_field.e_tot) + problem.constant,
+        ccsd_energy=float(coupled_cluster.e_tot) + problem.constant,
+        ccsd_converged=bool(coupled_cluster.converged),
     )

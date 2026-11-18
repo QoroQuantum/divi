@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for paper-faithful LASSQD fragment-circuit preparation."""
+"""Tests for CCSD-seeded LUCJ circuit preparation."""
 
 import hashlib
 import itertools
@@ -14,6 +14,8 @@ from qiskit import ClassicalRegister, QuantumCircuit
 
 ffsim = pytest.importorskip("ffsim")
 
+from pyscf import cc, gto, scf
+
 from divi.circuits._conversions import lower_to_basis_gates
 from divi.qprog.ensembles.lassqd import _preparation as preparation
 from divi.qprog.ensembles.lassqd._preparation import (
@@ -21,7 +23,8 @@ from divi.qprog.ensembles.lassqd._preparation import (
     LUCJPreparation,
     _solve_fragment_rohf,
     build_lucj_circuit,
-    build_paper_lucj_interaction_pairs,
+    build_lucj_interaction_pairs,
+    prepare_lucj,
     prepare_lucj_fragment,
     rotate_rdms_to_fragment_basis,
     run_fragment_coupled_cluster,
@@ -29,7 +32,11 @@ from divi.qprog.ensembles.lassqd._preparation import (
 from divi.qprog.ensembles.lassqd._state import FragmentSpec
 from divi.qprog.problems import MolecularProblem
 from tests._helpers import exact_match
-from tests.qprog.ensembles.lassqd._helpers import fragment_problem
+from tests.qprog.ensembles.lassqd._helpers import (
+    dense_fci_energy,
+    fragment_problem,
+    h2o_molecule,
+)
 
 _PREPARATION = "divi.qprog.ensembles.lassqd._preparation"
 
@@ -48,11 +55,11 @@ def _patch_mean_field_and_ccsd(mocker, mo_coeff, t1, t2):
     """Stub the fragment ROHF and CCSD solves with fixed results."""
     mocker.patch(
         f"{_PREPARATION}._solve_fragment_rohf",
-        return_value=mocker.Mock(mo_coeff=mo_coeff),
+        return_value=mocker.Mock(mo_coeff=mo_coeff, e_tot=0.0),
     )
     mocker.patch(
         f"{_PREPARATION}.run_fragment_coupled_cluster",
-        return_value=mocker.Mock(t1=t1, t2=t2),
+        return_value=mocker.Mock(t1=t1, t2=t2, e_tot=0.0),
     )
 
 
@@ -74,17 +81,37 @@ def _two_orbital_problem(spec):
     )
 
 
-def test_paper_lucj_interaction_pairs_match_the_reference_topology():
-    assert build_paper_lucj_interaction_pairs(6) == (
-        [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
-        [(0, 0), (4, 4)],
-        [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+@pytest.mark.parametrize(
+    "interaction, opposite_spin",
+    [
+        ("heavy-hex", [(0, 0), (4, 4)]),
+        ("all", [(p, p) for p in range(6)]),
+    ],
+    ids=["heavy-hex", "all"],
+)
+def test_lucj_interaction_pairs_match_the_reference_topology(
+    interaction, opposite_spin
+):
+    neighbours = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)]
+
+    assert build_lucj_interaction_pairs(6, interaction) == (
+        neighbours,
+        opposite_spin,
+        neighbours,
     )
 
 
+def test_lucj_interaction_pairs_reject_an_unknown_topology():
+    with pytest.raises(
+        ValueError,
+        match=exact_match("interaction must be 'heavy-hex' or 'all'; got 'heavyhex'."),
+    ):
+        build_lucj_interaction_pairs(6, "heavyhex")
+
+
 def _identity_lucj_operator(norb):
-    """The paper-topology LUCJ operator at zero parameters, i.e. the identity."""
-    pairs = build_paper_lucj_interaction_pairs(norb)
+    """The heavy-hex LUCJ operator at zero parameters, i.e. the identity."""
+    pairs = build_lucj_interaction_pairs(norb)
     n_params = ffsim.UCJOpSpinUnbalanced.n_params(
         norb,
         1,
@@ -134,7 +161,7 @@ def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires(
     }
 
 
-def _unmerged_lucj_circuit(operator, norb, nelec):
+def _unmerged_lucj_circuit(gate, norb, nelec):
     """The LUCJ circuit lowered gate by gate, without merging its rotations."""
     circuit = QuantumCircuit(2 * norb)
     wires = [
@@ -142,26 +169,34 @@ def _unmerged_lucj_circuit(operator, norb, nelec):
         *(circuit.qubits[2 * p + 1] for p in range(norb)),
     ]
     circuit.append(ffsim.qiskit.PrepareHartreeFockJW(norb, nelec), wires)
-    circuit.append(ffsim.qiskit.UCJOpSpinUnbalancedJW(operator), wires)
+    circuit.append(gate, wires)
     return lower_to_basis_gates(circuit, ("x", "u", "cx"))
 
 
+@pytest.mark.parametrize(
+    "operator_type, gate_type, n_pair_lists, nelec",
+    [
+        (ffsim.UCJOpSpinUnbalanced, ffsim.qiskit.UCJOpSpinUnbalancedJW, 3, (3, 1)),
+        (ffsim.UCJOpSpinBalanced, ffsim.qiskit.UCJOpSpinBalancedJW, 2, (2, 2)),
+    ],
+    ids=["spin-unbalanced", "spin-balanced"],
+)
 def test_lucj_circuit_merges_orbital_rotations_without_changing_the_state(
-    default_test_simulator,
+    default_test_simulator, operator_type, gate_type, n_pair_lists, nelec
 ):
-    norb, nelec = 4, (3, 1)
-    pairs = build_paper_lucj_interaction_pairs(norb)
-    n_params = ffsim.UCJOpSpinUnbalanced.n_params(
+    norb = 4
+    pairs = build_lucj_interaction_pairs(norb)[:n_pair_lists]
+    n_params = operator_type.n_params(
         norb, 1, interaction_pairs=pairs, with_final_orbital_rotation=True
     )
-    operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
+    operator = operator_type.from_parameters(
         np.random.default_rng(0).normal(scale=0.3, size=n_params),
         norb=norb,
         n_reps=1,
         interaction_pairs=pairs,
         with_final_orbital_rotation=True,
     )
-    unmerged = _unmerged_lucj_circuit(operator, norb, nelec)
+    unmerged = _unmerged_lucj_circuit(gate_type(operator), norb, nelec)
 
     circuit = build_lucj_circuit(operator, norb, nelec)
 
@@ -191,7 +226,7 @@ def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
     assert isinstance(call.args[0], tuple)
     assert isinstance(call.kwargs["t1"], tuple)
     assert call.kwargs["n_reps"] == 1
-    assert call.kwargs["interaction_pairs"] == build_paper_lucj_interaction_pairs(2)
+    assert call.kwargs["interaction_pairs"] == build_lucj_interaction_pairs(2)
     assert call.kwargs["optimize"] is True
     assert minimize.call_count == 1
     np.testing.assert_allclose(result.params, minimize.call_args.kwargs["x0"])
@@ -240,7 +275,7 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
         _antisymmetric_t2(rng),
     )
     spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
-    pairs = build_paper_lucj_interaction_pairs(4)
+    pairs = build_lucj_interaction_pairs(4)
     dense_masked = ffsim.UCJOpSpinUnbalanced.from_t_amplitudes(
         t2,
         t1=t1,
@@ -266,6 +301,201 @@ def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     result = prepare_lucj_fragment(_two_orbital_problem(spec), spec)
 
     np.testing.assert_allclose(result.problem.one_body_beta, np.diag([0.7, -0.8]))
+
+
+@pytest.fixture(scope="module")
+def water_active_space():
+    """Water's (4e,4o) CASCI active space."""
+    mean_field = scf.RHF(h2o_molecule(basis="sto-3g")).run(verbose=0)
+    return MolecularProblem.from_casci(mean_field, 4, 4)
+
+
+def _with_electrons(problem, n_alpha, n_beta, **kwargs):
+    return MolecularProblem(
+        problem.one_body,
+        problem.two_body,
+        n_alpha=n_alpha,
+        n_beta=n_beta,
+        constant=problem.constant,
+        **kwargs,
+    )
+
+
+def _state_energy(problem, operator=None):
+    """Energy on ``problem`` of its reference determinant, after ``operator``."""
+    norb, nelec = problem.n_orbitals, (problem.n_alpha, problem.n_beta)
+    state = ffsim.hartree_fock_state(norb, nelec)
+    if operator is not None:
+        state = ffsim.apply_unitary(state, operator, norb=norb, nelec=nelec)
+    hamiltonian = ffsim.linear_operator(
+        ffsim.MolecularHamiltonian(
+            problem.one_body, problem.two_body, problem.constant
+        ),
+        norb=norb,
+        nelec=nelec,
+    )
+    return np.vdot(state, hamiltonian @ state).real
+
+
+@pytest.mark.parametrize(
+    "molecule, mean_field_type, coupled_cluster",
+    [
+        (h2o_molecule(basis="sto-3g"), scf.RHF, cc.CCSD),
+        (
+            gto.M(atom="N 0 0 0; H 0 0 1.036", basis="sto-3g", spin=2, verbose=0),
+            scf.ROHF,
+            lambda rohf: cc.UCCSD(rohf.to_uhf()),
+        ),
+    ],
+    ids=["closed-shell", "triplet"],
+)
+def test_prepare_lucj_matches_the_molecular_mean_field_and_ccsd_with_every_orbital_active(
+    molecule, mean_field_type, coupled_cluster
+):
+    """With every orbital active, the active-space mean field and CCSD are the
+    molecule's own."""
+    mean_field = mean_field_type(molecule).run(verbose=0)
+    ccsd = coupled_cluster(mean_field).run(verbose=0)
+
+    result = prepare_lucj(
+        MolecularProblem.from_casci(mean_field, molecule.nao, molecule.nelec)
+    )
+
+    assert result.mean_field_energy == pytest.approx(mean_field.e_tot, abs=1e-8)
+    assert result.ccsd_energy == pytest.approx(ccsd.e_tot, abs=1e-6)
+    assert result.ccsd_converged
+
+
+def test_prepare_lucj_reports_an_unconverged_ccsd(water_active_space, mocker):
+    mocker.patch(f"{_PREPARATION}._CC_MAX_CYCLE", 1)
+
+    with pytest.warns(UserWarning, match="CCSD did not converge"):
+        result = prepare_lucj(water_active_space)
+
+    assert not result.ccsd_converged
+
+
+@pytest.mark.parametrize("n_alpha, n_beta", [(2, 2), (3, 1)])
+def test_the_lucj_reference_is_the_mean_field_determinant(
+    water_active_space, n_alpha, n_beta
+):
+    """The circuit starts from the first ``n_alpha`` / ``n_beta`` orbitals of
+    ``result.problem``, so that determinant must carry the mean-field energy."""
+    result = prepare_lucj(_with_electrons(water_active_space, n_alpha, n_beta))
+
+    assert _state_energy(result.problem) == pytest.approx(
+        result.mean_field_energy, abs=1e-9
+    )
+
+
+def test_the_linear_method_lowers_the_spin_balanced_seed_energy(water_active_space):
+    pairs = build_lucj_interaction_pairs(4)[:2]
+
+    def prepared_energy(result):
+        operator = ffsim.UCJOpSpinBalanced.from_parameters(
+            result.params,
+            norb=4,
+            n_reps=1,
+            interaction_pairs=pairs,
+            with_final_orbital_rotation=True,
+        )
+        return _state_energy(result.problem, operator)
+
+    seed = prepare_lucj(water_active_space)
+    optimised = prepare_lucj(water_active_space, run_linear_method=True)
+
+    exact = dense_fci_energy(
+        water_active_space.one_body,
+        water_active_space.two_body,
+        2,
+        2,
+        water_active_space.constant,
+    )
+    assert exact - 1e-9 <= prepared_energy(optimised)
+    assert prepared_energy(optimised) < prepared_energy(seed) - 1e-4
+
+
+def test_spin_balanced_preparation_reports_an_unconverged_rhf(
+    water_active_space, mocker
+):
+    rohf = mocker.Mock(make_rdm1=mocker.Mock(return_value=np.zeros((2, 4, 4))))
+    mocker.patch(f"{_PREPARATION}._solve_fragment_rohf", return_value=rohf)
+    unconverged = mocker.Mock(converged=False)
+    unconverged.newton.return_value = mocker.Mock(converged=False)
+    mocker.patch(f"{_PREPARATION}.run_fragment_mean_field", return_value=unconverged)
+
+    with pytest.raises(
+        RuntimeError,
+        match=exact_match("RHF did not converge for fragment (0, 1, 2, 3)."),
+    ):
+        prepare_lucj(water_active_space)
+
+    unconverged.newton.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta, beta_shift, options, operator_type",
+    [
+        (2, 2, 0.0, {}, ffsim.UCJOpSpinBalanced),
+        (2, 2, 0.1, {}, ffsim.UCJOpSpinUnbalanced),
+        (2, 2, 0.0, {"spin_balanced": False}, ffsim.UCJOpSpinUnbalanced),
+        (3, 1, 0.0, {}, ffsim.UCJOpSpinUnbalanced),
+        (2, 2, 0.0, {"interaction": "all"}, ffsim.UCJOpSpinBalanced),
+        (2, 2, 0.0, {"n_reps": 2}, ffsim.UCJOpSpinBalanced),
+    ],
+    ids=[
+        "closed-shell",
+        "spin-dependent",
+        "forced-unbalanced",
+        "triplet",
+        "all-pairs",
+        "two-layers",
+    ],
+)
+def test_prepare_lucj_builds_the_requested_operator(
+    water_active_space, n_alpha, n_beta, beta_shift, options, operator_type
+):
+    problem = _with_electrons(
+        water_active_space,
+        n_alpha,
+        n_beta,
+        one_body_beta=water_active_space.one_body + beta_shift * np.eye(4),
+    )
+    n_pair_lists = 2 if operator_type is ffsim.UCJOpSpinBalanced else 3
+    pairs = build_lucj_interaction_pairs(4, options.get("interaction", "heavy-hex"))
+
+    result = prepare_lucj(problem, **options)
+
+    assert len(result.params) == operator_type.n_params(
+        4,
+        options.get("n_reps", 1),
+        interaction_pairs=pairs[:n_pair_lists],
+        with_final_orbital_rotation=True,
+    )
+
+
+def test_prepare_lucj_refuses_a_spin_balanced_open_shell(water_active_space):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "spin_balanced=True needs equal alpha and beta electron counts and "
+            "one-electron integrals."
+        ),
+    ):
+        prepare_lucj(_with_electrons(water_active_space, 3, 1), spin_balanced=True)
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta", [(2, 2), (3, 1)], ids=["spin-balanced", "spin-unbalanced"]
+)
+def test_refitting_changes_the_seeded_parameters(water_active_space, n_alpha, n_beta):
+    problem = _with_electrons(water_active_space, n_alpha, n_beta)
+
+    refitted, truncated = (
+        prepare_lucj(problem, refit=refit).params for refit in (True, False)
+    )
+
+    assert np.max(np.abs(refitted - truncated)) > 1e-3
 
 
 def test_fragment_rohf_reaches_the_ground_state_of_a_spin_polarised_iron_fragment():
@@ -592,6 +822,9 @@ def _measured_x0_preparation():
             one_body_beta=2 * np.eye(2),
         ),
         orbital_rotation=np.eye(2),
+        mean_field_energy=0.0,
+        ccsd_energy=0.0,
+        ccsd_converged=True,
     )
 
 

@@ -84,9 +84,19 @@ def interleave_spin_bitstring(sqd_bitstring: str, n_orb: int) -> str:
 def probs_to_sqd_bitstrings(probs: Mapping[str, float], n_orb: int) -> dict[str, float]:
     """Convert a measured distribution into the SQD bitstring convention.
 
+    Args:
+        probs: Distribution keyed by measured bitstrings, character ``k`` for
+            qubit ``k``, qubits ``2p`` and ``2p + 1`` the alpha and beta
+            spin-orbitals of spatial orbital ``p``.
+        n_orb: Number of spatial orbitals.
+
+    Returns:
+        The same distribution keyed by blocked bitstrings: alpha occupations by
+        orbital, then beta.
+
     Raises:
         ValueError: If any key in ``probs`` is not ``2 * n_orb`` characters
-            wide, propagated from :func:`deinterleave_spin_bitstring`.
+            wide.
     """
     return {
         deinterleave_spin_bitstring(bitstring, n_orb): prob
@@ -1112,8 +1122,9 @@ class SQDResult:
 
     Attributes:
         states: Every requested eigenstate, ascending in penalised energy.
-        strings_alpha: Alpha sector occupation strings, ascending by
-            :func:`ci_string_to_int`.
+        strings_alpha: Alpha sector occupation strings, character ``p`` for
+            orbital ``p``, ascending as integers with character ``p`` as bit
+            ``p``.
         strings_beta: Beta sector occupation strings, likewise ascending.
         carried: The alpha and beta strings carryover retained, taken before
             any extension; they seed the next solve.
@@ -1183,8 +1194,12 @@ class SQDSolver:
             recovery: Whether to run configuration recovery.
 
         Raises:
-            ValueError: If ``config`` asks for something this fragment cannot
-                hold; see :func:`validate_sqd_for_fragment`.
+            ValueError: If a requested multiplicity has the wrong parity for
+                the electron count, lies below ``2 |Sz| + 1``, or asks for more
+                roots than the fragment has states of that spin; if more than
+                the lowest state is requested with ``lambda_penalty`` at 0; or
+                if the extension could grow the subspace past 16384
+                determinants with ``max_dim`` unset.
         """
         self.n_orb = n_orb
         self.n_alpha = n_alpha
@@ -1632,8 +1647,15 @@ def compute_spatial_rdm1(
     amplitudes: np.ndarray,
     n_orb: int,
 ) -> np.ndarray:
-    """The spin-traced spatial 1-RDM of an SQD state, as
-    :func:`compute_spatial_rdms` gives it, without building the 2-RDM."""
+    """The spin-traced spatial 1-RDM of an SQD state, ``rdm1_alpha + rdm1_beta``.
+
+    Args:
+        strings_alpha: Alpha sector strings indexing ``amplitudes``' rows, as
+            :attr:`SQDResult.strings_alpha` orders them.
+        strings_beta: Beta sector strings indexing its columns, likewise.
+        amplitudes: SQD coefficients over their product.
+        n_orb: Number of spatial orbitals.
+    """
     if n_orb > _MAX_PYSCF_ORBITALS:
         return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)[0]
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
