@@ -9,19 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.16.1](https://github.com/QoroQuantum/divi/compare/v0.16.0...v0.16.1) (2026-11-18)
 
-
 ### 🐛 Fixed
 
-* **backends:** split QoroService uploads by circuit count and re-index each request ([260eab3](https://github.com/QoroQuantum/divi/commit/260eab3da02cd7907555fd0962fb9469cdfc4363))
-* **deps:** require qiskit 2.6.1 or later ([b0caff2](https://github.com/QoroQuantum/divi/commit/b0caff2f1f4fd329434895dd705a4bec7bfd501e))
-* **problems:** apply the XY ring mixer's edges in ring order ([a351ea4](https://github.com/QoroQuantum/divi/commit/a351ea46afffa392b9e63d06c0e7fc91dbc50272))
-* **problems:** correct graph, QUBO and matching partitioning and stop constrained mixers exhausting memory ([3002ed0](https://github.com/QoroQuantum/divi/commit/3002ed034c6ccb1da339e59792e4c5dd8e8e5ca3))
-
+* **problems:** graph partitioners split weighted graphs k-way and merge small neighbouring clusters, QUBO decomposition groups variables along their couplings, and `MaxCutProblem` counts edge weights. The constrained mixers of `MaxIndependentSetProblem`, `MinVertexCoverProblem` and `MaxCliqueProblem` are applied as gates, so their cost grows with node degree instead of as `2^degree`. **Breaking:** ensemble checkpoints from 0.16.0 may not resume, and `MaxWeightMatchingProblem` drops `seed`, requires `penalty_weight` above 1 and `max_edges_per_partition` of at least 2, and defaults `partition_algorithm` to `"spectral"` ([3002ed0](https://github.com/QoroQuantum/divi/commit/3002ed0)).
+* **problems:** the constrained portfolio mixer applies its XY ring edges in ring order, so angles from `qaoa_initial_params()` run the circuit they were computed for. **Breaking:** `build_block_xy_mixer_graph` becomes `build_block_xy_mixer_edges` and returns an ordered edge list ([a351ea4](https://github.com/QoroQuantum/divi/commit/a351ea4)).
+* **backends:** `QoroService` splits uploads by circuit count and encodes each request's observables separately, so expectation-value jobs spanning several requests no longer fail with `KeyError`. **Breaking:** a user-supplied `circuit_ham_map` must cover every circuit exactly once ([260eab3](https://github.com/QoroQuantum/divi/commit/260eab3)).
+* **deps:** require `qiskit>=2.6.1`; Qiskit 2.6.0 cannot be imported alongside `qoro-maestro` 0.3.15 on Linux ([b0caff2](https://github.com/QoroQuantum/divi/commit/b0caff2)).
 
 ### 🔧 Internal
 
-* bump qoro-maestro to 0.3.15 ([bffb92b](https://github.com/QoroQuantum/divi/commit/bffb92ba0d460617d0400002990cf510b75e042a))
-* publish nightlies from the release workflow ([81e954b](https://github.com/QoroQuantum/divi/commit/81e954bb142e2574569682f8919b15aa14c155c2))
+* **deps:** `qoro-maestro` is pinned to `==0.3.15` (from `0.3.14`) ([bffb92b](https://github.com/QoroQuantum/divi/commit/bffb92b)).
+* publish nightlies from the release workflow ([81e954b](https://github.com/QoroQuantum/divi/commit/81e954b)).
 
 ## [0.16.0](https://github.com/QoroQuantum/divi/compare/v0.15.1...v0.16.0) (2026-11-11)
 
