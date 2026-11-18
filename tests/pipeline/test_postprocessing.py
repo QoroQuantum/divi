@@ -650,3 +650,15 @@ class TestExpvalDictsToIndexed:
     )
     def test_non_pauli_dict_input_passes_through(self, raw):
         assert _expval_dicts_to_indexed(raw, "XII;IZI") == raw
+
+    def test_results_missing_a_requested_observable_raises(self):
+        raw = {("a",): {"XII": 0.5, "IZI": 0.1}, ("b",): {"XII": 0.5, "ZZZ": 0.1}}
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Backend results for ('b',) lack the requested observables "
+                "['IZI']; they hold ['XII', 'ZZZ']."
+            ),
+        ):
+            _expval_dicts_to_indexed(raw, "XII;IZI")

@@ -15,7 +15,6 @@ from divi.backends._shot_allocation import (
     expand_ranges,
     from_wire,
     group_shots_into_ranges,
-    restrict_to_chunk,
     to_wire,
     validate,
 )
@@ -132,28 +131,6 @@ class TestBucketByShots:
         out = bucket_by_shots(ranges)
         assert out[100] == [0, 1, 4, 5]
         assert out[200] == [2, 3]
-
-
-class TestRestrictToChunk:
-    def test_restricts_and_rebases(self):
-        ranges = [ShotRange(0, 10, 100)]
-        out = restrict_to_chunk(ranges, offset=3, size=4)
-        # Global [3, 7) intersected → local [0, 4).
-        assert out == [ShotRange(0, 4, 100)]
-
-    def test_drops_non_overlapping_ranges(self):
-        ranges = [ShotRange(0, 3, 100), ShotRange(5, 8, 200)]
-        out = restrict_to_chunk(ranges, offset=3, size=2)
-        # [3, 5) chunk → only ShotRange(0, 3, 100) partially overlaps at
-        # global [3, 3) which is empty; ShotRange(5, 8) doesn't overlap.
-        assert out == []
-
-    def test_splits_range_spanning_chunk_boundary(self):
-        ranges = [ShotRange(0, 10, 100)]
-        first = restrict_to_chunk(ranges, offset=0, size=5)
-        second = restrict_to_chunk(ranges, offset=5, size=5)
-        assert first == [ShotRange(0, 5, 100)]
-        assert second == [ShotRange(0, 5, 100)]
 
 
 class TestWireFormat:

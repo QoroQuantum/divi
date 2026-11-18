@@ -447,6 +447,9 @@ def _expval_dicts_to_indexed(raw: ChildResults, ham_ops: str) -> ChildResults:
 
     Duck-type check: only converts when values are actually Pauli dicts
     (custom execute_fns may return other dict types like probability dicts).
+
+    Raises:
+        ValueError: If a converted result lacks a requested observable.
     """
     ops = ham_ops.split(";")
     sample = next(iter(raw.values()), None)
@@ -455,6 +458,11 @@ def _expval_dicts_to_indexed(raw: ChildResults, ham_ops: str) -> ChildResults:
 
     out: ChildResults = {}
     for key, pauli_dict in raw.items():
+        if missing := [op for op in ops if op not in pauli_dict]:
+            raise ValueError(
+                f"Backend results for {key!r} lack the requested observables "
+                f"{missing}; they hold {sorted(pauli_dict)}."
+            )
         if len(ops) == 1:
             out[key] = float(pauli_dict[ops[0]])
         else:

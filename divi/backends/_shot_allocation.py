@@ -6,10 +6,9 @@
 
 Backends accept a compressed ``[start, end, shots]`` wire format for shot
 allocations. This module centralises the views different code paths want —
-per-circuit expansion, bucketing by shot count, chunk restriction for
-paginated submission, and wire-format (de)serialisation — so every backend
-can ask for the shape it needs without reimplementing iteration and
-validation each time.
+per-circuit expansion, bucketing by shot count, and wire-format
+(de)serialisation — so every backend can ask for the shape it needs without
+reimplementing iteration and validation each time.
 """
 
 from collections.abc import Sequence
@@ -102,24 +101,6 @@ def bucket_by_shots(ranges: Sequence[ShotRange]) -> dict[int, list[int]]:
     out: dict[int, list[int]] = {}
     for r in ranges:
         out.setdefault(r.shots, []).extend(range(r.start, r.end))
-    return out
-
-
-def restrict_to_chunk(
-    ranges: Sequence[ShotRange], offset: int, size: int
-) -> list[ShotRange]:
-    """Re-index ranges to chunk-local coordinates.
-
-    Each range is intersected with ``[offset, offset + size)`` and rebased
-    to the chunk start. Ranges outside the chunk are dropped.
-    """
-    end = offset + size
-    out: list[ShotRange] = []
-    for r in ranges:
-        inter_start = max(r.start, offset)
-        inter_end = min(r.end, end)
-        if inter_start < inter_end:
-            out.append(ShotRange(inter_start - offset, inter_end - offset, r.shots))
     return out
 
 

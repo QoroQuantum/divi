@@ -38,9 +38,9 @@ from divi.backends import (
     QPUSystem,
     SimulatorCluster,
 )
-from divi.backends._pauli_serde import compress_ham_ops
+from divi.backends._pauli_serde import compress_ham_ops, compress_text
 from divi.backends._saved_defaults import save_defaults
-from divi.backends._shot_allocation import expand_ranges, from_wire
+from divi.backends._shot_allocation import expand_shot_groups
 from divi.backends._systems import (
     get_available_qpu_systems,
     get_available_simulator_clusters,
@@ -109,11 +109,6 @@ def _init_payload(mock_make_request) -> dict:
     """The JSON body of the ``job/init/`` call a submission made."""
     _, called_kwargs = mock_make_request.call_args_list[0]
     return called_kwargs.get("json", {})
-
-
-def _shots_envelope(service) -> dict:
-    """The ``add_circuits/`` keys a plain sampling submission shares."""
-    return service._fragment_envelope(None, None, None, service.shots)
 
 
 def _serve_job_results(mocker, service, pages, run_time=None, qpu_system_name=None):
@@ -882,14 +877,10 @@ class TestQoroServiceMock:
         self, mocker, qoro_service_factory, submit_circuits_mock
     ):
         """Test submitting circuits that are split into multiple chunks."""
-        # This test needs a fresh instance to mock the payload size
         qoro_service_mock = qoro_service_factory()
         _, mock_make_request = submit_circuits_mock
         mocker.patch.object(qoro_service_mock, "_make_request", new=mock_make_request)
-
-        mocker.patch(
-            f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=60.0 / 1024 / 1024
-        )
+        _cap_circuits_per_request(mocker, 1)
 
         result = qoro_service_mock.submit_circuits(
             {"circuit_1": "mock_qasm", "circuit_2": "mock_qasm"}
@@ -1306,6 +1297,7 @@ class TestQoroServiceMock:
         "payloads, ham_ops, circuit_ham_map, expected",
         [
             ({"c1": QASM_X_ON_FIRST_QUBIT}, "Z", None, "ZI"),
+            ({"c1": QASM_X_ON_FIRST_QUBIT}, "XX;Z", None, "XX;ZI"),
             ([_PARAMETRIC_2Q_PAYLOAD], "Z", None, "ZI"),
             (
                 [_TWO_ROW_2Q_PAYLOAD, _ONE_ROW_3Q_PAYLOAD],
@@ -1314,7 +1306,12 @@ class TestQoroServiceMock:
                 "ZI|XII",
             ),
         ],
-        ids=["bound", "parametric", "payload-rows-of-different-widths"],
+        ids=[
+            "bound",
+            "bound-mixed-lengths",
+            "parametric",
+            "payload-rows-of-different-widths",
+        ],
     )
     def test_short_observables_are_padded_before_sending(
         self, mocker, qoro_service_factory, payloads, ham_ops, circuit_ham_map, expected
@@ -1593,9 +1590,6 @@ class TestQoroServiceMock:
         assert "shots" in payload
         assert "observables" not in payload
 
-        # The wire format for the template must be gzip+base64 of the original
-        # QASM. Asserting presence of the key isn't enough — a regression in
-        # _compress_data would slip through unnoticed.
         decoded = gzip.decompress(
             base64.b64decode(payload["circuit_template"])
         ).decode()
@@ -1653,139 +1647,48 @@ class TestQoroServiceMock:
 
         assert [len(batch) for batch in service.depth_history] == [5]
 
-    def test_parametric_submission_chunks_oversized_parameter_sets(
+    def test_parametric_submission_splits_rows_over_the_circuit_cap(
         self, mocker, qoro_service_factory
     ):
-        """A single template whose parameter_sets exceed the payload cap is
-        split across multiple add_circuits/ calls. Each chunk re-uses the
-        same compressed circuit_template + parameter_names; only the final
-        chunk is marked finalized=true; every original label survives."""
-        # Patch the cap *down* so a small fixture forces chunking (mirrors
-        # ``test_submit_circuits_multiple_chunks`` style).
-        # Leaves room for the compressed template and a few parameter_set
-        # rows per chunk, so the fixture splits into several chunks.
-        _cap_payload_bytes(mocker, 500)
+        """Every request reuses the template; only the last is finalized."""
+        _cap_circuits_per_request(mocker, 3)
         service = qoro_service_factory()
+        mock_make_request = _answer_every_request(mocker, service)
         entry = make_qasm_payload(n_param_sets=8, n_params=3)
-
-        # Pre-flight: confirm the patch actually forces chunking; otherwise
-        # the test would pass via the single-call path and silently lose
-        # its meaning.
-        compressed = service._compress_data(entry.circuit)
-        chunks = service._split_payload_parameter_sets(
-            compressed,
-            entry.parameter_names,
-            entry.parameter_sets,
-            _shots_envelope(service),
-        )
-        assert len(chunks) > 1, (
-            f"Test setup error: payload cap is not low enough to force "
-            f"chunking (got {len(chunks)} chunk)."
-        )
-
-        mock_make_request = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[make_mock_init_response(mocker)]
-            + [make_mock_add_response(mocker) for _ in chunks],
-        )
 
         service.submit_circuits([entry])
 
-        # 1 init + len(chunks) add_circuits/ calls.
-        assert mock_make_request.call_count == 1 + len(chunks)
-
-        add_payloads = [
-            call.kwargs["json"] for call in mock_make_request.call_args_list[1:]
+        bodies = _add_circuits_bodies(mock_make_request)
+        assert [len(body["parameter_sets"]) for body in bodies] == [3, 3, 2]
+        assert [body["finalized"] for body in bodies] == ["false", "false", "true"]
+        assert {body["circuit_template"] for body in bodies} == {
+            compress_text(entry.circuit)
+        }
+        assert {tuple(body["parameter_names"]) for body in bodies} == {
+            tuple(entry.parameter_names)
+        }
+        assert [row["label"] for body in bodies for row in body["parameter_sets"]] == [
+            label for label, _ in entry.parameter_sets
         ]
-        finalized_flags = [p["finalized"] for p in add_payloads]
-        assert finalized_flags == ["false"] * (len(chunks) - 1) + ["true"]
-
-        # Same template + parameter_names across all chunks (template is
-        # serialised once, not re-derived per chunk).
-        first_template = add_payloads[0]["circuit_template"]
-        for p in add_payloads[1:]:
-            assert p["circuit_template"] == first_template
-            assert p["parameter_names"] == add_payloads[0]["parameter_names"]
-
-        # Every original label appears across the chunks exactly once.
-        seen_labels: list[str] = []
-        for p in add_payloads:
-            seen_labels.extend(s["label"] for s in p["parameter_sets"])
-        expected_labels = [label for label, _ in entry.parameter_sets]
-        assert seen_labels == expected_labels
 
     def test_parametric_submission_finalizes_only_very_last_call(
         self, mocker, qoro_service_factory
     ):
-        """With multiple templates AND chunking within each, ``finalized=true``
-        appears on exactly the very last ``add_circuits/`` call across the
-        whole submission — not on the last chunk of each template."""
-        # Leaves room for the compressed template and a few parameter_set
-        # rows per chunk, so the fixture splits into several chunks.
-        _cap_payload_bytes(mocker, 500)
+        """With several templates each split, every request carries the
+        observables and only the submission's last one is finalized."""
+        _cap_circuits_per_request(mocker, 4)
         service = qoro_service_factory()
-        # Each template carries 10 rows; under the 500-byte cap, every
-        # template must split into ≥2 chunks. Verified below by the
-        # pre-flight check.
+        mock_make_request = _answer_every_request(mocker, service)
         templates = [
             make_qasm_payload(n_param_sets=10, n_params=3, label_prefix="t0"),
             make_qasm_payload(n_param_sets=10, n_params=3, label_prefix="t1"),
         ]
 
-        # Compute the expected total call count up-front; this is the wire
-        # contract we want to lock in.
-        total_chunks = 0
-        for entry in templates:
-            compressed = service._compress_data(entry.circuit)
-            chunks = service._split_payload_parameter_sets(
-                compressed,
-                entry.parameter_names,
-                entry.parameter_sets,
-                _shots_envelope(service),
-            )
-            assert len(chunks) >= 2, (
-                f"Test setup error: each template must split into ≥2 chunks "
-                f"to make the 'finalize only once' assertion meaningful; "
-                f"got {len(chunks)} chunk(s) for label_prefix={entry.parameter_sets[0][0].split('_')[0]!r}."
-            )
-            total_chunks += len(chunks)
+        service.submit_circuits(templates, ham_ops="ZZ;XX")
 
-        mock_make_request = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[make_mock_init_response(mocker)]
-            + [make_mock_add_response(mocker) for _ in range(total_chunks)],
-        )
-
-        service.submit_circuits(templates)
-
-        finalized_flags = [
-            call.kwargs["json"]["finalized"]
-            for call in mock_make_request.call_args_list[1:]
-        ]
-        # Exactly one ``finalized=true``, and it's the last call.
-        assert finalized_flags.count("true") == 1
-        assert finalized_flags[-1] == "true"
-
-    def test_parametric_submission_rejects_template_exceeding_cap(
-        self, mocker, qoro_service_factory
-    ):
-        """A compressed template that's larger than the per-request cap on
-        its own can't be chunked — raise before any HTTP call."""
-        # 100-byte cap — smaller than even the compressed template's base64
-        # payload, so the splitter must refuse before any HTTP call.
-        mocker.patch(
-            f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=100.0 / 1024 / 1024
-        )
-        service = qoro_service_factory()
-        # Spy on _make_request so we can assert it was never called.
-        mock_make_request = mocker.patch.object(service, "_make_request")
-
-        with pytest.raises(ValueError, match="exceeds the per-request payload cap"):
-            service.submit_circuits([make_qasm_payload()])
-
-        mock_make_request.assert_not_called()
+        bodies = _add_circuits_bodies(mock_make_request)
+        assert [body["finalized"] for body in bodies] == ["false"] * 5 + ["true"]
+        assert {body["observables"] for body in bodies} == {compress_ham_ops("ZZ;XX")}
 
     def test_parametric_submission_validates_the_template_once(
         self, mocker, qoro_service_factory
@@ -1888,47 +1791,18 @@ class TestQoroServiceMock:
         assert [row["label"] for row in add["parameter_sets"]] == ["row_0", "row_1"]
         assert add["observables"] == compress_ham_ops("ZZ;XI")
 
-    def test_vjp_sizes_each_request_with_its_cotangents(
+    def test_vjp_rows_split_over_the_circuit_cap_keep_their_cotangents(
         self, mocker, qoro_service_factory
     ):
-        """Under a cap the rows fit without their cotangents but not with them,
-        every request still stays under it."""
-        (whole,) = _vjp_add_bodies(mocker, qoro_service_factory())
-        cap = len(json.dumps(whole)) - 1
-        _cap_payload_bytes(mocker, cap)
+        _cap_circuits_per_request(mocker, 1)
 
         bodies = _vjp_add_bodies(mocker, qoro_service_factory())
 
         assert len(bodies) == 2
-        assert all(len(json.dumps(body)) <= cap for body in bodies)
+        assert all(body["observables"] == compress_ham_ops("ZZ;XI") for body in bodies)
         assert [
             row["cotangent"] for body in bodies for row in body["parameter_sets"]
         ] == [[1.0, 0.5], [-0.3, 2.0]]
-
-    def test_vjp_rejects_a_row_too_large_for_one_request(
-        self, mocker, qoro_service_factory
-    ):
-        """The cap leaves room for the template but not for one row with its
-        cotangent."""
-        (whole,) = _vjp_add_bodies(mocker, qoro_service_factory())
-        _cap_payload_bytes(
-            mocker, len(json.dumps({**whole, "parameter_sets": []})) + 10
-        )
-        service = qoro_service_factory()
-        transport = mocker.patch.object(service, "_make_request")
-
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "Parameter set 'row_0' with the request's other fields exceeds the "
-                f"per-request payload cap ({_qoro_service._MAX_PAYLOAD_SIZE_MB} MB); "
-                "reduce its size or split the program."
-            ),
-        ):
-            service.submit_vjp(
-                [make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS
-            )
-        transport.assert_not_called()
 
     def test_vjp_maps_gradients_back_through_scaled_angles(
         self, mocker, qoro_service_factory
@@ -2023,15 +1897,23 @@ class TestQoroServiceMock:
                 "shot_groups is not supported",
                 id="shot-groups",
             ),
-            pytest.param(
-                {"ham_ops": "XX|ZZ"}, r"\|-delimited ham_ops", id="piped-ham-ops"
-            ),
         ],
     )
     def test_parametric_submission_rejects(self, qoro_service_factory, kwargs, match):
         service = qoro_service_factory()
         with pytest.raises(ValueError, match=match):
             service.submit_circuits([make_qasm_payload()], **kwargs)
+
+    def test_parametric_rows_without_a_map_are_measured_on_every_group(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        mock_make_request = _answer_every_request(mocker, service)
+
+        service.submit_circuits([make_qasm_payload()], ham_ops="XX|ZZ")
+
+        (body,) = _add_circuits_bodies(mock_make_request)
+        assert body["observables"] == compress_ham_ops("XX;ZZ")
 
     def test_payload_validates_param_set_arity(self):
         """Each parameter set must have exactly len(parameters) values."""
@@ -2595,8 +2477,31 @@ def _add_circuits_bodies(mock_make_request) -> list[dict]:
     return [call.kwargs["json"] for call in mock_make_request.call_args_list[1:]]
 
 
-def _cap_payload_bytes(mocker, n_bytes: int) -> None:
-    mocker.patch(f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=n_bytes / 2**20)
+def _cap_circuits_per_request(mocker, n_circuits: int) -> None:
+    mocker.patch(f"{_qoro_service.__name__}._MAX_CIRCUITS_PER_REQUEST", new=n_circuits)
+
+
+def _replay_as_service(bodies: list[dict]) -> list[tuple]:
+    """Each circuit's ``(label, observables, shots)`` as usher's upload serializer
+    stores them, with map ranges clipped to the request's circuits."""
+    stored = []
+    for body in bodies:
+        labels = list(body["circuits"])
+        n = len(labels)
+        observables = [body.get("observables")] * n
+        if body.get("circuit_ham_map"):
+            groups = body["observables"].split("|")
+            assert len(body["circuit_ham_map"]) == len(groups)
+            observables = [None] * n
+            for (start, end), group in zip(body["circuit_ham_map"], groups):
+                for index in range(*slice(start, end).indices(n)):
+                    observables[index] = group
+        shots = [body.get("shots")] * n
+        if "shot_groups" in body:
+            assert "shots" not in body and body["shot_groups"]
+            shots = expand_shot_groups(body["shot_groups"], n)
+        stored += zip(labels, observables, shots, strict=True)
+    return stored
 
 
 def _vjp_add_bodies(mocker, service) -> list[dict]:
@@ -2775,7 +2680,7 @@ def test_bound_circuits_are_appended_compressed(mocker, qoro_service_factory):
 
     assert _add_circuits_bodies(mock_request) == [
         {
-            "circuits": {"c1": QoroService._compress_data(QASM_X_ON_FIRST_QUBIT)},
+            "circuits": {"c1": compress_text(QASM_X_ON_FIRST_QUBIT)},
             "mode": "append",
             "finalized": "true",
             "shots": service.shots,
@@ -2783,21 +2688,94 @@ def test_bound_circuits_are_appended_compressed(mocker, qoro_service_factory):
     ]
 
 
-def test_shot_groups_are_reindexed_for_each_chunk(mocker, qoro_service_factory):
-    _cap_payload_bytes(mocker, 700)
+_SEVEN_CIRCUITS = {f"c{i}": QASM_X_ON_FIRST_QUBIT for i in range(7)}
+
+
+@pytest.mark.parametrize(
+    "submit_kwargs, observables, shots",
+    [
+        (
+            {"shot_groups": [[0, 3, 100], [3, 4, 200], [4, 7, 300]]},
+            [None] * 7,
+            [100] * 3 + [200] + [300] * 3,
+        ),
+        (
+            {"ham_ops": "ZZ;XX|YY|XZ", "circuit_ham_map": [[0, 3], [3, 4], [4, 7]]},
+            [compress_ham_ops("ZZ;XX")] * 3
+            + [compress_ham_ops("YY")]
+            + [compress_ham_ops("XZ")] * 3,
+            [None] * 7,
+        ),
+        ({"ham_ops": "ZZ;XX"}, [compress_ham_ops("ZZ;XX")] * 7, [None] * 7),
+        ({"ham_ops": "ZZ|XX"}, [compress_ham_ops("ZZ;XX")] * 7, [None] * 7),
+    ],
+    ids=["shot-groups", "observable-groups", "one-observable", "groups-without-map"],
+)
+@pytest.mark.parametrize(
+    "cap, request_sizes",
+    [(None, [7]), (7, [7]), (1, [1] * 7), (3, [3, 3, 1])],
+    ids=["one-request", "exactly-the-cap", "request-per-circuit", "uneven"],
+)
+def test_the_service_stores_each_circuit_with_its_own_values(
+    mocker,
+    qoro_service_factory,
+    submit_kwargs,
+    observables,
+    shots,
+    cap,
+    request_sizes,
+):
+    if cap is not None:
+        _cap_circuits_per_request(mocker, cap)
     service = qoro_service_factory()
     mock_request = _answer_every_request(mocker, service)
-    circuits = {f"c{i}": QASM_X_ON_FIRST_QUBIT for i in range(5)}
 
-    service.submit_circuits(circuits, shot_groups=[[0, 3, 100], [3, 5, 200]])
+    service.submit_circuits(_SEVEN_CIRCUITS, **submit_kwargs)
 
     bodies = _add_circuits_bodies(mock_request)
-    assert len(bodies) > 1
-    assert not any("shots" in body for body in bodies)
-    sent = []
-    for body in bodies:
-        sent += expand_ranges(from_wire(body["shot_groups"]), len(body["circuits"]))
-    assert sent == [100, 100, 100, 200, 200]
+    assert [len(body["circuits"]) for body in bodies] == request_sizes
+    assert _replay_as_service(bodies) == list(zip(_SEVEN_CIRCUITS, observables, shots))
+
+
+def test_every_split_request_carries_the_job_shots(mocker, qoro_service_factory):
+    _cap_circuits_per_request(mocker, 3)
+    service = qoro_service_factory()
+    mock_request = _answer_every_request(mocker, service)
+
+    service.submit_circuits(_SEVEN_CIRCUITS)
+
+    bodies = _add_circuits_bodies(mock_request)
+    assert [(body["mode"], body["shots"]) for body in bodies] == [
+        ("append", service.job_config.shots)
+    ] * 3
+
+
+@pytest.mark.parametrize(
+    "circuit_ham_map, message",
+    [
+        (
+            [[0, 3]],
+            "circuit_ham_map length (1) must match number of ham_ops groups (2).",
+        ),
+        (
+            [[0, 1], [1, 2]],
+            "circuit_ham_map does not cover every circuit; missing indices [2].",
+        ),
+    ],
+    ids=["wrong-length", "gap"],
+)
+def test_a_malformed_circuit_ham_map_is_refused_before_any_request(
+    mocker, qoro_service_factory, circuit_ham_map, message
+):
+    service = qoro_service_factory()
+    transport = mocker.patch.object(service, "_make_request")
+    circuits = {f"c{i}": QASM_X_ON_FIRST_QUBIT for i in range(3)}
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        service.submit_circuits(
+            circuits, ham_ops="ZZ|XX", circuit_ham_map=circuit_ham_map
+        )
+    transport.assert_not_called()
 
 
 def _random_ham_ops(n_terms: int, n_qubits: int) -> str:
@@ -2808,44 +2786,26 @@ def _random_ham_ops(n_terms: int, n_qubits: int) -> str:
 
 
 @pytest.mark.parametrize(
-    "payloads, submit_kwargs",
+    "n_param_sets, submit_kwargs, request_sizes",
     [
-        ({f"circuit_{i}": QASM_X_ON_FIRST_QUBIT for i in range(40)}, {}),
-        (
-            {f"circuit_{i}": QASM_X_ON_FIRST_QUBIT for i in range(40)},
-            {"shot_groups": [[i, i + 1, 1000 + i] for i in range(40)]},
-        ),
-        (
-            {f"circuit_{i}": QASM_X_ON_FIRST_QUBIT for i in range(40)},
-            {"ham_ops": "ZZ;XX|YY", "circuit_ham_map": [[0, 20], [20, 40]]},
-        ),
-        ([make_qasm_payload(n_param_sets=100, n_params=2)], {}),
-        (
-            [make_qasm_payload(n_param_sets=40, n_params=2)],
-            {"ham_ops": _random_ham_ops(30, 40)},
-        ),
+        (100, {}, [7] * 14 + [2]),
+        (40, {"ham_ops": _random_ham_ops(30, 40)}, [7] * 5 + [5]),
     ],
-    ids=[
-        "bound",
-        "bound-shot-groups",
-        "bound-ham-ops",
-        "parametric",
-        "parametric-ham-ops",
-    ],
+    ids=["parametric", "parametric-ham-ops"],
 )
-def test_every_add_circuits_body_fits_the_payload_cap(
-    mocker, qoro_service_factory, payloads, submit_kwargs
+def test_no_parametric_request_holds_more_rows_than_the_cap(
+    mocker, qoro_service_factory, n_param_sets, submit_kwargs, request_sizes
 ):
-    cap = 2500
-    _cap_payload_bytes(mocker, cap)
+    _cap_circuits_per_request(mocker, 7)
     service = qoro_service_factory()
     mock_request = _answer_every_request(mocker, service)
 
-    service.submit_circuits(payloads, **submit_kwargs)
+    service.submit_circuits(
+        [make_qasm_payload(n_param_sets=n_param_sets, n_params=2)], **submit_kwargs
+    )
 
-    sizes = [len(json.dumps(body)) for body in _add_circuits_bodies(mock_request)]
-    assert len(sizes) > 1
-    assert max(sizes) <= cap
+    bodies = _add_circuits_bodies(mock_request)
+    assert [len(body["parameter_sets"]) for body in bodies] == request_sizes
 
 
 def test_numpy_shot_groups_are_sent_as_plain_json(mocker, qoro_service_factory):
@@ -3408,6 +3368,30 @@ class TestQoroServiceWithApiKey:
         assert all(isinstance(val, (float, int)) for val in exp_values.values()), (
             "Expectation values should be numeric"
         )
+
+    def test_a_split_upload_measures_what_one_upload_does(self, mocker, qoro_service):
+        """Every circuit keeps its group when the job is split mid-group."""
+        header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\n'
+        idle = header + "id q[0];\nid q[1];\n"
+        hadamards = header + "h q[0];\nh q[1];\n"
+        circuits = {f"c{i}": idle if i < 3 else hadamards for i in range(5)}
+        observables = {"ham_ops": "ZI;IZ|XX;ZZ", "circuit_ham_map": [[0, 3], [3, 5]]}
+
+        def measure() -> tuple[int, dict]:
+            result = qoro_service.submit_circuits(circuits, **observables)
+            qoro_service.poll_job_status(result, loop_until_complete=True)
+            entries = qoro_service.get_job_results(result).results
+            return result.backend_jobs, {e["label"]: e["results"] for e in entries}
+
+        whole_jobs, whole = measure()
+        _cap_circuits_per_request(mocker, 2)
+        split_jobs, split = measure()
+
+        assert whole_jobs == 1
+        assert split_jobs == 3
+        assert split == whole
+        assert whole["c0"] == pytest.approx({"ZI": 1.0, "IZ": 1.0})
+        assert whole["c4"] == pytest.approx({"XX": 1.0, "ZZ": 0.0})
 
     def test_get_job_results_wide_register(self, qoro_service):
         """Regression test: circuits with >64 qubits must return properly

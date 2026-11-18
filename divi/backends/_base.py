@@ -16,7 +16,12 @@ import requests
 from qiskit import QuantumCircuit
 
 from divi.backends._job_status import JobStatus
-from divi.backends._pauli_serde import group_ham_ops, ham_ops_terms_per_circuit
+from divi.backends._pauli_serde import (
+    group_ham_ops,
+    pad_ham_ops,
+    split_ham_ops_per_circuit,
+    split_ham_ops_terms_per_circuit,
+)
 from divi.backends._shot_allocation import (
     expand_shot_groups,
     group_shots_into_ranges,
@@ -150,12 +155,7 @@ def _decode_observables(kwargs: Mapping[str, Any], n_circuits: int) -> list[str]
     ham_ops = kwargs.get("ham_ops")
     if ham_ops is None:
         return None
-    return [
-        ";".join(terms)
-        for terms in ham_ops_terms_per_circuit(
-            n_circuits, ham_ops, kwargs.get("circuit_ham_map")
-        )
-    ]
+    return split_ham_ops_per_circuit(n_circuits, ham_ops, kwargs.get("circuit_ham_map"))
 
 
 def _encode_observables(observables: Sequence[str]) -> dict[str, Any]:
@@ -370,6 +370,32 @@ class CircuitRunner(ABC):
                 "shot_groups is incompatible with ham_ops: expectation-value "
                 "mode is analytical and ignores shot counts. Pass exactly one."
             )
+
+    def _decode_per_circuit(
+        self,
+        n_qubits: Sequence[int],
+        ham_ops: str | None,
+        circuit_ham_map: Sequence[list[int]] | None,
+        shot_groups: Sequence[list[int]] | None,
+    ) -> tuple[list[list[str]] | None, list[int]]:
+        """Each circuit's padded Pauli terms (None when sampling) and shot count.
+
+        ``n_qubits`` holds each circuit's width, in submission order.
+
+        Raises:
+            ValueError: If ``ham_ops`` and ``shot_groups`` are both given, or
+                either is malformed for these circuits.
+        """
+        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
+        n_circuits = len(n_qubits)
+        shots = expand_shot_groups(shot_groups, n_circuits)
+        if shots is None:
+            shots = [self.shots] * n_circuits
+        if ham_ops is None:
+            return None, shots
+        ham_ops = pad_ham_ops(ham_ops, circuit_ham_map, n_qubits, stacklevel=4)
+        terms = split_ham_ops_terms_per_circuit(n_circuits, ham_ops, circuit_ham_map)
+        return terms, shots
 
     def _record_qasm_depths(self, qasm_strings: Iterable[str]) -> None:
         """Append one batch of circuit depths when ``track_depth`` is set."""

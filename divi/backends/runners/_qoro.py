@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import base64
-import gzip
 import itertools
 import json
 import logging
-import operator
 import os
 import platform
 import re
 import warnings
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from enum import Enum
 from http import HTTPStatus
@@ -46,19 +43,12 @@ from divi.backends._job_status import (
     JobTimedOutError,
     QoroJobError,
 )
-from divi.backends._pauli_serde import compress_ham_ops, pad_ham_ops
+from divi.backends._pauli_serde import compress_ham_ops, compress_text, pad_ham_ops
 from divi.backends._results_processing import (
     _decode_histogram_b64,
     _reverse_bitstrings,
 )
 from divi.backends._saved_defaults import defaults_path, load_defaults
-from divi.backends._shot_allocation import (
-    ShotRange,
-    from_wire,
-    restrict_to_chunk,
-    to_wire,
-    validate,
-)
 from divi.backends._systems import (
     QPUSystem,
     SimulatorCluster,
@@ -93,7 +83,7 @@ from ._maestro_payload import maestro_config_from_payload, maestro_config_to_pay
 from ._qoro_adjoint import run_adjoint_job
 
 API_URL = "https://app.qoroquantum.net/api"
-_MAX_PAYLOAD_SIZE_MB = 0.95
+_MAX_CIRCUITS_PER_REQUEST = 3000
 
 T = TypeVar("T")
 
@@ -193,38 +183,6 @@ def _circuit_too_wide(exc: requests.HTTPError) -> CircuitTooWideError | None:
     if (match := _QUBIT_LIMIT_PATTERN.search(str(exc))) is None:
         return None
     return CircuitTooWideError(str(exc), limit=int(match[1]), response=response)
-
-
-def _greedy_size_chunks(
-    items: Iterable[T],
-    item_size: Callable[[T], int],
-    base_overhead: int,
-    max_bytes: int,
-) -> list[list[T]]:
-    """Greedily pack *items* into chunks whose estimated size stays under the cap.
-
-    A chunk is flushed before the item that would overflow it, so a single item
-    larger than ``max_bytes`` still lands in a chunk of its own rather than
-    being dropped — the caller is responsible for rejecting that case up front
-    if the server cannot accept it.
-    """
-    chunks: list[list[T]] = []
-    current: list[T] = []
-    current_size = base_overhead
-
-    for item in items:
-        size = item_size(item)
-        if current and current_size + size > max_bytes:
-            chunks.append(current)
-            current = []
-            current_size = base_overhead
-        current.append(item)
-        current_size += size
-
-    if current:
-        chunks.append(current)
-
-    return chunks
 
 
 def _encode_parameter_set(
@@ -673,67 +631,6 @@ class QoroService(AsyncJobBackend):
         )
         return response.json()
 
-    @staticmethod
-    def _compress_data(value: str) -> str:
-        return base64.b64encode(gzip.compress(value.encode("utf-8"), mtime=0)).decode(
-            "utf-8"
-        )
-
-    def _split_circuits(
-        self,
-        circuits: Mapping[str, str],
-        envelope: Mapping[str, Any],
-        shot_ranges: Sequence[ShotRange] | None,
-    ) -> list[dict[str, str]]:
-        """Compress circuits and chunk them so that each ``add_circuits/`` body,
-        as ``json.dumps`` renders it, stays under :data:`_MAX_PAYLOAD_SIZE_MB`.
-
-        A chunk's ``shot_groups`` holds the ranges starting inside it plus at
-        most one continuing from the chunk before, so each range is charged to
-        the circuit it starts at and the widest one to every chunk.
-        """
-        overhead = len(json.dumps({**envelope, "circuits": {}}))
-        range_sizes: dict[int, int] = {}
-        if shot_ranges is not None:
-            range_sizes = {r.start: len(json.dumps(r)) + 2 for r in shot_ranges}
-            overhead += len(', "shot_groups": []') + max(range_sizes.values())
-
-        def entry_size(entry: tuple[int, tuple[str, str]]) -> int:
-            index, (key, value) = entry
-            # '"key": "value", '
-            return len(json.dumps(key)) + len(value) + 6 + range_sizes.get(index, 0)
-
-        compressed = [
-            (key, self._compress_data(value)) for key, value in circuits.items()
-        ]
-        chunks = _greedy_size_chunks(
-            enumerate(compressed),
-            entry_size,
-            base_overhead=overhead,
-            max_bytes=int(_MAX_PAYLOAD_SIZE_MB * 1024 * 1024),
-        )
-        return [dict(entry for _, entry in chunk) for chunk in chunks]
-
-    @staticmethod
-    def _fragment_envelope(
-        ham_ops: str | None,
-        circuit_ham_map: Sequence[list[int]] | None,
-        shot_groups: Sequence[list[int]] | None,
-        shots: int,
-    ) -> dict[str, Any]:
-        """The ``add_circuits/`` keys every fragment of a job carries."""
-        envelope: dict[str, Any] = {"mode": "append", "finalized": "false"}
-        if ham_ops is not None:
-            envelope["observables"] = compress_ham_ops(ham_ops)
-            if circuit_ham_map is not None:
-                envelope["circuit_ham_map"] = [
-                    [operator.index(bound) for bound in group]
-                    for group in circuit_ham_map
-                ]
-        elif shot_groups is None:
-            envelope["shots"] = shots
-        return envelope
-
     def _require_expval(self, job_config: JobConfig) -> None:
         """Raise if ``job_config`` cannot run an expectation-value job."""
         target = self._resolved_target(job_config)
@@ -780,23 +677,6 @@ class QoroService(AsyncJobBackend):
         return maestro_config, None
 
     @staticmethod
-    def _validate_ham_group(group: str) -> None:
-        """Check one ``;``-delimited observable group is well formed."""
-        valid_paulis = {"I", "X", "Y", "Z"}
-        terms = group.split(";")
-        if not all(terms):
-            raise ValueError(
-                "Hamiltonian operators must be non-empty semicolon-separated strings."
-            )
-        ham_ops_length = len(terms[0])
-        if not all(len(term) == ham_ops_length for term in terms):
-            raise ValueError("All Hamiltonian operators must have the same length.")
-        if not valid_paulis.issuperset("".join(terms)):
-            raise ValueError(
-                "Hamiltonian operators must contain only I, X, Y, Z characters."
-            )
-
-    @staticmethod
     def _resolve_job_type(job_type: JobType | None, ham_ops: str | None) -> JobType:
         """Resolve the job type, inferring EXPECTATION from ``ham_ops``."""
         if ham_ops is None:
@@ -839,9 +719,9 @@ class QoroService(AsyncJobBackend):
         circuit`` mapping instead. Either way results come back keyed by the
         labels supplied in ``parameter_sets``.
 
-        Running an ensemble with ``batch_submissions=True`` merges circuits
-        across programs and always sends them bound, so those runs take the
-        mapping shape regardless of the parameters they started with.
+        An ensemble that merges programs into one call (``BatchMode.MERGED``)
+        sends their circuits bound, so those runs take the mapping shape
+        regardless of the parameters they started with.
 
         The two shapes resolve floats differently: the backend substitutes
         via ``str(value)`` on the decoded float, preserving the full
@@ -862,23 +742,19 @@ class QoroService(AsyncJobBackend):
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
-                Multiple groups can be pipe-delimited (e.g. "XYZ;XXZ|ZI;IZ") when
-                ``circuit_ham_map`` is provided to assign each group to a slice of
-                circuits. If None, no Hamiltonian operators will be measured.
+                Groups can be pipe-delimited (e.g. "XYZ;XXZ|ZI;IZ") and assigned
+                to circuits with ``circuit_ham_map``. If None, no Hamiltonian
+                operators will be measured.
                 Terms shorter than a circuit are padded onto its first qubits,
                 with a warning.
             circuit_ham_map (list[list[int]] | None, optional):
-                Maps each ``|``-delimited group in ``ham_ops`` to a ``[start, end)``
-                slice of the ordered circuit list.  Must have the same length as
-                ``ham_ops.split("|")``.  When None, a single ``ham_ops`` group is
-                applied to all circuits. Bound payloads only — the parametric
-                ordering does not align with the flat index ranges it references.
+                One ``[start, end)`` circuit slice per ``|``-group of
+                ``ham_ops``, covering every circuit once; without it every
+                circuit takes all terms. Bound payloads only.
             shot_groups (list[list[int]] | None, optional):
                 Per-circuit shot allocation as ``[start, end, shots]`` triples
-                covering the iteration order of the circuits. Mutually exclusive
-                with the service-level ``shots`` field. When provided, ranges
-                spanning multiple internal chunks are re-indexed automatically.
-                Bound payloads only, for the same reason as ``circuit_ham_map``.
+                covering the circuits. Mutually exclusive with ``shots``;
+                bound payloads only.
             job_type (JobType | None, optional):
                 Type of job to execute: EXECUTE, or EXPECTATION with
                 ``ham_ops``. If not provided, inferred from ``ham_ops``.
@@ -907,9 +783,12 @@ class QoroService(AsyncJobBackend):
             ValueError: If any circuit is not valid QASM, ``job_type`` does
                 not match the presence of ``ham_ops``, ``ham_ops`` is given
                 for a job whose target or ``force_sampling`` rules out
-                expectation values, a config is aimed
-                at the other kind of target (``maestro_config`` on a
-                QPU job, or ``device_config`` on a simulator job).
+                expectation values, ``ham_ops`` and ``shot_groups`` are both
+                given, ``circuit_ham_map`` does not cover every circuit exactly
+                once, ``circuit_ham_map`` or ``shot_groups`` is given with
+                parametric payloads, or a config is aimed at the other kind of
+                target (``maestro_config`` on a QPU job, or ``device_config``
+                on a simulator job).
             ~divi.exceptions.CircuitTooWideError: If the API refuses a circuit
                 for exceeding the account's qubit limit.
             requests.exceptions.HTTPError: If any API request fails, including
@@ -924,33 +803,31 @@ class QoroService(AsyncJobBackend):
         if not payloads:
             raise ValueError("submit_circuits requires at least one payload.")
 
-        if ham_ops is not None and shot_groups is not None:
-            raise ValueError(
-                "shot_groups is incompatible with ham_ops: EXPECTATION jobs "
-                "compute expectation values analytically on the backend and "
-                "ignore shot counts. Pass exactly one."
-            )
+        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
         job_type = self._resolve_job_type(job_type, ham_ops)
+        bound = is_bound(payloads)
+        if not bound and circuit_ham_map is not None:
+            raise ValueError(
+                "circuit_ham_map is not supported for parametric payloads because "
+                "their ordering does not align with the bound-circuit flat "
+                "index ranges it references. Bind the parameters first if your "
+                "batch needs |-delimited ham_ops with circuit_ham_map."
+            )
+        if not bound and shot_groups is not None:
+            raise ValueError(
+                "shot_groups is not supported for parametric payloads for the "
+                "same reason as circuit_ham_map; per-circuit shot allocation "
+                "would need re-indexing into the payload order."
+            )
 
         if ham_ops is not None:
-            # Each |-delimited group is validated independently.
-            ham_groups = ham_ops.split("|")
-            for group in ham_groups:
-                self._validate_ham_group(group)
-
-            if circuit_ham_map is not None and len(circuit_ham_map) != len(ham_groups):
-                raise ValueError(
-                    f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
-                    f"number of ham_ops groups ({len(ham_groups)})."
+            widths = [
+                width
+                for payload in payloads
+                for width in itertools.repeat(
+                    count_qubits(payload.circuit), len(payload.parameter_sets)
                 )
-            widths = list(
-                itertools.chain.from_iterable(
-                    itertools.repeat(
-                        count_qubits(payload.circuit), len(payload.parameter_sets)
-                    )
-                    for payload in payloads
-                )
-            )
+            ]
             ham_ops = pad_ham_ops(ham_ops, circuit_ham_map, widths)
 
         job_config = (
@@ -963,24 +840,23 @@ class QoroService(AsyncJobBackend):
         maestro_config, device_config = self._configs_for_target(
             job_config, maestro_config, device_config
         )
-        envelope = self._fragment_envelope(
-            ham_ops, circuit_ham_map, shot_groups, job_config.shots
+        per_circuit = {
+            "ham_ops": ham_ops,
+            "circuit_ham_map": circuit_ham_map,
+            "shot_groups": shot_groups,
+        }
+        build_call_plan = (
+            self._build_bound_call_plan if bound else self._build_parametric_call_plan
         )
-        call_plan = (
-            self._build_bound_call_plan(payloads, shot_groups, envelope)
-            if is_bound(payloads)
-            else self._build_parametric_call_plan(
-                payloads, ham_ops, circuit_ham_map, shot_groups, envelope
-            )
-        )
+        shots = job_config.shots if ham_ops is None and shot_groups is None else None
 
         return self._dispatch_job(
-            call_plan,
+            build_call_plan(payloads, per_circuit),
             job_config=job_config,
             maestro_config=maestro_config,
             device_config=device_config,
             job_type=job_type,
-            envelope=envelope,
+            shots=shots,
         )
 
     def submit_vjp(
@@ -1001,8 +877,6 @@ class QoroService(AsyncJobBackend):
         Raises:
             VJPUnavailableError: If :attr:`supports_vjp` is False, a payload's
                 circuit cannot be differentiated, or the service fails the job.
-            ValueError: If one parameter set, with its cotangent, exceeds the
-                per-request payload cap.
         """
         if not self.supports_vjp:
             raise VJPUnavailableError(
@@ -1018,20 +892,32 @@ class QoroService(AsyncJobBackend):
             cancellation_event=cancellation_event,
         )
 
+    def _slice_requests(
+        self, items: Sequence[T], per_circuit: Mapping[str, Any]
+    ) -> Iterator[tuple[Sequence[T], dict[str, Any]]]:
+        """Each request's share of at most :data:`_MAX_CIRCUITS_PER_REQUEST`
+        items, with ``per_circuit`` encoded for that share alone."""
+        decoded = [
+            (kwarg, values)
+            for kwarg in self.per_circuit_kwargs
+            if (values := kwarg.decode(per_circuit, len(items))) is not None
+        ]
+        for start in range(0, len(items), _MAX_CIRCUITS_PER_REQUEST):
+            part = slice(start, start + _MAX_CIRCUITS_PER_REQUEST)
+            fields: dict[str, Any] = {}
+            for kwarg, values in decoded:
+                fields |= kwarg.encode(values[part])
+            if "ham_ops" in fields:
+                fields["observables"] = compress_ham_ops(fields.pop("ham_ops"))
+            yield items[part], fields
+
     def _build_bound_call_plan(
         self,
         payloads: Sequence[CircuitPayload],
-        shot_groups: Sequence[list[int]] | None,
-        envelope: Mapping[str, Any],
+        per_circuit: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        """Chunk resolved circuits into ``add_circuits/`` payload fragments."""
+        """``add_circuits/`` fragments for resolved circuits."""
         circuits = flatten_bound_payloads(payloads)
-
-        shot_ranges = None
-        if shot_groups is not None:
-            shot_ranges = from_wire(shot_groups)
-            validate(shot_ranges, len(circuits))
-
         for key, circuit in circuits.items():
             try:
                 validate_qasm(circuit)
@@ -1039,115 +925,22 @@ class QoroService(AsyncJobBackend):
                 msg = _format_validation_error_with_context(circuit, e)
                 raise ValueError(f"Circuit '{key}' is not a valid QASM: {msg}") from e
 
+        items = [(label, compress_text(qasm)) for label, qasm in circuits.items()]
+        call_plan = [
+            {"circuits": dict(chunk), **fields}
+            for chunk, fields in self._slice_requests(items, per_circuit)
+        ]
         self._record_qasm_depths(circuits.values())
-
-        chunks = self._split_circuits(circuits, envelope, shot_ranges)
-        # Per-chunk starting offset into the global circuit list, used to
-        # re-index ``shot_groups`` when chunking.
-        offsets = itertools.accumulate((len(c) for c in chunks), initial=0)
-
-        call_plan = []
-        for chunk, offset in zip(chunks, offsets):
-            fragment: dict[str, Any] = {"circuits": chunk}
-            if shot_ranges is not None:
-                fragment["shot_groups"] = to_wire(
-                    restrict_to_chunk(shot_ranges, offset, len(chunk))
-                )
-            call_plan.append(fragment)
         return call_plan
-
-    @staticmethod
-    def _split_payload_parameter_sets(
-        compressed_template_b64: str,
-        parameter_names: Sequence[str],
-        parameter_sets: Sequence[tuple[str, tuple[float, ...]]],
-        envelope: Mapping[str, Any],
-        cotangents: Mapping[str, np.ndarray] | None = None,
-    ) -> list[list[tuple[str, tuple[float, ...]]]]:
-        """Split a ``CircuitPayload``'s ``parameter_sets`` into chunks whose
-        ``add_circuits/`` bodies, as ``json.dumps`` renders them, stay under
-        :data:`_MAX_PAYLOAD_SIZE_MB`.
-
-        Each chunk re-uses the same already-compressed ``circuit_template``
-        and ``parameter_names``; only ``parameter_sets`` is split.  This
-        mirrors :meth:`_split_circuits` for the bound path. Rows are sized as
-        sent, with their ``cotangents`` when given.
-
-        Raises:
-            ValueError: If the template, or one row with it, exceeds the cap.
-        """
-        max_payload_bytes = int(_MAX_PAYLOAD_SIZE_MB * 1024 * 1024)
-        fixed_overhead = len(
-            json.dumps(
-                {
-                    **envelope,
-                    "circuit_template": compressed_template_b64,
-                    "parameter_names": list(parameter_names),
-                    "parameter_sets": [],
-                }
-            )
-        )
-
-        if fixed_overhead >= max_payload_bytes:
-            raise ValueError(
-                "Compressed circuit_template "
-                f"({len(compressed_template_b64)} bytes) with the request's other "
-                f"fields exceeds the per-request payload cap "
-                f"({_MAX_PAYLOAD_SIZE_MB} MB); reduce the template size or "
-                "split the program."
-            )
-
-        def row_size(row: tuple[str, tuple[float, ...]]) -> int:
-            label, values = row
-            # The row's JSON plus the ", " separating it from the next.
-            size = len(json.dumps(_encode_parameter_set(label, values, cotangents))) + 2
-            if fixed_overhead + size > max_payload_bytes:
-                raise ValueError(
-                    f"Parameter set {label!r} with the request's other fields "
-                    f"exceeds the per-request payload cap ({_MAX_PAYLOAD_SIZE_MB} "
-                    "MB); reduce its size or split the program."
-                )
-            return size
-
-        return _greedy_size_chunks(
-            parameter_sets, row_size, fixed_overhead, max_payload_bytes
-        )
 
     def _build_parametric_call_plan(
         self,
         payloads: Sequence[CircuitPayload],
-        ham_ops: str | None,
-        circuit_ham_map: Sequence[list[int]] | None,
-        shot_groups: Sequence[list[int]] | None,
-        envelope: Mapping[str, Any],
+        per_circuit: Mapping[str, Any],
         cotangents: Mapping[str, np.ndarray] | None = None,
     ) -> list[dict[str, Any]]:
-        """Chunk parameter matrices into ``add_circuits/`` payload fragments.
-
-        Each fragment reuses the same compressed ``circuit_template``; only
-        ``parameter_sets`` is split, mirroring how :meth:`_build_bound_call_plan`
-        splits the circuit mapping. ``cotangents`` adds each row's cotangent,
-        keyed by row label.
-        """
-        if circuit_ham_map is not None:
-            raise ValueError(
-                "circuit_ham_map is not supported for parametric payloads because "
-                "their ordering does not align with the bound-circuit flat "
-                "index ranges it references. Bind the parameters first if your "
-                "batch needs |-delimited ham_ops with circuit_ham_map."
-            )
-        if shot_groups is not None:
-            raise ValueError(
-                "shot_groups is not supported for parametric payloads for the "
-                "same reason as circuit_ham_map; per-circuit shot allocation "
-                "would need re-indexing into the payload order."
-            )
-        if ham_ops is not None and "|" in ham_ops:
-            raise ValueError(
-                "|-delimited ham_ops groups require circuit_ham_map; not "
-                "supported for parametric payloads."
-            )
-
+        """``add_circuits/`` fragments for templates and their parameter rows,
+        each row carrying its cotangent when ``cotangents`` is given."""
         call_plan: list[dict[str, Any]] = []
         for payload in payloads:
             if not isinstance(payload.circuit, str):
@@ -1163,24 +956,18 @@ class QoroService(AsyncJobBackend):
                 msg = _format_validation_error_with_context(payload.circuit, e)
                 raise ValueError(f"Circuit template is not valid QASM: {msg}") from e
 
-            compressed = self._compress_data(payload.circuit)
-            for chunk in self._split_payload_parameter_sets(
-                compressed,
-                payload.parameter_names,
-                payload.parameter_sets,
-                envelope,
-                cotangents,
-            ):
-                call_plan.append(
-                    {
-                        "circuit_template": compressed,
-                        "parameter_names": list(payload.parameter_names),
-                        "parameter_sets": [
-                            _encode_parameter_set(label, values, cotangents)
-                            for label, values in chunk
-                        ],
-                    }
-                )
+            template = {
+                "circuit_template": compress_text(payload.circuit),
+                "parameter_names": list(payload.parameter_names),
+            }
+            rows = [
+                _encode_parameter_set(label, values, cotangents)
+                for label, values in payload.parameter_sets
+            ]
+            call_plan += [
+                {**template, "parameter_sets": chunk, **fields}
+                for chunk, fields in self._slice_requests(rows, per_circuit)
+            ]
         self._record_payload_depths(payloads)
         return call_plan
 
@@ -1192,7 +979,7 @@ class QoroService(AsyncJobBackend):
         maestro_config: MaestroConfig | None,
         device_config: DeviceConfig | None,
         job_type: JobType,
-        envelope: Mapping[str, Any],
+        shots: int | None = None,
     ) -> ExecutionResult:
         """Open a job, upload every payload fragment, return its ``job_id``.
 
@@ -1226,10 +1013,12 @@ class QoroService(AsyncJobBackend):
             try:
                 for i, fragment in enumerate(call_plan):
                     payload = {
+                        "mode": "append",
                         **fragment,
-                        **envelope,
                         "finalized": "true" if i == len(call_plan) - 1 else "false",
                     }
+                    if shots is not None:
+                        payload["shots"] = shots
                     self._make_request(
                         "post",
                         f"job/{job_id}/add_circuits/",

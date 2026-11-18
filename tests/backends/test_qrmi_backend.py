@@ -349,9 +349,12 @@ class TestExpectationValues:
     def test_pads_short_terms_onto_the_first_qubits(self, resource, backend):
         wide = _BELL_QASM.replace("qreg q[2]", "qreg q[3]")
 
-        with pytest.warns(UserWarning, match=exact_match(padding_warning("ZZ", "ZZI"))):
+        with pytest.warns(
+            UserWarning, match=exact_match(padding_warning("ZZ", "ZZI"))
+        ) as caught:
             backend.submit_circuits({"c0": wide}, ham_ops="ZZ")
 
+        assert caught[0].filename == __file__
         assert resource.last_request["observables"] == ["ZZI"]
 
     def test_assigns_groups_per_circuit(self, resource, backend):
@@ -363,16 +366,31 @@ class TestExpectationValues:
 
         assert [r["observables"] for r in resource.requests] == [["ZZ"], ["XX"]]
 
-    def test_flattens_group_separators_for_unmapped_circuits(self, resource, backend):
-        """A circuit outside every circuit_ham_map range gets every group's
-        terms, each its own observable."""
+    def test_flattens_group_separators_without_a_circuit_ham_map(
+        self, resource, backend
+    ):
+        """Without a circuit_ham_map a circuit gets every group's terms, each
+        its own observable."""
         resource.expectation_values = [0.1, 0.2, 0.3]
 
-        backend.submit_circuits(
-            {"aux": _BELL_QASM}, ham_ops="ZZ|XX;YY", circuit_ham_map=[[1, 2]]
-        )
+        backend.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZZ|XX;YY")
 
         assert resource.last_request["observables"] == ["ZZ", "XX", "YY"]
+
+    def test_rejects_a_circuit_ham_map_that_misses_a_circuit(self, resource, backend):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "circuit_ham_map does not cover every circuit; missing indices [2]."
+            ),
+        ):
+            backend.submit_circuits(
+                {"a": _BELL_QASM, "b": _BELL_QASM, "c": _BELL_QASM},
+                ham_ops="ZZ|XX",
+                circuit_ham_map=[[0, 1], [1, 2]],
+            )
+
+        assert resource.payloads == []
 
     def test_rejects_shot_groups(self, backend):
         with pytest.raises(

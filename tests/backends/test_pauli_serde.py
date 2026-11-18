@@ -14,9 +14,9 @@ from divi.backends._pauli_serde import (
     compress_ham_ops,
     encode_ham_ops,
     group_ham_ops,
-    ham_ops_terms_for_circuit,
-    ham_ops_terms_per_circuit,
     pad_ham_ops,
+    split_ham_ops_per_circuit,
+    split_ham_ops_terms_per_circuit,
 )
 from tests._helpers import exact_match
 from tests.backends._helpers import padding_warning
@@ -26,59 +26,79 @@ def _too_short(term: str, widths: list[int]) -> str:
     return f"Observables [{term!r}] are too short for circuits of widths {widths}."
 
 
-@pytest.mark.parametrize(
-    "circuit_index, ham_ops, circuit_ham_map, expected",
-    [
-        (0, "ZI;IZ;XX", None, ["ZI", "IZ", "XX"]),
-        (0, "ZI;IZ|XX;YY", None, ["ZI", "IZ", "XX", "YY"]),
-        (0, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["ZI", "IZ"]),
-        (2, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["ZI", "IZ"]),
-        (3, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["XX", "YY"]),
-        (4, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["XX", "YY"]),
-        (10, "ZI|XX", [[0, 2], [2, 4]], ["ZI", "XX"]),
-    ],
-    ids=[
-        "no-map-flat",
-        "no-map-pipe-delimited",
-        "map-first-group-start",
-        "map-first-group-end",
-        "map-second-group-start",
-        "map-second-group-end",
-        "index-outside-all-ranges",
-    ],
-)
-def test_ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map, expected):
-    assert (
-        ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map) == expected
+def _bad_range_message(start: int, end: int) -> str:
+    return (
+        f"circuit_ham_map range [{start}, {end}) is empty or out of bounds "
+        "for 2 circuits."
     )
 
 
 @pytest.mark.parametrize(
-    "n_circuits, ham_ops, circuit_ham_map",
+    "n_circuits, ham_ops, circuit_ham_map, expected",
     [
-        (3, "ZI;IZ;XX", None),
-        (2, "ZI;IZ|XX;YY", None),
-        (5, "ZI;IZ|XX;YY", [[0, 3], [3, 5]]),
-        (8, "ZI;IZ|XX;YY", [[0, 3], [3, 5]]),
-        (4, "ZI|XX|YY", [[2, 3], [0, 2], [3, 4]]),
-        (0, "ZI|XX", [[0, 2], [2, 4]]),
+        (2, "ZI;IZ;XX", None, [["ZI", "IZ", "XX"]] * 2),
+        (1, "ZI;IZ|XX;YY", None, [["ZI", "IZ", "XX", "YY"]]),
+        (
+            5,
+            "ZI;IZ|XX;YY",
+            [[0, 3], [3, 5]],
+            [["ZI", "IZ"]] * 3 + [["XX", "YY"]] * 2,
+        ),
+        (4, "ZI|XX|YY", [[2, 3], [0, 2], [3, 4]], [["XX"], ["XX"], ["ZI"], ["YY"]]),
+        (0, "ZI;IZ", None, []),
+    ],
+    ids=["no-map-flat", "no-map-pipe-delimited", "map", "unsorted-map", "no-circuits"],
+)
+def test_split_ham_ops_terms_per_circuit(
+    n_circuits, ham_ops, circuit_ham_map, expected
+):
+    assert (
+        split_ham_ops_terms_per_circuit(n_circuits, ham_ops, circuit_ham_map)
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "n_circuits, ham_ops, circuit_ham_map, message",
+    [
+        (
+            2,
+            "ZI|XX",
+            [[0, 2]],
+            "circuit_ham_map length (1) must match number of ham_ops groups (2).",
+        ),
+        (
+            3,
+            "ZI|XX",
+            [[0, 1], [1, 2]],
+            "circuit_ham_map does not cover every circuit; missing indices [2].",
+        ),
+        (
+            2,
+            "ZI|XX",
+            [[0, 2], [1, 2]],
+            "circuit_ham_map range [1, 2) overlaps an earlier range at circuit 1.",
+        ),
+        (2, "ZI|XX", [[0, 1], [1, 3]], _bad_range_message(1, 3)),
+        (2, "ZI|XX", [[-1, 1], [1, 2]], _bad_range_message(-1, 1)),
+        (2, "ZI|XX", [[0, 2], [2, 2]], _bad_range_message(2, 2)),
+        (2, "ZI|XX", [[2, 0], [0, 2]], _bad_range_message(2, 0)),
     ],
     ids=[
-        "no-map-flat",
-        "no-map-pipe-delimited",
-        "map-covers-every-circuit",
-        "circuits-outside-every-range",
-        "unsorted-map",
-        "no-circuits",
+        "wrong-length",
+        "gap",
+        "overlap",
+        "past-the-end",
+        "negative-start",
+        "empty-range",
+        "reversed-range",
     ],
 )
-def test_ham_ops_terms_per_circuit_matches_per_circuit_lookup(
-    n_circuits, ham_ops, circuit_ham_map
+def test_malformed_circuit_ham_map_is_rejected(
+    n_circuits, ham_ops, circuit_ham_map, message
 ):
-    assert ham_ops_terms_per_circuit(n_circuits, ham_ops, circuit_ham_map) == [
-        ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
-        for i in range(n_circuits)
-    ]
+    with pytest.raises(ValueError, match=exact_match(message)):
+        split_ham_ops_terms_per_circuit(n_circuits, ham_ops, circuit_ham_map)
 
 
 @pytest.mark.parametrize(
@@ -94,12 +114,14 @@ def test_group_ham_ops_gives_each_circuit_its_observable(observables, expected):
     ham_ops, circuit_ham_map = group_ham_ops(observables)
 
     assert (ham_ops, circuit_ham_map) == expected
-    assert [
-        ";".join(terms)
-        for terms in ham_ops_terms_per_circuit(
-            len(observables), ham_ops, circuit_ham_map
-        )
-    ] == observables
+    assert (
+        split_ham_ops_per_circuit(len(observables), ham_ops, circuit_ham_map)
+        == observables
+    )
+
+
+def test_split_ham_ops_per_circuit_joins_every_group_without_a_map():
+    assert split_ham_ops_per_circuit(2, "ZI|XX;YY", None) == ["ZI;XX;YY"] * 2
 
 
 class TestPadHamOps:
@@ -140,10 +162,30 @@ class TestPadHamOps:
         with pytest.raises(ValueError, match=exact_match(_too_short("ZZ", [3, 5]))):
             pad_ham_ops("ZZ", None, [3, 5])
 
-    def test_circuit_outside_every_range_is_measured_on_every_group(self):
-        """The 3-qubit circuit outside both ranges widens both 2-qubit groups."""
-        with pytest.raises(ValueError, match=exact_match(_too_short("ZZ", [2, 3]))):
-            pad_ham_ops("ZZ|XX", [[0, 1], [1, 2]], [2, 2, 3])
+    @pytest.mark.parametrize(
+        "ham_ops, message",
+        [
+            (
+                "ZZ;",
+                "Hamiltonian operators must be non-empty semicolon-separated strings.",
+            ),
+            ("ZA", "Hamiltonian operators must contain only I, X, Y, Z characters."),
+            ("Z;ZZZZ", "All Hamiltonian operators must have the same length."),
+        ],
+        ids=["empty-term", "non-pauli", "unequal-after-padding"],
+    )
+    def test_malformed_terms_raise(self, ham_ops, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            pad_ham_ops(ham_ops, None, [3])
+
+    def test_circuit_ham_map_missing_a_circuit_raises(self):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "circuit_ham_map does not cover every circuit; missing indices [2]."
+            ),
+        ):
+            pad_ham_ops("ZZ|XX", [[0, 1], [1, 2]], [2, 2, 2])
 
 
 class TestCompressedObservables:

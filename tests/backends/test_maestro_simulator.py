@@ -858,27 +858,39 @@ class TestExpvalSubmission:
         assert result.results[1]["results"] == {"XX": 0.8}
         assert _observables_by_qasm(fake) == {QASM_DEPTH_2: "ZI", QASM_DEPTH_3: "XX"}
 
-    def test_circuit_ham_map_fallback(self, mocker):
-        """A circuit outside every group is measured against all observables.
-
-        Maestro splits only on ';', so the groups must be flattened first: it
-        would read 'ZI|XX' as one 5-character pseudo-term, return 0.0 for it,
-        and drop both real observables without raising."""
+    def test_groups_without_a_circuit_ham_map_are_all_measured(self, mocker):
+        """Without a map every circuit is measured on all groups' terms, ``;``-joined."""
         fake = _make_fake_maestro(mocker)
-        per_qasm = {QASM_DEPTH_2: [0.5], QASM_DEPTH_3: [0.5, -0.3]}
-        fake.simple_estimate.side_effect = lambda qasm, **_: _estimated(per_qasm[qasm])
+        fake.simple_estimate.side_effect = lambda qasm, **_: _estimated([0.5, -0.3])
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits(
             {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3},
             ham_ops="ZI|XX",
-            circuit_ham_map=[[0, 1]],
         )
 
         assert _observables_by_qasm(fake) == {
-            QASM_DEPTH_2: "ZI",
+            QASM_DEPTH_2: "ZI;XX",
             QASM_DEPTH_3: "ZI;XX",
         }
+
+    def test_circuit_ham_map_missing_a_circuit_raises_at_submit(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim = _make_simulator(mocker, fake)
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "circuit_ham_map does not cover every circuit; missing indices [2]."
+            ),
+        ):
+            sim.submit_circuits(
+                {"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_2, "c2": QASM_DEPTH_2},
+                ham_ops="ZI|XX",
+                circuit_ham_map=[[0, 1], [1, 2]],
+            )
+
+        fake.simple_estimate.assert_not_called()
 
 
 class TestNoisySamplingSubmission:
@@ -1325,11 +1337,14 @@ class TestMaestroIntegration:
         assert set(result.results[0]["results"]) == {"ZI", "IZ"}
 
     def test_short_observables_act_on_first_qubits(self, default_test_simulator):
-        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZI"))):
+        with pytest.warns(
+            UserWarning, match=exact_match(padding_warning("Z", "ZI"))
+        ) as caught:
             result = default_test_simulator.submit_circuits(
                 {"c0": QASM_X_ON_FIRST_QUBIT}, ham_ops="Z"
             )
 
+        assert caught[0].filename == __file__
         assert result.results[0]["results"] == {"ZI": pytest.approx(-1.0)}
 
 

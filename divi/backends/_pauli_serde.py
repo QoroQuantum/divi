@@ -8,7 +8,8 @@
 ``|`` between groups) produced upstream by
 :func:`~divi.circuits._sparse_pauli_op_to_ham_string`.  This module compresses
 that string for transport via sparse encoding + gzip + base64, and resolves
-which ``|``-group a given circuit was measured for.  Not an operator encoding
+which ``|``-group a given circuit was measured for.  :func:`compress_text` is
+also the cloud encoding for circuits.  Not an operator encoding
 (Jordan-Wigner, Bravyi-Kitaev) — purely an I/O and layout concern.
 """
 
@@ -18,37 +19,49 @@ import warnings
 from collections.abc import Sequence
 
 
-def _group_index(
-    circuit_index: int, circuit_ham_map: Sequence[list[int]] | None
-) -> int | None:
-    """Index of the ``|``-group covering *circuit_index*, or None when all apply."""
+def _assign_circuit_groups(
+    n_circuits: int, n_groups: int, circuit_ham_map: Sequence[list[int]] | None
+) -> list[int] | None:
+    """Each circuit's ``|``-group index, or None when every group applies to all.
+
+    Raises:
+        ValueError: If ``circuit_ham_map`` does not hold one ``[start, end)``
+            range per group, or its ranges do not cover every circuit exactly once.
+    """
     if circuit_ham_map is None:
         return None
-    for group_index, (start, end) in enumerate(circuit_ham_map):
-        if start <= circuit_index < end:
-            return group_index
-    return None
-
-
-def ham_ops_group_for_circuit(
-    circuit_index: int,
-    ham_ops: str,
-    circuit_ham_map: Sequence[list[int]] | None,
-) -> str:
-    """The ``|``-group of *ham_ops* covering *circuit_index*, else all of it.
-
-    Falling back to the whole string matters for auxiliary circuits submitted
-    outside the per-group ranges (overlap circuits, for instance): they are
-    evaluated against every observable rather than none.
-    """
-    group_index = _group_index(circuit_index, circuit_ham_map)
-    return ham_ops if group_index is None else ham_ops.split("|")[group_index]
+    if len(circuit_ham_map) != n_groups:
+        raise ValueError(
+            f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
+            f"number of ham_ops groups ({n_groups})."
+        )
+    group_of: dict[int, int] = {}
+    for group, (start, end) in enumerate(circuit_ham_map):
+        if not 0 <= start < end <= n_circuits:
+            raise ValueError(
+                f"circuit_ham_map range [{start}, {end}) is empty or out of bounds "
+                f"for {n_circuits} circuits."
+            )
+        for index in range(start, end):
+            if index in group_of:
+                raise ValueError(
+                    f"circuit_ham_map range [{start}, {end}) overlaps an earlier "
+                    f"range at circuit {index}."
+                )
+            group_of[index] = group
+    if len(group_of) < n_circuits:
+        missing = [index for index in range(n_circuits) if index not in group_of]
+        raise ValueError(
+            f"circuit_ham_map does not cover every circuit; missing indices {missing}."
+        )
+    return [group_of[index] for index in range(n_circuits)]
 
 
 def pad_ham_ops(
     ham_ops: str,
     circuit_ham_map: Sequence[list[int]] | None,
     n_qubits: Sequence[int],
+    stacklevel: int = 3,
 ) -> str:
     """Pad terms shorter than their circuits onto the circuits' first qubits.
 
@@ -57,14 +70,30 @@ def pad_ham_ops(
     submission order. Warns when anything is padded.
 
     Raises:
-        ValueError: If short terms are measured on circuits of different widths.
+        ValueError: If a term is empty or holds anything but I, X, Y, Z, a
+            group's terms differ in length after padding, short terms are
+            measured on circuits of different widths, or ``circuit_ham_map``
+            is malformed.
     """
     groups = ham_ops.split("|")
-    widths = [set() for _ in groups]
-    for i, n in enumerate(n_qubits):
-        g = _group_index(i, circuit_ham_map)
-        for group_widths in widths if g is None else [widths[g]]:
-            group_widths.add(n)
+    for group in groups:
+        terms = group.split(";")
+        if not all(terms):
+            raise ValueError(
+                "Hamiltonian operators must be non-empty semicolon-separated strings."
+            )
+        if not set("".join(terms)) <= {"I", "X", "Y", "Z"}:
+            raise ValueError(
+                "Hamiltonian operators must contain only I, X, Y, Z characters."
+            )
+
+    circuit_groups = _assign_circuit_groups(len(n_qubits), len(groups), circuit_ham_map)
+    if circuit_groups is None:
+        widths = [set(n_qubits) for _ in groups]
+    else:
+        widths = [set() for _ in groups]
+        for group, n in zip(circuit_groups, n_qubits):
+            widths[group].add(n)
 
     padded, example = [], None
     for group, group_widths in zip(groups, widths):
@@ -79,49 +108,42 @@ def pad_ham_ops(
             short = next(t for t in terms if len(t) < width)
             example = example or (short, short.ljust(width, "I"))
             terms = [t.ljust(width, "I") for t in terms]
+        if len(set(map(len, terms))) > 1:
+            raise ValueError("All Hamiltonian operators must have the same length.")
         padded.append(";".join(terms))
 
     if example:
         warnings.warn(
             "Observables shorter than their circuit are padded onto its first "
             f"qubits, e.g. {example[0]!r} -> {example[1]!r}.",
-            stacklevel=3,
+            stacklevel=stacklevel,
         )
     return "|".join(padded)
 
 
-def ham_ops_terms_for_circuit(
-    circuit_index: int,
+def split_ham_ops_per_circuit(
+    n_circuits: int,
     ham_ops: str,
     circuit_ham_map: Sequence[list[int]] | None,
 ) -> list[str]:
-    """The individual Pauli terms *circuit_index* was measured for.
+    """Each circuit's ``ham_ops`` group, or all groups ``;``-joined without a map."""
+    groups = ham_ops.split("|")
+    circuit_groups = _assign_circuit_groups(n_circuits, len(groups), circuit_ham_map)
+    if circuit_groups is None:
+        return [";".join(groups)] * n_circuits
+    return [groups[group] for group in circuit_groups]
 
-    A matched group holds no ``|``, so flattening only affects the fall-back
-    case where every group applies to this circuit.
-    """
-    group = ham_ops_group_for_circuit(circuit_index, ham_ops, circuit_ham_map)
-    return group.replace("|", ";").split(";")
 
-
-def ham_ops_terms_per_circuit(
+def split_ham_ops_terms_per_circuit(
     n_circuits: int,
     ham_ops: str,
     circuit_ham_map: Sequence[list[int]] | None,
 ) -> list[list[str]]:
-    """:func:`ham_ops_terms_for_circuit` for every circuit, parsing *ham_ops* once.
-
-    Circuits in the same group share one term list; treat the lists as read-only.
-    """
-    group_terms = [group.split(";") for group in ham_ops.split("|")]
-    all_terms = ham_ops.replace("|", ";").split(";")
-    per_circuit = []
-    for i in range(n_circuits):
-        group_index = _group_index(i, circuit_ham_map)
-        per_circuit.append(
-            all_terms if group_index is None else group_terms[group_index]
-        )
-    return per_circuit
+    """:func:`split_ham_ops_per_circuit` as term lists; lists are shared within
+    a group, so do not mutate them."""
+    per_circuit = split_ham_ops_per_circuit(n_circuits, ham_ops, circuit_ham_map)
+    terms = {group: group.split(";") for group in set(per_circuit)}
+    return [terms[group] for group in per_circuit]
 
 
 def group_ham_ops(observables: Sequence[str]) -> tuple[str, list[list[int]]]:
@@ -157,6 +179,12 @@ def _dense_to_sparse(term: str) -> str:
     return "".join(f"{ch}{i}" for i, ch in enumerate(term) if ch != "I") or "I"
 
 
+def compress_text(text: str) -> str:
+    """Gzip then base64, the cloud's encoding for circuits and observable groups."""
+    compressed = gzip.compress(text.encode("utf-8"), mtime=0)
+    return base64.b64encode(compressed).decode("ascii")
+
+
 def encode_ham_ops(dense_ham_ops: str) -> str:
     """Compress a semicolon-separated dense Pauli string for transport.
 
@@ -189,10 +217,7 @@ def encode_ham_ops(dense_ham_ops: str) -> str:
             f"All Pauli terms must have the same length; got lengths {lengths}"
         )
     sparse_str = ";".join(_dense_to_sparse(t) for t in terms)
-    compressed = base64.b64encode(
-        gzip.compress(sparse_str.encode("utf-8"), mtime=0)
-    ).decode("ascii")
-    return f"@gzs{n_qubits}:{compressed}"
+    return f"@gzs{n_qubits}:{compress_text(sparse_str)}"
 
 
 def compress_ham_ops(ham_ops: str) -> str:

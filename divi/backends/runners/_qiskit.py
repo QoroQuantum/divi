@@ -28,15 +28,8 @@ from qiskit_aer.noise import NoiseModel
 from divi._optional import import_optional
 from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
-from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
 from divi.backends._results_processing import _reverse_bitstrings
-from divi.backends._shot_allocation import (
-    ShotRange,
-    bucket_by_shots,
-    expand_ranges,
-    from_wire,
-    validate,
-)
+from divi.backends._shot_allocation import bucket_by_shots, group_shots_into_ranges
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
 
 logger = logging.getLogger(__name__)
@@ -358,7 +351,8 @@ class QiskitSimulator(CircuitRunner):
                 Terms shorter than a circuit are padded onto its first qubits,
                 with a warning.
             circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group in
-                ``ham_ops`` to a contiguous slice of circuits.
+                ``ham_ops`` to a contiguous slice of circuits; the slices cover
+                every circuit exactly once.
             shot_groups: Per-circuit shot allocation as ``[start, end, shots]``
                 triples covering the iteration order of ``circuits``. When
                 provided, overrides ``self.shots`` for each range; circuits
@@ -373,8 +367,6 @@ class QiskitSimulator(CircuitRunner):
         """
         self._reject_unknown_options(kwargs)
         raise_if_cancelled(cancellation_event, "Qiskit batch cancelled before dispatch")
-        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
-
         circuits = flatten_bound_payloads(payloads)
         n_circuits = len(circuits)
         logger.debug(
@@ -385,17 +377,15 @@ class QiskitSimulator(CircuitRunner):
         qiskit_circuits = [
             QuantumCircuit.from_qasm_str(qasm) for qasm in circuits.values()
         ]
+        per_circuit_ops, per_circuit_shots = self._decode_per_circuit(
+            [qc.num_qubits for qc in qiskit_circuits],
+            ham_ops,
+            circuit_ham_map,
+            shot_groups,
+        )
         if self.track_depth:
             self._depth_history.append([qc.depth() for qc in qiskit_circuits])
-
-        per_circuit_ops: list[list[str]] = []
-        if ham_ops is not None:
-            ham_ops = pad_ham_ops(
-                ham_ops, circuit_ham_map, [qc.num_qubits for qc in qiskit_circuits]
-            )
-            per_circuit_ops = ham_ops_terms_per_circuit(
-                n_circuits, ham_ops, circuit_ham_map
-            )
+        if per_circuit_ops is not None:
             qiskit_circuits = [
                 self._prepare_expval_circuit(qc, circuit_ops)
                 for qc, circuit_ops in zip(qiskit_circuits, per_circuit_ops)
@@ -416,7 +406,7 @@ class QiskitSimulator(CircuitRunner):
             optimization_level=self.optimization_level,
         )
 
-        if ham_ops is not None:
+        if per_circuit_ops is not None:
             result = simulator.run(transpiled).result()
             return ExecutionResult(
                 results=[
@@ -433,18 +423,12 @@ class QiskitSimulator(CircuitRunner):
                 run_time=result.time_taken,
             )
 
-        shot_ranges = (
-            [ShotRange(0, n_circuits, self.shots)]
-            if shot_groups is None
-            else from_wire(shot_groups)
-        )
-        validate(shot_ranges, n_circuits)
         # Aer applies one shot count per run, so each distinct count is one run;
         # deterministic mode runs every circuit alone on its own seeded simulator.
         if self._deterministic_execution:
-            per_circuit_shots = expand_ranges(shot_ranges, n_circuits)
             runs = [([i], shots) for i, shots in enumerate(per_circuit_shots)]
         else:
+            shot_ranges = group_shots_into_ranges(per_circuit_shots)
             runs = [(idx, shots) for shots, idx in bucket_by_shots(shot_ranges).items()]
 
         counts: list[dict[str, int]] = [{}] * n_circuits

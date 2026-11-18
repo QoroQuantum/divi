@@ -26,13 +26,9 @@ from divi._optional import import_optional
 from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
 from divi.backends._config import DeviceConfig, describe_unknown, require_device_config
-from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
+from divi.backends._pauli_serde import pad_ham_ops
 from divi.backends._results_processing import _reverse_bitstrings
-from divi.backends._shot_allocation import (
-    bucket_by_shots,
-    expand_shot_groups,
-    group_shots_into_ranges,
-)
+from divi.backends._shot_allocation import bucket_by_shots, group_shots_into_ranges
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, flatten_bound_payloads
 from divi.circuits._qasm_template import bind_first_row
 from divi.exceptions import VJPUnavailableError
@@ -505,7 +501,8 @@ class QRMIBackend(CircuitRunner):
                 instead of counts. Terms shorter than a circuit are padded onto
                 its first qubits, with a warning. Maestro only.
             circuit_ham_map: Assigns each ``|``-delimited ``ham_ops`` group to a
-                slice of the circuit list.
+                slice of the circuit list; the slices cover every circuit
+                exactly once.
             shot_groups: Per-circuit ``[start, end, shots]`` triples. Sampling
                 only.
             cancellation_event: Checked between circuits, and while one runs.
@@ -517,8 +514,10 @@ class QRMIBackend(CircuitRunner):
             ``"metadata"``.
 
         Raises:
-            ValueError: If ``ham_ops`` is given for an IBM resource, or an IBM
-                circuit has no classical bits.
+            ValueError: If no circuit is given, ``ham_ops`` is given for an IBM
+                resource or together with ``shot_groups``, ``ham_ops`` or
+                ``circuit_ham_map`` is malformed, or an IBM circuit has no
+                classical bits.
             QRMITaskFailedError: If the resource runs a task to a failure.
         """
         self._reject_unknown_options(kwargs)
@@ -526,7 +525,6 @@ class QRMIBackend(CircuitRunner):
             cancellation_event,
             "QRMI batch cancelled before any circuit was dispatched",
         )
-        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
         config = self._maestro_config
         if ham_ops is not None and config is None:
             raise self._maestro_only("ham_ops")
@@ -536,25 +534,19 @@ class QRMIBackend(CircuitRunner):
             raise ValueError("submit_circuits requires at least one payload.")
         labels = list(circuits)
         qasm_strings = list(circuits.values())
-        if ham_ops is not None:
-            ham_ops = pad_ham_ops(
-                ham_ops, circuit_ham_map, [count_qubits(q) for q in qasm_strings]
-            )
+        terms, shots = self._decode_per_circuit(
+            [count_qubits(q) for q in qasm_strings],
+            ham_ops,
+            circuit_ham_map,
+            shot_groups,
+        )
         self._record_qasm_depths(qasm_strings)
 
-        shots = expand_shot_groups(shot_groups, len(labels))
-        if shots is None:
-            shots = [self.shots] * len(labels)
         if config is None:
             return self._sample_on_ibm(labels, qasm_strings, shots, cancellation_event)
 
         qasm_strings = _prepare_noisy_circuits(
-            config, qasm_strings, estimating=ham_ops is not None
-        )
-        terms = (
-            None
-            if ham_ops is None
-            else ham_ops_terms_per_circuit(len(labels), ham_ops, circuit_ham_map)
+            config, qasm_strings, estimating=terms is not None
         )
         return self._run_on_maestro(
             config, labels, qasm_strings, shots, terms, cancellation_event

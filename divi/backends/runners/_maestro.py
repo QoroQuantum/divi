@@ -26,8 +26,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.backends._base import CircuitRunner, ExecutionResult
 from divi.backends._cancellation import raise_if_cancelled
 from divi.backends._config import describe_unknown, reject_unknown_reset
-from divi.backends._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
-from divi.backends._shot_allocation import expand_shot_groups
+from divi.backends._pauli_serde import pad_ham_ops
 from divi.circuits._conversions import (
     _sparse_pauli_op_to_ham_string,
     lower_to_basis_gates,
@@ -755,9 +754,9 @@ class MaestroSimulator(CircuitRunner):
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. If None, runs in sampling mode. Terms shorter
                 than a circuit are padded onto its first qubits, with a warning.
-            circuit_ham_map: Maps circuit index ranges to observable groups for
-                heterogeneous batches. Each inner list contains circuit indices
-                belonging to that observable group.
+            circuit_ham_map: One ``[start, end)`` slice of circuits per
+                ``|``-group in ``ham_ops``; the slices cover every circuit
+                exactly once.
             shot_groups: Per-circuit shot allocation as ``[start, end, shots]``
                 triples covering the iteration order of ``circuits``. Sampling
                 mode only; passing it with ``ham_ops`` raises ``ValueError``.
@@ -776,15 +775,15 @@ class MaestroSimulator(CircuitRunner):
             cancellation_event,
             "Maestro batch cancelled before any circuit was dispatched",
         )
-        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
-
         circuits = flatten_bound_payloads(payloads)
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
-        if ham_ops is not None:
-            ham_ops = pad_ham_ops(
-                ham_ops, circuit_ham_map, [count_qubits(q) for q in qasm_strings]
-            )
+        per_circuit_terms, per_circuit_shots = self._decode_per_circuit(
+            [count_qubits(q) for q in qasm_strings],
+            ham_ops,
+            circuit_ham_map,
+            shot_groups,
+        )
 
         self._record_qasm_depths(qasm_strings)
 
@@ -796,11 +795,6 @@ class MaestroSimulator(CircuitRunner):
         noise_kwargs = config._noise_realization_kwargs()
 
         base_config = config._simulator_config()
-        per_circuit_shots = expand_shot_groups(shot_groups, len(circuit_labels))
-        if ham_ops is not None:
-            per_circuit_terms = ham_ops_terms_per_circuit(
-                len(circuit_labels), ham_ops, circuit_ham_map
-            )
 
         def _run(item):
             i, label, qasm = item
@@ -817,10 +811,8 @@ class MaestroSimulator(CircuitRunner):
                 if noise_seed is not None:
                     noisy_kwargs = noise_kwargs | {"noise_seed": noise_seed}
 
-            if ham_ops is None:
-                shots = (
-                    self.shots if per_circuit_shots is None else per_circuit_shots[i]
-                )
+            if per_circuit_terms is None:
+                shots = per_circuit_shots[i]
                 raw = (
                     maestro.simple_execute(qasm, config=sim_config, shots=shots)
                     if noise_model is None

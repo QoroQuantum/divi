@@ -634,8 +634,11 @@ class TestExpvalSubmission:
 
     def test_short_observables_act_on_first_qubits(self):
         sim = QiskitSimulator(shots=5000)
-        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZI"))):
+        with pytest.warns(
+            UserWarning, match=exact_match(padding_warning("Z", "ZI"))
+        ) as caught:
             result = sim.submit_circuits({"c0": QASM_X_ON_FIRST_QUBIT}, ham_ops="Z")
+        assert caught[0].filename == __file__
         assert result.results[0]["results"] == {"ZI": pytest.approx(-1.0)}
 
     def test_sampling_not_affected(self, mocker):
@@ -668,6 +671,20 @@ class TestExpvalSubmission:
             )
         assert result.results[0]["results"] == {"X": pytest.approx(1.0, abs=1e-10)}
         assert result.results[1]["results"] == {"ZI": pytest.approx(-1.0)}
+
+    def test_circuit_ham_map_missing_a_circuit_raises(self):
+        sim = QiskitSimulator(shots=100)
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "circuit_ham_map does not cover every circuit; missing indices [2]."
+            ),
+        ):
+            sim.submit_circuits(
+                {f"c{i}": QASM_X_ON_FIRST_QUBIT for i in range(3)},
+                ham_ops="ZI|IZ",
+                circuit_ham_map=[[0, 1], [1, 2]],
+            )
 
     def test_prepare_expval_circuit_strips_measurements(self):
         """_prepare_expval_circuit removes measurements and adds save instructions."""
