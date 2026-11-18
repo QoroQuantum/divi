@@ -468,6 +468,7 @@ class TestPortfolioSelection:
             constraints=[ESG_FLOOR], use_constrained_mixer=True
         )
         penalised = _make_selection(constraints=[ESG_FLOOR])
+        constrained.cost_hamiltonian
         assert constrained.canonical_problem.terms == penalised.canonical_problem.terms
 
     @pytest.mark.parametrize(

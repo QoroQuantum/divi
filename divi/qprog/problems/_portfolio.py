@@ -682,7 +682,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
         # penalty_weight * (Σx - K)², expanded with x² = x.
         cardinality = {(): k * k, **{(i,): 1.0 - 2 * k for i in range(n)}}
         cardinality.update({(i, j): 2.0 for i in range(n) for j in range(i + 1, n)})
-        terms = self._canonical_problem.terms
+        terms = dict(self._canonical_problem.terms)
         for term, coeff in cardinality.items():
             terms[term] = terms.get(term, 0.0) - self._penalty_weight * coeff
             if not terms[term] and len(term) != 1:
