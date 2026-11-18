@@ -568,8 +568,8 @@ class PortfolioSelectionProblem(_PortfolioBase):
     penalty is zero, so :attr:`cost_hamiltonian` leaves it out; it would only
     add couplings between assets the covariance does not link. The other
     constraint penalties stay, and so does the full penalised QUBO in
-    :attr:`canonical_problem`. Slack qubits from inequality constraints keep an
-    X mixer.
+    :attr:`~divi.qprog.problems.BinaryOptimizationProblem.canonical_problem`.
+    Slack qubits from inequality constraints keep an X mixer.
 
     Args:
         expected_returns: Expected return :math:`\mu_i` of each asset.
@@ -680,8 +680,11 @@ class PortfolioSelectionProblem(_PortfolioBase):
         """Ising form of the penalised QUBO without the cardinality penalty."""
         n, k = self.n_assets, self._n_holdings
         # penalty_weight * (Σx - K)², expanded with x² = x.
-        cardinality = {(): k * k, **{(i,): 1.0 - 2 * k for i in range(n)}}
-        cardinality.update({(i, j): 2.0 for i in range(n) for j in range(i + 1, n)})
+        cardinality: dict[tuple[int, ...], float] = {
+            (): k * k,
+            **{(i,): 1.0 - 2 * k for i in range(n)},
+            **{(i, j): 2.0 for i in range(n) for j in range(i + 1, n)},
+        }
         terms = dict(self._canonical_problem.terms)
         for term, coeff in cardinality.items():
             terms[term] = terms.get(term, 0.0) - self._penalty_weight * coeff
