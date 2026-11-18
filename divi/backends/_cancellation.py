@@ -8,7 +8,10 @@ import logging
 import signal
 import threading
 from contextlib import contextmanager
+from http import HTTPStatus
 from threading import Event
+
+import requests
 
 from divi.exceptions import ExecutionCancelledError
 
@@ -71,9 +74,8 @@ def _best_effort_cancel_job(
     """Notify an async backend's scheduler that an in-flight job should stop.
 
     No-op when ``backend`` is not an :class:`AsyncJobBackend` or when
-    ``execution_result`` lacks a ``job_id``. Swallows the predictable failure
-    modes (409 already-cancelled, network hiccups) at DEBUG so cancellation
-    cleanup never masks the user's original interrupt.
+    ``execution_result`` lacks a ``job_id``. Logs a failed cancel as a warning
+    instead of raising; a 409 means the job already stopped.
     """
     if not isinstance(backend, AsyncJobBackend):
         return
@@ -81,12 +83,14 @@ def _best_effort_cancel_job(
         return
     try:
         backend.cancel_job(execution_result)
-    except Exception:
-        logger.debug(
-            "Best-effort cancel_job failed for %s",
-            execution_result.job_id,
-            exc_info=True,
+    except Exception as exc:
+        already_stopped = (
+            isinstance(exc, requests.HTTPError)
+            and exc.response is not None
+            and exc.response.status_code == HTTPStatus.CONFLICT
         )
+        level = logging.DEBUG if already_stopped else logging.WARNING
+        logger.log(level, "Could not cancel job %s: %s", execution_result.job_id, exc)
 
 
 @contextmanager

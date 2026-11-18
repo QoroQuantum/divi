@@ -5,8 +5,10 @@
 """Tests for divi.backends._cancellation."""
 
 import logging
+from http import HTTPStatus
 
 import pytest
+import requests
 
 from divi.backends import AsyncJobBackend, ExecutionResult, JobFailedError
 from divi.backends._cancellation import (
@@ -37,18 +39,26 @@ class TestBestEffortCancelJob:
         _best_effort_cancel_job(backend, ExecutionResult(results=[]))
         backend.cancel_job.assert_not_called()
 
-    def test_swallows_cancel_job_exception(self, mocker, caplog):
+    def test_warns_instead_of_raising_when_cancel_fails(self, mocker, caplog):
         backend = mocker.Mock(spec=AsyncJobBackend)
-        error = RuntimeError("server says no")
-        backend.cancel_job.side_effect = error
+        backend.cancel_job.side_effect = RuntimeError("server says no")
         result = ExecutionResult(job_id="job_z")
         with caplog.at_level(logging.DEBUG, logger="divi.backends._cancellation"):
             _best_effort_cancel_job(backend, result)
         backend.cancel_job.assert_called_once_with(result)
         (record,) = caplog.records
+        assert record.levelno == logging.WARNING
+        assert record.getMessage() == "Could not cancel job job_z: server says no"
+
+    def test_a_job_that_already_stopped_is_not_a_warning(self, mocker, caplog):
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        conflict = requests.Response()
+        conflict.status_code = HTTPStatus.CONFLICT
+        backend.cancel_job.side_effect = requests.HTTPError(response=conflict)
+        with caplog.at_level(logging.DEBUG, logger="divi.backends._cancellation"):
+            _best_effort_cancel_job(backend, ExecutionResult(job_id="job_z"))
+        (record,) = caplog.records
         assert record.levelno == logging.DEBUG
-        assert record.getMessage() == "Best-effort cancel_job failed for job_z"
-        assert record.exc_info[1] is error
 
 
 class TestCancelJobOnAbort:

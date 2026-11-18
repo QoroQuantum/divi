@@ -170,9 +170,8 @@ the polls; it is unbounded by default.
 ``Ctrl-C`` stops the wait without cancelling the job. Its id is logged when the
 job is created, so you can fetch it later.
 
-Initialisation and submission are not retried because both mutate server
-state. After job creation, an ambiguous submission, polling (including
-exhausting ``max_retries``), or result-fetch failure raises
+After job creation, an ambiguous submission, polling (including exhausting
+``max_retries``), or result-fetch failure raises
 :exc:`~divi.exceptions.CharacterizationSubmitError`. It preserves the existing
 ``job_id`` and identifies the failed ``phase``.
 

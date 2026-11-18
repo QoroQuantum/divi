@@ -856,16 +856,13 @@ class TestQoroServiceCharacterize:
         assert result["status"] == "COMPLETED"
         assert result["report"] == REPORT
 
-        # init → submit → status → result, all routed through the same
-        # wrapper (init and submit use retry=False).
+        # init → submit → status → result, all routed through the same wrapper.
         init_call, submit_call, status_call, result_call = mock_req.call_args_list
         assert status_call.args == ("get", "job/val-job-123/status/")
         assert result_call.args == ("get", "job/val-job-123/validation_result/")
         assert init_call.args == ("post", "job/init/")
-        assert init_call.kwargs["retry"] is False
         assert init_call.kwargs["json"]["job_type"] == "VALIDATE"
         assert submit_call.args == ("post", "job/val-job-123/submit_qubo/")
-        assert submit_call.kwargs["retry"] is False
         assert submit_call.kwargs["json"]["qubo"] == {"0,0": -1.0, "0,1": 2.0}
         assert submit_call.kwargs["json"]["reference_states"] == ["01", "10"]
 

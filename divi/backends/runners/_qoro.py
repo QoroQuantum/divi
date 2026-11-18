@@ -105,15 +105,28 @@ session = requests.Session()
 retry_configuration = Retry(
     total=5,
     backoff_factor=0.1,
-    status_forcelist=[502],
-    allowed_methods=["GET", "POST", "DELETE"],
+    # Gateway errors, including Cloudflare's 52x origin errors.
+    status_forcelist=[502, 503, 504, 520, 521, 522, 523, 524],
+    allowed_methods=["GET", "DELETE"],
+    raise_on_status=False,
 )
 
 session.mount("http://", HTTPAdapter(max_retries=retry_configuration))
 session.mount("https://", HTTPAdapter(max_retries=retry_configuration))
 
-# Pooled connections without retries, for requests a retry could apply twice.
-plain_session = requests.Session()
+# Retries only a connection that never opened, which the server never saw.
+connect_retry_configuration = Retry(
+    total=3, connect=3, read=False, other=0, backoff_factor=0.5
+)
+
+
+def _send_once(method: str, url: str, **kwargs) -> requests.Response:
+    """Send a request on a fresh connection, never resending it once delivered."""
+    with requests.Session() as fresh:
+        fresh.mount("http://", HTTPAdapter(max_retries=connect_retry_configuration))
+        fresh.mount("https://", HTTPAdapter(max_retries=connect_retry_configuration))
+        return fresh.request(method, url, **kwargs)
+
 
 logger = logging.getLogger(__name__)
 
@@ -445,23 +458,19 @@ class QoroService(AsyncJobBackend):
         self,
         method: str,
         endpoint: str,
-        *,
-        retry: bool = True,
         **kwargs,
     ) -> requests.Response:
         """
         Make an authenticated HTTP request to the Qoro API.
 
         This internal method centralises all API communication, handling authentication
-        headers and error responses consistently.
+        headers and error responses consistently. A POST is sent once on a fresh
+        connection, since a resend could apply it twice; other methods are
+        retried on transport failure or gateway error.
 
         Args:
             method (str): HTTP method to use (e.g., 'get', 'post', 'delete').
             endpoint (str): API endpoint path (without base URL).
-            retry (bool): When ``True`` (the default), the request goes
-                through the session that has the retry adapter mounted.
-                Set to ``False`` for state-changing requests, which a retry
-                after a lost response would apply twice.
             **kwargs: Additional arguments to pass to requests.Session.request(), such as
                 'json', 'timeout', 'params', etc.
 
@@ -482,7 +491,7 @@ class QoroService(AsyncJobBackend):
         if "headers" in kwargs:
             headers.update(kwargs.pop("headers"))
 
-        requester = session.request if retry else plain_session.request
+        requester = _send_once if method.upper() == "POST" else session.request
         response = requester(method, url, headers=headers, **kwargs)
 
         # Raise with comprehensive error details if request failed
@@ -985,8 +994,8 @@ class QoroService(AsyncJobBackend):
 
         The plan is complete before ``job/init/`` runs, so the last fragment
         is known up front and is the only one marked ``finalized``. Neither
-        request is retried: a retry after a lost response would open a second
-        job or append the circuits twice. A failed upload cancels the job it
+        request is resent once delivered: a resend after a lost response would
+        open a second job or append the circuits twice. A failed upload cancels the job it
         opened.
 
         Raises:
@@ -1005,7 +1014,7 @@ class QoroService(AsyncJobBackend):
         init_payload |= _config_body(maestro_config, device_config)
 
         init_response = self._make_request(
-            "post", "job/init/", retry=False, json=init_payload, timeout=100
+            "post", "job/init/", json=init_payload, timeout=100
         )
         job_id = init_response.json()["job_id"]
 
@@ -1022,7 +1031,6 @@ class QoroService(AsyncJobBackend):
                     self._make_request(
                         "post",
                         f"job/{job_id}/add_circuits/",
-                        retry=False,
                         json=payload,
                         timeout=100,
                     )
@@ -1069,7 +1077,6 @@ class QoroService(AsyncJobBackend):
         return self._make_request(
             "post",
             f"job/{job_id}/cancel/",
-            retry=False,
             timeout=50,
         )
 
@@ -1353,7 +1360,7 @@ class QoroService(AsyncJobBackend):
                 and failures before a recoverable job ID exists.
 
         .. note::
-            Initialisation and submission deliberately disable HTTP retries
+            Initialisation and submission are never resent once delivered,
             because both mutate server state. Fetching by ``job_id`` is free.
             Waiting shows polling progress and is bounded by the service's
             ``max_retries`` (unbounded by default). Interrupting the wait does
@@ -1374,7 +1381,6 @@ class QoroService(AsyncJobBackend):
             init_resp = self._make_request(
                 "post",
                 "job/init/",
-                retry=False,
                 json={"job_type": JobType.CHARACTERIZE.value, "tag": tag},
                 timeout=100,
             )
@@ -1400,7 +1406,6 @@ class QoroService(AsyncJobBackend):
                 self._make_request(
                     "post",
                     f"job/{job_id}/submit_qubo/",
-                    retry=False,
                     json=submit_payload,
                     timeout=100,
                 )

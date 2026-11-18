@@ -95,10 +95,10 @@ def http_response(
 
 
 def patch_transport(mocker, *, session=None, plain=None):
-    """Patch the retrying session and the plain, non-retrying session."""
+    """Patch the retrying session and the send-once path POSTs take."""
     return (
         mocker.patch.object(_qoro.session, "request", side_effect=session),
-        mocker.patch.object(_qoro.plain_session, "request", side_effect=plain),
+        mocker.patch.object(_qoro, "_send_once", side_effect=plain),
     )
 
 

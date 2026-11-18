@@ -12,6 +12,7 @@ import signal
 import warnings
 from dataclasses import replace
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import metadata
 from threading import Event, Thread
 
@@ -513,12 +514,6 @@ class TestQoroServiceMock:
         "method, kwargs, extra_headers",
         [
             pytest.param("get", {}, {}, id="get"),
-            pytest.param(
-                "post",
-                {"json": {"data": "test"}},
-                {"Content-Type": "application/json"},
-                id="post-adds-content-type",
-            ),
             pytest.param(
                 "get",
                 {"headers": {"Custom": "Header"}},
@@ -2191,7 +2186,9 @@ class TestQoroServiceMock:
 
     # --- Tests for cancel_job ---
 
-    def test_cancel_job_posts_once_without_retrying(self, mocker, qoro_service_factory):
+    def test_cancel_job_posts_to_the_cancel_endpoint(
+        self, mocker, qoro_service_factory
+    ):
         service = qoro_service_factory()
         response = mocker.MagicMock(status_code=HTTPStatus.OK)
         mock_make_request = mocker.patch.object(
@@ -2200,7 +2197,7 @@ class TestQoroServiceMock:
 
         assert service.cancel_job(make_execution_result("job_1")) is response
         mock_make_request.assert_called_once_with(
-            "post", "job/job_1/cancel/", retry=False, timeout=50
+            "post", "job/job_1/cancel/", timeout=50
         )
 
     @pytest.mark.parametrize(
@@ -2437,11 +2434,10 @@ def _contract_qoro_runner(
 
 
 class TestTransportRetries:
-    """The session-level retry policy, separate from ``poll_job_status``' loop.
+    """HTTP-level resends, separate from ``poll_job_status``' loop.
 
-    ``poll_job_status`` retries a *job* that is still running; this policy
-    retries the HTTP request itself on a transport failure, and nothing else
-    asserts its shape.
+    ``poll_job_status`` retries a *job* that is still running; these retry the
+    HTTP request itself on a transport failure or gateway error.
     """
 
     @pytest.mark.parametrize("scheme", ["http://", "https://"])
@@ -2449,20 +2445,125 @@ class TestTransportRetries:
         adapter = _qoro_service.session.get_adapter(scheme)
         assert adapter.max_retries is _qoro_service.retry_configuration
 
-    @pytest.mark.parametrize("scheme", ["http://", "https://"])
-    def test_the_plain_session_never_retries(self, scheme):
-        """A request resent after the server applied it would apply it twice."""
-        adapter = _qoro_service.plain_session.get_adapter(f"{scheme}example")
-        assert adapter.max_retries.total == 0
-
     def test_retry_policy_covers_transient_failures(self):
         retries = _qoro_service.retry_configuration
         assert retries.total == 5
         assert retries.backoff_factor > 0
-        # 502 is the gateway error the service emits while a node cycles; the
-        # methods listed are the ones the client actually issues.
-        assert HTTPStatus.BAD_GATEWAY in retries.status_forcelist
-        assert set(retries.allowed_methods) == {"GET", "POST", "DELETE"}
+        assert set(retries.status_forcelist) == {502, 503, 504, 520, 521, 522, 523, 524}
+        assert set(retries.allowed_methods) == {"GET", "DELETE"}
+
+    def test_a_post_retries_only_a_connection_that_never_opened(self):
+        retries = _qoro_service.connect_retry_configuration
+        assert retries.connect > 0
+        assert retries.read is False
+        assert retries.other == 0
+        assert not retries.status_forcelist
+
+    def test_a_gateway_error_on_a_read_is_retried_then_raised_with_details(
+        self, qoro_service_factory, unavailable_api
+    ):
+        service = qoro_service_factory()
+
+        with pytest.raises(requests.HTTPError, match=r"^503 Service Unavailable"):
+            service._make_request("get", "job/job_1/status/", timeout=10)
+
+        assert unavailable_api.hits == _qoro_service.retry_configuration.total + 1
+
+    def test_a_post_answered_with_a_gateway_error_is_not_resent(
+        self, qoro_service_factory, unavailable_api
+    ):
+        service = qoro_service_factory()
+
+        with pytest.raises(requests.HTTPError, match=r"^503 Service Unavailable"):
+            service._make_request("post", "job/init/", json={}, timeout=10)
+
+        assert unavailable_api.hits == 1
+
+    def test_posts_bypass_the_retrying_session(self, mocker, qoro_service_factory):
+        """A 502 retried after the server applied a POST would apply it twice."""
+        service = qoro_service_factory()
+        session_request, plain_request = patch_transport(
+            mocker,
+            plain=[
+                http_response(mocker, HTTPStatus.CREATED, body={"job_id": "job_1"}),
+                http_response(mocker, body={}),
+                http_response(mocker, body={"status": "cancelled"}),
+            ],
+        )
+
+        service.cancel_job(service.submit_circuits({"c1": QASM_X_ON_FIRST_QUBIT}))
+
+        session_request.assert_not_called()
+        assert [call.args for call in plain_request.call_args_list] == [
+            ("post", f"{_API}/job/init/"),
+            ("post", f"{_API}/job/job_1/add_circuits/"),
+            ("post", f"{_API}/job/job_1/cancel/"),
+        ]
+
+    def test_status_reads_keep_the_retrying_session(self, mocker, qoro_service_factory):
+        service = qoro_service_factory()
+        session_request, plain_request = patch_transport(
+            mocker, session=[http_response(mocker, body={"status": "RUNNING"})]
+        )
+
+        service.poll_job_status(make_execution_result("job_1"))
+
+        plain_request.assert_not_called()
+        assert session_request.call_args.args == ("get", f"{_API}/job/job_1/status/")
+
+    def test_a_post_carries_auth_and_json_headers(self, mocker, qoro_service_factory):
+        service = qoro_service_factory(auth_token="test_token")
+        session_request, plain_request = patch_transport(
+            mocker, plain=[http_response(mocker, body={})]
+        )
+
+        service._make_request("post", "test", json={"data": 1})
+
+        session_request.assert_not_called()
+        plain_request.assert_called_once_with(
+            "post",
+            f"{_API}/test",
+            headers={
+                "Authorization": "Bearer test_token",
+                "User-Agent": _qoro_service.USER_AGENT,
+                "Content-Type": "application/json",
+            },
+            json={"data": 1},
+        )
+
+
+class _UnavailableServer(ThreadingHTTPServer):
+    hits = 0
+
+
+class _AnswerUnavailable(BaseHTTPRequestHandler):
+    """Answers every request with 503, counting each on the server."""
+
+    def _answer(self):
+        self.server.hits += 1
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = _answer
+
+    def log_message(self, format, *args):
+        pass
+
+
+@pytest.fixture
+def unavailable_api(mocker):
+    """A local API that answers 503 to everything, with retry backoff off."""
+    server = _UnavailableServer(("127.0.0.1", 0), _AnswerUnavailable)
+    Thread(target=server.serve_forever, daemon=True).start()
+    mocker.patch.object(
+        _qoro_service, "API_URL", f"http://127.0.0.1:{server.server_port}"
+    )
+    mocker.patch.object(_qoro_service.retry_configuration, "backoff_factor", 0)
+    yield server
+    server.shutdown()
+    server.server_close()
 
 
 def _answer_every_request(mocker, service):
@@ -2515,63 +2616,6 @@ def _vjp_add_bodies(mocker, service) -> list[dict]:
         for call in transport.call_args_list
         if call.args[1].endswith("add_circuits/")
     ]
-
-
-def test_state_changing_posts_bypass_the_retrying_session(mocker, qoro_service_factory):
-    """A 502 retried after the server applied a POST would apply it twice."""
-    service = qoro_service_factory()
-    session_request, plain_request = patch_transport(
-        mocker,
-        plain=[
-            http_response(mocker, HTTPStatus.CREATED, body={"job_id": "job_1"}),
-            http_response(mocker, body={}),
-            http_response(mocker, body={"status": "cancelled"}),
-        ],
-    )
-
-    service.cancel_job(service.submit_circuits({"c1": QASM_X_ON_FIRST_QUBIT}))
-
-    session_request.assert_not_called()
-    assert [call.args for call in plain_request.call_args_list] == [
-        ("post", f"{_API}/job/init/"),
-        ("post", f"{_API}/job/job_1/add_circuits/"),
-        ("post", f"{_API}/job/job_1/cancel/"),
-    ]
-
-
-def test_status_reads_keep_the_retrying_session(mocker, qoro_service_factory):
-    service = qoro_service_factory()
-    session_request, plain_request = patch_transport(
-        mocker, session=[http_response(mocker, body={"status": "RUNNING"})]
-    )
-
-    service.poll_job_status(make_execution_result("job_1"))
-
-    plain_request.assert_not_called()
-    assert session_request.call_args.args == ("get", f"{_API}/job/job_1/status/")
-
-
-def test_an_unretried_request_goes_through_the_plain_session(
-    mocker, qoro_service_factory
-):
-    service = qoro_service_factory(auth_token="test_token")
-    session_request, plain_request = patch_transport(
-        mocker, plain=[http_response(mocker, body={})]
-    )
-
-    service._make_request("post", "test", retry=False, json={"data": 1})
-
-    session_request.assert_not_called()
-    plain_request.assert_called_once_with(
-        "post",
-        f"{_API}/test",
-        headers={
-            "Authorization": "Bearer test_token",
-            "User-Agent": _qoro_service.USER_AGENT,
-            "Content-Type": "application/json",
-        },
-        json={"data": 1},
-    )
 
 
 def test_add_circuits_answered_with_created_is_accepted(mocker, qoro_service_factory):
