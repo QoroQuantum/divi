@@ -25,7 +25,7 @@ from divi.qprog.initial_states import (
     InitialState,
     SuperpositionState,
     WState,
-    build_block_xy_mixer_graph,
+    build_block_xy_mixer_edges,
 )
 
 from ._base import QAOAProblem
@@ -1646,10 +1646,10 @@ class _RoutingProblemBase(QAOAProblem):
         if not self._use_constrained_mixer:
             return x_mixer(self._ising.n_qubits)
         n_qubits = self._block_size * self._n_blocks
-        graph = build_block_xy_mixer_graph(
+        edges = build_block_xy_mixer_edges(
             self._block_size, self._n_blocks, range(n_qubits)
         )
-        return xy_mixer(graph, n_qubits=n_qubits)
+        return xy_mixer(edges, n_qubits=n_qubits)
 
 
 # --- TSP decomposition ---
@@ -1947,10 +1947,10 @@ class TSPProblem(BinaryOptimizationProblem):
         if self._mixer_cache is None:
             m = self._n_cities - 1
             idx = self._canonical_problem.variable_to_idx
-            graph = build_block_xy_mixer_graph(
+            edges = build_block_xy_mixer_edges(
                 m, m, [idx[qubit] for qubit in range(m * m)]
             )
-            self._mixer_cache = xy_mixer(graph, n_qubits=m * m)
+            self._mixer_cache = xy_mixer(edges, n_qubits=m * m)
         return self._mixer_cache
 
     @property

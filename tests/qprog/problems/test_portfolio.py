@@ -413,6 +413,18 @@ class TestPortfolioSelection:
         ]
         assert len(single_x) == n_slack(problem, 4)
 
+    @pytest.mark.parametrize("constraints", [(), (ESG_FLOOR,)], ids=["plain", "esg"])
+    def test_constrained_mixer_applies_the_ring_in_order(self, constraints):
+        mixer = _make_selection(
+            constraints=constraints, use_constrained_mixer=True
+        ).mixer_hamiltonian
+        xx_pairs = [
+            tuple(np.flatnonzero(pauli.x).tolist())
+            for pauli in mixer.paulis
+            if pauli.x.sum() == 2 and not pauli.z.any()
+        ]
+        assert xx_pairs == [(0, 1), (1, 2), (2, 3), (0, 3)]
+
     def test_constrained_initial_state_is_dicke_on_assets(self):
         state = _make_selection(use_constrained_mixer=True).recommended_initial_state
         assert isinstance(state, DickeState)

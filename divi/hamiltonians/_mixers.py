@@ -94,8 +94,9 @@ def xy_mixer(
 ) -> SparsePauliOp:
     """Return the XY mixer ``0.5 * sum_(i,j) (X_i X_j + Y_i Y_j)``.
 
-    The graph nodes must be integer qubit indices. ``n_qubits`` may be
-    provided to preserve isolated trailing qubits.
+    The graph nodes must be integer qubit indices. Terms follow the edge
+    order, XX then YY per edge. ``n_qubits`` may be provided to preserve
+    isolated trailing qubits.
     """
     edges, _, n_qubits = _resolve_edges_nodes_and_width(graph, n_qubits, "xy_mixer")
     if n_qubits == 0:

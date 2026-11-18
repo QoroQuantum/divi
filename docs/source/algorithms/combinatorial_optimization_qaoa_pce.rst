@@ -713,6 +713,32 @@ problem.
    print(f"Holdings: {best.decoded}, objective: {best.energy:.5f}")
    print(problem.metrics(best.bitstring))
 
+To warm-start from
+:func:`~divi.backends.characterization.characterize_and_validate`, pass the
+asset qubits (the first ``n_assets``) as ``qubits`` of an ``eq_cardinality``
+constraint; without them the service's XY ring also covers the slack qubits.
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.backends import QoroService
+   from divi.backends.characterization import (
+       CharacterizationOptions,
+       characterize_and_validate,
+   )
+
+   options = CharacterizationOptions(
+       ansatz={"mixer": "xy", "layers": 2},
+       constraints=[
+           {"type": "eq_cardinality", "bound": 2, "qubits": list(range(len(mu)))}
+       ],
+   )
+   result = characterize_and_validate(
+       problem, [best.bitstring], service=QoroService(), options=options
+   )
+   qaoa.run(initial_params=result.qaoa_initial_params(layers=2))
+
 Partitioned Portfolios
 ^^^^^^^^^^^^^^^^^^^^^^
 

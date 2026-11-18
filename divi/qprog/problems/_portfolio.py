@@ -30,7 +30,7 @@ from divi.qprog.initial_states import (
     DickeState,
     InitialState,
     SuperpositionState,
-    build_block_xy_mixer_graph,
+    build_block_xy_mixer_edges,
 )
 
 from ._base import QAOAProblem, place_by_coupling
@@ -678,7 +678,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
             n_qubits = self._ising.n_qubits
             idx = self._canonical_problem.variable_to_idx
             assets = [idx[i] for i in range(self.n_assets)]
-            ring = build_block_xy_mixer_graph(
+            ring = build_block_xy_mixer_edges(
                 self.n_assets, 1, assets, connectivity="ring"
             )
             slack_x = [

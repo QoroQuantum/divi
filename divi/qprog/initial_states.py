@@ -16,10 +16,10 @@ Class-based API (preferred)::
 Pass instances directly to algorithm constructors (e.g. ``initial_state=WState(3, 4)``).
 """
 
+import itertools
 from abc import ABC, abstractmethod
 from typing import ClassVar, Literal, Sequence
 
-import networkx as nx
 import numpy as np
 import numpy.typing as npt
 from qiskit.circuit import QuantumCircuit
@@ -331,22 +331,24 @@ class DickeState(InitialState):
 
 
 # ---------------------------------------------------------------------------
-# Block-XY mixer graph (for use with ``xy_mixer``)
+# Block-XY mixer edges (for use with ``xy_mixer``)
 # ---------------------------------------------------------------------------
 
 
-def build_block_xy_mixer_graph(
+def build_block_xy_mixer_edges(
     block_size: int,
     n_blocks: int,
     wires: Sequence[int],
     connectivity: Literal["complete", "path", "ring"] = "complete",
-) -> nx.Graph:
-    """Build the connectivity graph for a block-XY mixer.
+) -> list[tuple[int, int]]:
+    """Build the ordered edge list of a block-XY mixer.
 
-    Returns a ``networkx.Graph`` whose edges define the XY coupling
-    terms within each qubit block.  Pass the result to
-    :func:`~divi.hamiltonians.xy_mixer` to obtain the mixer
-    Hamiltonian as a :class:`~qiskit.quantum_info.SparsePauliOp`.
+    Each edge is an XY coupling between two qubits of the same block. Pass the
+    result to :func:`~divi.hamiltonians.xy_mixer` to obtain the mixer
+    Hamiltonian as a :class:`~qiskit.quantum_info.SparsePauliOp`; its terms,
+    and so the gates of one mixer layer, follow the edge order. Pass
+    ``n_qubits`` there too when a block of one qubit leaves wires without
+    edges.
 
     Args:
         block_size: Qubits per block (≥ 2 for mixing to occur).
@@ -355,23 +357,26 @@ def build_block_xy_mixer_graph(
         connectivity: Intra-block coupling pattern.
 
             * ``"complete"`` (default) — all-to-all edges within each
-              block.  Matches the CE-QAOA mixer from
+              block, in lexicographic order of wire position.  Matches the
+              CE-QAOA mixer from
               `arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_
               and provides a constant spectral gap on the
               one-excitation sector.
             * ``"path"`` — nearest-neighbour (linear chain) edges
-              within each block.  Uses O(n) terms instead of O(n²),
-              which may be preferable on hardware with limited
-              connectivity, at the cost of a weaker spectral gap.
-            * ``"ring"`` — the path closed into a cycle (a path for blocks of
-              two qubits). Uses O(n) terms, like ``"path"``, while connecting
-              the ends of each block. Every connectivity conserves Hamming
-              weight within each block; ``"complete"`` has every Dicke state
-              (:class:`DickeState`) as an eigenstate, ``"path"`` and ``"ring"``
-              in general do not.
+              within each block, ``(w0, w1), (w1, w2), …``.  Uses O(n) terms
+              instead of O(n²), which may be preferable on hardware with
+              limited connectivity, at the cost of a weaker spectral gap.
+            * ``"ring"`` — the path closed into a cycle, ``(w0, w1), (w1, w2),
+              …, (w_{n-1}, w0)`` (a path for blocks of two qubits), the order
+              the Qoro characterisation service applies its XY ring mixer in.
+              Uses O(n) terms, like ``"path"``, while connecting the ends of
+              each block. Every connectivity conserves Hamming weight within
+              each block; ``"complete"`` has every Dicke state
+              (:class:`DickeState`) as an eigenstate, ``"path"`` and
+              ``"ring"`` in general do not.
 
     Returns:
-        ``networkx.Graph`` for :func:`~divi.hamiltonians.xy_mixer`.
+        Edges ``(left, right)`` of wires, block by block.
     """
     wires = list(wires)
     expected = block_size * n_blocks
@@ -380,15 +385,13 @@ def build_block_xy_mixer_graph(
             f"Expected {expected} wires ({block_size} × {n_blocks}), got {len(wires)}."
         )
 
-    g = nx.Graph()
-    g.add_nodes_from(wires)
+    edges: list[tuple[int, int]] = []
     for b in range(n_blocks):
-        start = b * block_size
-        block_wires = wires[start : start + block_size]
+        block_wires = wires[b * block_size : (b + 1) * block_size]
         if connectivity == "complete":
-            g.update(nx.complete_graph(block_wires))
-        elif connectivity == "ring" and len(block_wires) > 2:
-            g.update(nx.cycle_graph(block_wires))
+            edges.extend(itertools.combinations(block_wires, 2))
         else:
-            g.update(nx.path_graph(block_wires))
-    return g
+            edges.extend(itertools.pairwise(block_wires))
+            if connectivity == "ring" and len(block_wires) > 2:
+                edges.append((block_wires[-1], block_wires[0]))
+    return edges

@@ -16,7 +16,7 @@ from divi.hamiltonians import qubo_to_ising, x_mixer, xy_mixer
 from divi.qprog.algorithms import PCE, QAOA, ProgressivePCE
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensembles import PartitioningProgramEnsemble
-from divi.qprog.initial_states import SuperpositionState, build_block_xy_mixer_graph
+from divi.qprog.initial_states import SuperpositionState, build_block_xy_mixer_edges
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
@@ -2640,8 +2640,8 @@ def test_problem_mixer(kind, encoding):
         expected = x_mixer(n)
     else:
         block_size, n_blocks = (3, 3) if kind == "tsp" else (6, 3)
-        graph = build_block_xy_mixer_graph(block_size, n_blocks, range(n))
-        expected = xy_mixer(graph, n_qubits=n)
+        edges = build_block_xy_mixer_edges(block_size, n_blocks, range(n))
+        expected = xy_mixer(edges, n_qubits=n)
         for pauli in problem.mixer_hamiltonian.paulis:
             touched = np.flatnonzero(pauli.x | pauli.z)
             assert len(set(touched // block_size)) == 1

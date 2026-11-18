@@ -24,7 +24,7 @@ from divi.qprog.initial_states import (
     SuperpositionState,
     WState,
     ZerosState,
-    build_block_xy_mixer_graph,
+    build_block_xy_mixer_edges,
 )
 from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
 from tests._helpers import exact_match, initial_state_amplitudes
@@ -303,24 +303,33 @@ class TestPauliExpectations:
 
 class TestBlockXYMixer:
     @pytest.mark.parametrize(
-        "block_size, n_blocks, connectivity, expected",
+        "block_size, n_blocks, wires, connectivity, expected",
         [
-            (3, 2, "complete", {(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)}),
-            (3, 2, "path", {(0, 1), (1, 2), (3, 4), (4, 5)}),
-            (3, 2, "ring", {(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)}),
-            (4, 1, "ring", {(0, 1), (1, 2), (2, 3), (0, 3)}),
-            (2, 2, "ring", {(0, 1), (2, 3)}),
+            (
+                3,
+                2,
+                range(6),
+                "complete",
+                [(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)],
+            ),
+            (3, 2, range(6), "path", [(0, 1), (1, 2), (3, 4), (4, 5)]),
+            (3, 2, range(6), "ring", [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3)]),
+            (4, 1, range(4), "ring", [(0, 1), (1, 2), (2, 3), (3, 0)]),
+            (2, 2, range(4), "ring", [(0, 1), (2, 3)]),
+            (3, 1, [5, 2, 7], "ring", [(5, 2), (2, 7), (7, 5)]),
         ],
     )
-    def test_graph_structure(self, block_size, n_blocks, connectivity, expected):
-        g = build_block_xy_mixer_graph(
-            block_size, n_blocks, range(block_size * n_blocks), connectivity
+    def test_edges_follow_wire_order(
+        self, block_size, n_blocks, wires, connectivity, expected
+    ):
+        assert (
+            build_block_xy_mixer_edges(block_size, n_blocks, wires, connectivity)
+            == expected
         )
-        assert {tuple(sorted(edge)) for edge in g.edges()} == expected
 
     def test_wrong_wire_count_raises(self):
         with pytest.raises(ValueError, match="Expected 6 wires"):
-            build_block_xy_mixer_graph(3, 2, [0, 1, 2])
+            build_block_xy_mixer_edges(3, 2, [0, 1, 2])
 
     @pytest.mark.parametrize("block_size, n_blocks, t", [(3, 1, 1.5), (3, 2, 2.0)])
     def test_preserves_one_hot_subspace(
@@ -332,8 +341,7 @@ class TestBlockXYMixer:
         wires = list(range(block_size * n_blocks))
         n = len(wires)
 
-        xy_graph = build_block_xy_mixer_graph(block_size, n_blocks, wires)
-        mixer = xy_mixer(xy_graph)
+        mixer = xy_mixer(build_block_xy_mixer_edges(block_size, n_blocks, wires))
 
         qc = WState(block_size, n_blocks).build(wires)
         evolve = scipy.linalg.expm(-1j * t * mixer.to_matrix())
