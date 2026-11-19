@@ -7,6 +7,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2](https://github.com/QoroQuantum/divi/compare/v0.16.1...v0.16.2) (2026-11-19)
+
+### ✨ Added
+
+* **lassqd:** add `prepare_lucj`, a CCSD-seeded LUCJ circuit for a single `MolecularProblem` ([a9a617c](https://github.com/QoroQuantum/divi/commit/a9a617c)).
+
+### 🐛 Fixed
+
+* **backends:** `QoroService` sends POSTs on a fresh connection and retries gateway errors on reads, so a stale socket or a gateway blip no longer fails a job ([09590aa](https://github.com/QoroQuantum/divi/commit/09590aa)).
+* **problems:** `PortfolioSelectionProblem` with `use_constrained_mixer=True` leaves the cardinality penalty out of `cost_hamiltonian`, which the XY mixer already enforces ([#105](https://github.com/QoroQuantum/divi/issues/105), [4da1a6c](https://github.com/QoroQuantum/divi/commit/4da1a6c)).
+
+### 🔧 Internal
+
+* save the uv cache only from the full test matrix ([8336f82](https://github.com/QoroQuantum/divi/commit/8336f82)).
+
 ## [0.16.1](https://github.com/QoroQuantum/divi/compare/v0.16.0...v0.16.1) (2026-11-18)
 
 ### 🐛 Fixed
