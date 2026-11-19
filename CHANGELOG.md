@@ -9,22 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.16.2](https://github.com/QoroQuantum/divi/compare/v0.16.1...v0.16.2) (2026-11-19)
 
-
 ### ✨ Added
 
-* **lassqd:** add a public LUCJ preparation for single active spaces ([a9a617c](https://github.com/QoroQuantum/divi/commit/a9a617c965c149247fcbf4b47f975cc7904205fb))
-
+* **lassqd:** add `prepare_lucj`, a CCSD-seeded LUCJ circuit for a single `MolecularProblem` ([a9a617c](https://github.com/QoroQuantum/divi/commit/a9a617c)).
 
 ### 🐛 Fixed
 
-* **backends:** send Qoro POSTs on a fresh connection and retry gateway errors on reads ([09590aa](https://github.com/QoroQuantum/divi/commit/09590aa04b4dbe5dc32aef5d81e3d2ad04b87c6b))
-* **problems:** leave the cardinality penalty out of the XY-mixer portfolio cost ([#105](https://github.com/QoroQuantum/divi/issues/105)) ([4da1a6c](https://github.com/QoroQuantum/divi/commit/4da1a6cd72c4333c9a7e7696eb06afca58b8fda4))
-
+* **backends:** `QoroService` sends POSTs on a fresh connection and retries gateway errors on reads, so a stale socket or a gateway blip no longer fails a job ([09590aa](https://github.com/QoroQuantum/divi/commit/09590aa)).
+* **problems:** `PortfolioSelectionProblem` with `use_constrained_mixer=True` leaves the cardinality penalty out of `cost_hamiltonian`, which the XY mixer already enforces ([#105](https://github.com/QoroQuantum/divi/issues/105), [4da1a6c](https://github.com/QoroQuantum/divi/commit/4da1a6c)).
 
 ### 🔧 Internal
 
-* pin the next release version to 0.16.2 ([df8192d](https://github.com/QoroQuantum/divi/commit/df8192d79cd31e7dc652713a47365868b362f74c))
-* save the uv cache only from the full test matrix ([8336f82](https://github.com/QoroQuantum/divi/commit/8336f82fd49e20473919495a52563db71eb598fe))
+* save the uv cache only from the full test matrix ([8336f82](https://github.com/QoroQuantum/divi/commit/8336f82)).
 
 ## [0.16.1](https://github.com/QoroQuantum/divi/compare/v0.16.0...v0.16.1) (2026-11-18)
 
