@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2](https://github.com/QoroQuantum/divi/compare/v0.16.1...v0.16.2) (2026-11-19)
+
+
+### ✨ Added
+
+* **lassqd:** add a public LUCJ preparation for single active spaces ([a9a617c](https://github.com/QoroQuantum/divi/commit/a9a617c965c149247fcbf4b47f975cc7904205fb))
+
+
+### 🐛 Fixed
+
+* **backends:** send Qoro POSTs on a fresh connection and retry gateway errors on reads ([09590aa](https://github.com/QoroQuantum/divi/commit/09590aa04b4dbe5dc32aef5d81e3d2ad04b87c6b))
+* **problems:** leave the cardinality penalty out of the XY-mixer portfolio cost ([#105](https://github.com/QoroQuantum/divi/issues/105)) ([4da1a6c](https://github.com/QoroQuantum/divi/commit/4da1a6cd72c4333c9a7e7696eb06afca58b8fda4))
+
+
+### 🔧 Internal
+
+* pin the next release version to 0.16.2 ([df8192d](https://github.com/QoroQuantum/divi/commit/df8192d79cd31e7dc652713a47365868b362f74c))
+* save the uv cache only from the full test matrix ([8336f82](https://github.com/QoroQuantum/divi/commit/8336f82fd49e20473919495a52563db71eb598fe))
+
 ## [0.16.1](https://github.com/QoroQuantum/divi/compare/v0.16.0...v0.16.1) (2026-11-18)
 
 ### 🐛 Fixed
