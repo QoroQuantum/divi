@@ -24,7 +24,7 @@ from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import LinearConstraint as ScipyLinearConstraint
 from scipy.optimize import minimize
 
-from divi.hamiltonians import xy_mixer
+from divi.hamiltonians import IsingResult, qubo_to_ising, xy_mixer
 from divi.hamiltonians._mixers import build_single_pauli_label
 from divi.qprog.initial_states import (
     DickeState,
@@ -564,6 +564,11 @@ class PortfolioSelectionProblem(_PortfolioBase):
     ``use_constrained_mixer=True``, QAOA uses a ring XY mixer on the asset
     qubits, which conserves their Hamming weight, and starts from a
     :class:`~divi.qprog.initial_states.DickeState` of weight :math:`K` on them.
+    Every state it reaches then holds :math:`K` assets, where the cardinality
+    penalty is zero, so :attr:`cost_hamiltonian` leaves it out; it would only
+    add couplings between assets the covariance does not link. The other
+    constraint penalties stay, and so does the full penalised QUBO in
+    :attr:`~divi.qprog.problems.BinaryOptimizationProblem.canonical_problem`.
     Slack qubits from inequality constraints keep an X mixer.
 
     Args:
@@ -586,7 +591,8 @@ class PortfolioSelectionProblem(_PortfolioBase):
             :math:`K^2`, measured from the bound rounded inwards to the ESG
             scores' common step). Choose it so that one unit of violation
             outweighs the spread of the objective across portfolios.
-        use_constrained_mixer: Use the ring XY mixer and Dicke initial state.
+        use_constrained_mixer: Use the ring XY mixer and Dicke initial state,
+            and leave the cardinality penalty out of :attr:`cost_hamiltonian`.
         config: Enables partitioned solving with
             :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`; each
             asset cluster holds a share of the :math:`K` names. Its variables
@@ -668,6 +674,30 @@ class PortfolioSelectionProblem(_PortfolioBase):
     def use_constrained_mixer(self) -> bool:
         """Whether QAOA uses the ring XY mixer and Dicke initial state."""
         return self._use_constrained_mixer
+
+    @cached_property
+    def _reduced_ising(self) -> IsingResult:
+        """Ising form of the penalised QUBO without the cardinality penalty."""
+        n, k = self.n_assets, self._n_holdings
+        # penalty_weight * (Σx - K)², expanded with x² = x.
+        cardinality: dict[tuple[int, ...], float] = {
+            (): k * k,
+            **{(i,): 1.0 - 2 * k for i in range(n)},
+            **{(i, j): 2.0 for i in range(n) for j in range(i + 1, n)},
+        }
+        terms = dict(self._canonical_problem.terms)
+        for term, coeff in cardinality.items():
+            terms[term] = terms.get(term, 0.0) - self._penalty_weight * coeff
+            if not terms[term] and len(term) != 1:
+                del terms[term]
+        return qubo_to_ising(terms)
+
+    @property
+    def cost_hamiltonian(self) -> SparsePauliOp:
+        """The penalised cost, without the cardinality penalty under the constrained mixer."""
+        if not self._use_constrained_mixer:
+            return super().cost_hamiltonian
+        return self._reduced_ising.cost_hamiltonian
 
     @property
     def mixer_hamiltonian(self) -> SparsePauliOp:

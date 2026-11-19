@@ -430,6 +430,59 @@ class TestPortfolioSelection:
         assert isinstance(state, DickeState)
         assert (state.hamming_weight, state.n_qubits) == (2, 4)
 
+    @pytest.mark.parametrize("constraints", [(), (ESG_FLOOR,)], ids=["plain", "esg"])
+    def test_constrained_cost_leaves_out_only_the_cardinality_penalty(
+        self, constraints
+    ):
+        weight = 2.5
+        constrained = _make_selection(
+            constraints=constraints, penalty_weight=weight, use_constrained_mixer=True
+        )
+        penalised = _make_selection(constraints=constraints, penalty_weight=weight)
+        n_qubits = penalised.cost_hamiltonian.num_qubits
+        assert constrained.cost_hamiltonian.num_qubits == n_qubits
+
+        states = np.arange(2**n_qubits)
+        holdings = sum((states >> q) & 1 for q in range(4))
+        np.testing.assert_allclose(
+            constrained.cost_hamiltonian.to_matrix(sparse=True).diagonal().real,
+            penalised.cost_hamiltonian.to_matrix(sparse=True).diagonal().real
+            - weight * (holdings - 2) ** 2,
+            atol=1e-12,
+        )
+
+    def test_constrained_cost_does_not_depend_on_the_penalty_weight(self):
+        low, high = (
+            _make_selection(penalty_weight=weight, use_constrained_mixer=True)
+            for weight in (0.3, 5.0)
+        )
+        difference = (low.cost_hamiltonian - high.cost_hamiltonian).simplify()
+        np.testing.assert_allclose(difference.coeffs, 0.0, atol=1e-12)
+
+    def test_constrained_cost_couples_only_covarying_assets(self):
+        sigma = block_diag(_covariance(3, seed=1), _covariance(3, seed=2))
+        mu = np.linspace(0.05, 0.15, 6)
+
+        def n_couplings(problem):
+            labels = problem.cost_hamiltonian.paulis.to_labels()
+            return sum(label.count("Z") == 2 for label in labels)
+
+        assert n_couplings(PortfolioSelectionProblem(mu, sigma, 3)) == 15
+        assert (
+            n_couplings(
+                PortfolioSelectionProblem(mu, sigma, 3, use_constrained_mixer=True)
+            )
+            == 6
+        )
+
+    def test_constrained_mixer_keeps_the_full_penalised_qubo(self):
+        constrained = _make_selection(
+            constraints=[ESG_FLOOR], use_constrained_mixer=True
+        )
+        penalised = _make_selection(constraints=[ESG_FLOOR])
+        constrained.cost_hamiltonian
+        assert constrained.canonical_problem.terms == penalised.canonical_problem.terms
+
     @pytest.mark.parametrize(
         "kwargs, match",
         [
