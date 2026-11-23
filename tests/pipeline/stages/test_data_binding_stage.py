@@ -378,6 +378,35 @@ def test_fit_bias_shifts_each_param_set_by_its_own_optimal_bias(composed):
     assert reduced[(("param_set", 1),)] == [pytest.approx(14.0 / 9.0)]
 
 
+@pytest.mark.parametrize(
+    ("sample_loss", "reduction", "fit_bias", "labels", "expected"),
+    [
+        (None, "mean", False, None, 2.0),
+        (None, lambda values: float(np.max(values)), False, None, 3.0),
+        ("squared_error", "sum", False, [1.0, 0.0, 0.0], 0.0 + 4.0 + 9.0),
+        ("squared_error", "mean", True, [1.0, 0.0, 0.0], 14.0 / 9.0),
+        (lambda p, y: abs(p - y), "mean", False, [1.0, 0.0, 0.0], 5.0 / 3.0),
+    ],
+    ids=["unsupervised", "custom-reduction", "sum", "fit-bias", "custom-loss"],
+)
+def test_compute_loss_reduces_per_sample_losses(
+    composed, sample_loss, reduction, fit_bias, labels, expected
+):
+    _, data_params, _ = composed
+    stage = DataBindingStage(
+        data_params=data_params,
+        loss_reduction=resolve_loss_reduction(reduction),
+        sample_loss=None if sample_loss is None else resolve_sample_loss(sample_loss),
+        fit_bias=fit_bias,
+    )
+
+    loss = stage.compute_loss(
+        np.array([1.0, 2.0, 3.0]), None if labels is None else np.array(labels)
+    )
+
+    assert loss == pytest.approx(expected)
+
+
 def test_reduce_rejects_fit_bias_without_labels(composed):
     qc, data_params, weight_params = composed
     stage = DataBindingStage(

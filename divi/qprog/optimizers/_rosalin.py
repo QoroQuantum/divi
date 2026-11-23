@@ -14,8 +14,10 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
+from divi.pipeline import ContractViolation
 from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
 from divi.qprog.checkpointing.write import atomic_write
+from divi.qprog.mixins import DataBindingMixin
 
 from ._base import Optimizer
 
@@ -263,8 +265,22 @@ class RosalinOptimizer(Optimizer):
         return 1
 
     def validate_program(self, program) -> None:
-        """Require a measurement stage that random estimator samples can run
-        through on the program's backend."""
+        """Require a data-binding loss to be the mean or sum of predictions, and a
+        measurement stage that random estimator samples can run through on the
+        program's backend."""
+        if (
+            isinstance(program, DataBindingMixin)
+            and program.feature_batch is not None
+            and (
+                program.sample_loss is not None
+                or program.loss_reduction not in ("mean", "sum")
+            )
+        ):
+            raise ContractViolation(
+                "RosalinOptimizer needs a data-binding loss that is the mean or sum "
+                "of the predictions, not a supervised loss or a custom "
+                "loss_reduction. Use SPSAOptimizer or a gradient-free optimizer."
+            )
         program._make_measurement_stage().check_estimator_sampling(program.backend)
 
     def build_evaluators(self, program) -> dict[str, Callable[..., Any]]:

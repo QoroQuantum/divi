@@ -337,20 +337,15 @@ class DataBindingStage(BundleStage):
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
-        labels = (
-            None
-            if env.labels is None
-            else np.asarray(env.labels, dtype=np.float64).reshape(-1)
-        )
         grouped = group_by_base_key(results, DATA_AXIS, indexed=True)
         # `reduce_postprocess_ordered` sorts each base key's per-sample values by
         # their data-axis index (robust to a sparse/dropped sample) before the
         # per-key reduction.
         return reduce_postprocess_ordered(
-            grouped, functools.partial(self._reduce_one, labels=labels)
+            grouped, functools.partial(self._reduce_one, labels=env.labels)
         )
 
-    def _reduce_one(self, samples: Sequence[Any], labels: np.ndarray | None) -> Any:
+    def _reduce_one(self, samples: Sequence[Any], labels: npt.ArrayLike | None) -> Any:
         """Apply ``loss_reduction`` to one base-key's per-sample values.
 
         :class:`~divi.pipeline.stages.MeasurementStage` returns a per-observable
@@ -379,15 +374,15 @@ class DataBindingStage(BundleStage):
                     f"Supervised labels require a single cost observable so each "
                     f"sample has one prediction; got {n_obs} observables."
                 )
-            return [
-                float(
-                    self.loss_reduction(
-                        self._compute_per_sample_loss(values[:, i], labels)
-                    )
-                )
-                for i in range(n_obs)
-            ]
-        predictions = np.asarray(samples, dtype=np.float64)
+            return [self.compute_loss(values[:, i], labels) for i in range(n_obs)]
+        return self.compute_loss(np.asarray(samples, dtype=np.float64), labels)
+
+    def compute_loss(
+        self, predictions: npt.NDArray[np.float64], labels: npt.ArrayLike | None
+    ) -> float:
+        """The reduced loss of one observable's per-sample ``predictions``."""
+        if labels is not None:
+            labels = np.asarray(labels, dtype=np.float64).reshape(-1)
         return float(
             self.loss_reduction(self._compute_per_sample_loss(predictions, labels))
         )

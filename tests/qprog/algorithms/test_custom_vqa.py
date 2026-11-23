@@ -16,6 +16,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.mixins import DataBindingMixin
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tests._helpers import exact_match
+from tests.qprog._helpers import central_difference_of_loss
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
@@ -345,6 +346,32 @@ class TestInitialization:
         (loss,) = program._evaluate_cost_param_sets(np.array([[0.9]])).values()
 
         assert loss == pytest.approx(np.cos(0.3))
+
+    def test_supervised_gradient_matches_central_differences(
+        self, make_custom_vqa, default_test_simulator
+    ):
+        """A data parameter between two weights keeps the weights' columns."""
+        first, data, second = Parameter("a"), Parameter("b"), Parameter("c")
+        qc = QuantumCircuit(2, 2)
+        qc.ry(first, 0)
+        qc.ry(data, 1)
+        qc.cx(0, 1)
+        qc.rx(second, 1)
+        qc.measure([0, 1], [0, 1])
+        program = make_custom_vqa(
+            qscript=qc,
+            data_param_indices=[1],
+            feature_batch=np.array([[0.2], [0.9], [-0.4]]),
+            labels=np.array([0.3, -0.5, 1.1]),
+            backend=default_test_simulator,
+        )
+        params = np.array([0.4, -0.7])
+
+        gradient = program._evaluate_gradient_at(params)
+
+        np.testing.assert_allclose(
+            gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
 
     def test_qiskit_circuit_no_measurements_warns(
         self, qiskit_circuit_no_measurements, make_custom_vqa

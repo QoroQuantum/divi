@@ -576,6 +576,41 @@ class TestQNNPipelines:
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
         )
 
+    @pytest.mark.parametrize(
+        "supervision",
+        [
+            {},
+            {"fit_bias": True},
+            {"loss_fn": lambda prediction, label: abs(prediction - label) ** 3},
+            {"loss_reduction": "sum"},
+            {"labels": None, "loss_reduction": lambda values: np.sum(values**2)},
+        ],
+        ids=[
+            "squared-error",
+            "fit-bias",
+            "custom-loss",
+            "sum-reduction",
+            "unsupervised-custom-reduction",
+        ],
+    )
+    def test_non_linear_loss_gradient_matches_central_differences(
+        self, make_qnn, feature_batch_2x2, default_test_simulator, supervision
+    ):
+        program = make_qnn(
+            **{
+                "labels": np.array([0.5, -0.3, 0.8, -0.6]),
+                "backend": default_test_simulator,
+                **supervision,
+            }
+        )
+        params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
+
+        gradient = program._evaluate_gradient_at(params)
+
+        np.testing.assert_allclose(
+            gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
+
 
 @pytest.mark.e2e
 def test_batch_loss_matches_per_sample_mean(

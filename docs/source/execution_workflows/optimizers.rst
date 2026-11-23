@@ -397,7 +397,8 @@ works, drawing classical-shadow snapshots instead (see
 :ref:`measuring-observables`). Another ``shot_distribution``,
 ``grouping_strategy="derandomised_shadows"`` or a backend that computes
 expectation values itself raises :class:`~divi.pipeline.ContractViolation` from
-``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`.
+``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`, as does a
+data-binding loss other than a plain mean or sum of predictions.
 
 iCANS allocates shots independently by coordinate and retains the original
 ``smax`` cap. gCANS instead maximises expected improvement per total gradient

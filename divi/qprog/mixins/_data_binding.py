@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 from qiskit.converters import circuit_to_dag
+from scipy.differentiate import derivative
 
 from divi.circuits import MetaCircuit
 from divi.pipeline import CircuitPipeline, ResultFormat, extract_param_set_idx
@@ -501,3 +502,37 @@ class DataBindingMixin(_MixinBase):
             extract_param_set_idx(key): float(value[0]) for key, value in result.items()
         }
         return np.asarray([indexed[i] for i in range(len(indexed))], dtype=np.float64)
+
+    def _evaluate_gradient_at(
+        self, params: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The loss gradient at a single parameter vector."""
+        feature_batch = self.feature_batch
+        if feature_batch is None:
+            return super()._evaluate_gradient_at(params)
+        features = self._validate_feature_batch(feature_batch, len(self._data_symbols))
+        shifts, weights = self._grad_shift_rule
+        weight_rows = np.vstack([params, shifts + params])
+        values = self._measure_observable_for(
+            np.hstack(
+                [
+                    np.repeat(features, len(weight_rows), axis=0),
+                    np.tile(weight_rows, (len(features), 1)),
+                ]
+            )
+        ).reshape(len(features), -1)
+        predictions, prediction_gradients = values[:, 0], values[:, 1:] @ weights.T
+
+        stage = self._build_data_binding_stage()
+        n_params = len(weights)
+        return derivative(
+            np.vectorize(
+                lambda step, column: stage.compute_loss(
+                    predictions + step * prediction_gradients[:, int(column)],
+                    self.labels,
+                )
+            ),
+            np.zeros(n_params),
+            args=(np.arange(n_params),),
+            initial_step=1e-3,
+        ).df

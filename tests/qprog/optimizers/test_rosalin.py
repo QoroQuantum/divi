@@ -12,7 +12,7 @@ from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.pipeline import ContractViolation
-from divi.qprog.algorithms import VQE, GenericLayerAnsatz
+from divi.qprog.algorithms import QNN, VQE, AngleEmbedding, GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import RosalinOptimizer
 from divi.qprog.optimizers._rosalin import (
@@ -529,6 +529,38 @@ def test_rosalin_rejects_an_analytic_backend(dummy_expval_backend):
             "Random estimator sampling requires a sampling backend; "
             f"{type(dummy_expval_backend).__name__} computes expectation values "
             "analytically and does not consume shots."
+        ),
+    ):
+        program.dry_run()
+
+
+@pytest.mark.parametrize(
+    "loss",
+    [
+        {"labels": np.array([0.5, -0.5])},
+        {"loss_reduction": lambda values: float(np.sum(values**2))},
+    ],
+    ids=["supervised", "custom-reduction"],
+)
+def test_rosalin_rejects_a_data_binding_loss_beyond_a_mean_or_sum(
+    sampling_test_simulator, loss
+):
+    program = QNN(
+        1,
+        AngleEmbedding(rotation="Y"),
+        GenericLayerAnsatz([RYGate, RZGate]),
+        np.array([[0.1], [0.7]]),
+        backend=sampling_test_simulator,
+        optimizer=_rosalin(),
+        **loss,
+    )
+
+    with pytest.raises(
+        ContractViolation,
+        match=exact_match(
+            "RosalinOptimizer needs a data-binding loss that is the mean or sum "
+            "of the predictions, not a supervised loss or a custom "
+            "loss_reduction. Use SPSAOptimizer or a gradient-free optimizer."
         ),
     ):
         program.dry_run()
