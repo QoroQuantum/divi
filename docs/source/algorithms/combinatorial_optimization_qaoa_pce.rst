@@ -68,8 +68,9 @@ Builders for ``mixer_hamiltonian`` include
 Override ``is_feasible``, ``compute_energy``, or
 ``repair_infeasible_bitstring`` as needed for feasibility-aware
 post-processing. To build the mixer layer from gates instead of a Hamiltonian,
-override ``apply_mixer`` and ``mixer_parameter_frequency``. See the base-class
-API for the full contract.
+override ``apply_mixer``, and ``mixer_parameter_frequency`` if the gates
+overstate the mixer angle's frequencies. See the base-class API for the full
+contract.
 
 Single-Instance QAOA
 --------------------

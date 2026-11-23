@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
+from qiskit.circuit.library import U2Gate
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -28,6 +30,48 @@ def parametric_dag():
     qc.ry(phi, 1)
     qc.cx(0, 1)
     return circuit_to_dag(qc), (theta, phi)
+
+
+_THETA = Parameter("theta")
+_PHI = Parameter("phi")
+
+
+def _meta_of(*circuits, parameters):
+    """A MetaCircuit with one body per circuit."""
+    return MetaCircuit(
+        circuit_bodies=tuple(
+            ((("body", index),), circuit_to_dag(circuit))
+            for index, circuit in enumerate(circuits)
+        ),
+        parameters=tuple(parameters),
+    )
+
+
+#: Gates applying ``_THETA`` and the ``(omega, order)`` they give it.
+_FREQUENCY_CASES = {
+    "bare-rotation": (lambda qc: qc.rx(_THETA, 0), (1.0, 1)),
+    "half-angle": (lambda qc: qc.rz(_THETA / 2, 0), (0.5, 1)),
+    "controlled-rotation": (lambda qc: qc.crz(_THETA, 0, 1), (0.5, 2)),
+    "controlled-x-rotation": (lambda qc: qc.crx(_THETA, 0, 1), (0.5, 2)),
+    "controlled-y-rotation": (lambda qc: qc.cry(2 * _THETA, 0, 1), (1.0, 2)),
+    "xx-rotation": (lambda qc: qc.rxx(_THETA, 0, 1), (1.0, 1)),
+    "yy-rotation": (lambda qc: qc.ryy(_THETA, 0, 1), (1.0, 1)),
+    "zx-rotation": (lambda qc: qc.rzx(_THETA, 0, 1), (1.0, 1)),
+    "controlled-phase": (lambda qc: qc.cp(_THETA, 0, 1), (1.0, 1)),
+    "u2-gate-angle": (lambda qc: qc.append(U2Gate(_THETA, 0.4), [0]), (1.0, 1)),
+    "shared-symbol": (lambda qc: (qc.rx(_THETA, 0), qc.ry(2 * _THETA, 1)), (1.0, 3)),
+    "constant-offset": (lambda qc: qc.rx(_THETA + 0.3, 0), (1.0, 1)),
+    "u-gate-angle": (lambda qc: qc.u(0.1, _THETA, 0.2, 0), (1.0, 1)),
+    "two-qubit-rotation": (lambda qc: qc.rzz(1.5 * _THETA, 0, 1), (1.5, 1)),
+    "phase-gate": (lambda qc: qc.p(_THETA, 0), (1.0, 1)),
+    "non-linear-angle": (lambda qc: qc.rx(_THETA * _THETA, 0), None),
+    "incommensurate": (
+        lambda qc: (qc.rx(_THETA, 0), qc.ry(np.pi * _THETA, 1)),
+        None,
+    ),
+    "unsupported-gate": (lambda qc: qc.cu(_THETA, 0.0, 0.0, 0.0, 0, 1), None),
+    "absent": (lambda qc: qc.h(0), (1.0, 1)),
+}
 
 
 class TestMetaCircuit:
@@ -143,3 +187,75 @@ class TestMetaCircuit:
         assert out is not meta
         assert out.measurement_groups == groups
         assert meta.measurement_groups == ()
+
+    @pytest.mark.parametrize(
+        ("build", "expected"),
+        _FREQUENCY_CASES.values(),
+        ids=_FREQUENCY_CASES.keys(),
+    )
+    def test_parameter_frequencies_follow_the_gates(self, build, expected):
+        circuit = QuantumCircuit(2)
+        build(circuit)
+
+        assert _meta_of(circuit, parameters=(_THETA,)).parameter_frequencies == (
+            expected,
+        )
+
+    def test_parameter_frequencies_are_ordered_like_the_parameters(self):
+        circuit = QuantumCircuit(1)
+        circuit.rx(_PHI / 2, 0)
+        circuit.ry(_THETA, 0)
+
+        meta = _meta_of(circuit, parameters=(_THETA, _PHI))
+
+        assert meta.parameter_frequencies == ((1.0, 1), (0.5, 1))
+
+    @pytest.mark.parametrize(
+        ("other_angle", "expected"),
+        [
+            (lambda: (_THETA, -_THETA, _THETA), (1.0, 3)),
+            (lambda: (_THETA / 2,), (0.5, 2)),
+        ],
+        ids=["folded", "different-base-frequency"],
+    )
+    def test_parameter_frequencies_cover_every_body(self, other_angle, expected):
+        plain = QuantumCircuit(1)
+        plain.rx(_THETA, 0)
+        other = QuantumCircuit(1)
+        for angle in other_angle():
+            other.rx(angle, 0)
+
+        meta = _meta_of(plain, other, parameters=(_THETA,))
+
+        assert meta.parameter_frequencies == (expected,)
+
+    def test_a_copy_with_new_bodies_derives_its_own_frequencies(self):
+        first = QuantumCircuit(1)
+        first.rx(_THETA, 0)
+        meta = _meta_of(first, parameters=(_THETA,))
+        assert meta.parameter_frequencies == ((1.0, 1),)
+        second = QuantumCircuit(1)
+        second.rx(2 * _THETA, 0)
+
+        body = (("body", 0),), circuit_to_dag(second)
+        copied = meta.set_circuit_bodies((body,))
+
+        assert copied.parameter_frequencies == ((2.0, 1),)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [([0.74, 0.84, 1.16], 0.02), ([1e-6], 1e-6), ([2e-5, 4e-5], 2e-5)],
+    ids=["hundredths", "tiny", "tiny-pair"],
+)
+def test_common_frequency_is_the_largest_shared_divisor(values, expected):
+    assert _core._compute_common_frequency(values) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[0.5, np.sqrt(2)], [1.0, np.pi], [1.0, 1 / 10001]],
+    ids=["irrational-ratio", "pi-multiple", "denominator-past-the-limit"],
+)
+def test_incommensurate_frequencies_have_no_common_frequency(values):
+    assert _core._compute_common_frequency(values) is None

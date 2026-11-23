@@ -38,6 +38,7 @@ from divi.pipeline.stages import (
     resolve_loss_reduction,
     resolve_sample_loss,
 )
+from divi.qprog._parameter_space import ParameterSpace
 
 if TYPE_CHECKING:
     from qiskit import QuantumCircuit
@@ -98,6 +99,20 @@ class DataBindingMixin(_MixinBase):
         ``loss_fn`` when ``labels`` are supplied.
         """
         return self._sample_loss_fn
+
+    def _build_parameter_space(self) -> ParameterSpace:
+        """The derived frequencies of the weights, without the data symbols."""
+        meta = self.cost_circuit
+        data = set(self._data_symbols)
+        return ParameterSpace(
+            tuple(
+                frequency
+                for parameter, frequency in zip(
+                    meta.parameters, meta.parameter_frequencies
+                )
+                if parameter not in data
+            )
+        )
 
     @property
     def fit_bias(self) -> bool:

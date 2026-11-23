@@ -4,7 +4,6 @@
 
 """Layered-ansatz capability for variational programs."""
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -14,6 +13,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import lower_to_basis_gates
+from divi.qprog._parameter_space import ParameterSpace
 
 if TYPE_CHECKING:
     from divi.qprog.algorithms import Ansatz, ElectronCounts
@@ -24,10 +24,10 @@ class LayeredAnsatzMixin:
     :class:`~divi.qprog.algorithms.Ansatz`.
 
     Mix in before :class:`~divi.qprog.VariationalQuantumAlgorithm`. The host
-    sets ``n_qubits`` and builds its cost circuit with
-    :meth:`_cost_meta_from_ansatz`. Every ansatz call receives the reference
-    from :meth:`_ansatz_reference`, so the parameter count and the circuit
-    always agree.
+    sets ``n_qubits``; :meth:`_cost_meta_from_ansatz` builds a cost circuit
+    from the layers. Every ansatz call receives the reference from
+    :meth:`_ansatz_reference`, so the parameter count and the circuit always
+    agree.
     """
 
     n_qubits: int
@@ -65,12 +65,12 @@ class LayeredAnsatzMixin:
         """The ansatz class and options recorded in checkpoints."""
         return repr(self.ansatz)
 
-    def _parameter_frequencies(self) -> Sequence[tuple[float, int]] | None:
+    def _build_parameter_space(self) -> ParameterSpace:
         """The ansatz's per-layer frequencies, repeated across layers."""
         per_layer = self.ansatz.parameter_frequencies(
             self.n_qubits, self._ansatz_reference()
         )
-        return None if per_layer is None else list(per_layer) * self.n_layers
+        return ParameterSpace(tuple(per_layer) * self.n_layers)
 
     def _cost_meta_from_ansatz(
         self,

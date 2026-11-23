@@ -328,7 +328,7 @@ class TestInitialization:
         """Test that Qiskit parameter names are preserved in sympy symbols."""
         program = make_custom_vqa(qscript=qiskit_circuit_with_measurements)
 
-        symbols = program._param_symbols.flatten()
+        symbols = program.cost_circuit.parameters
         symbol_names = [str(sym) for sym in symbols]
         assert "theta" in symbol_names
         assert "phi" in symbol_names
@@ -372,6 +372,21 @@ class TestInitialization:
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
         )
+
+    def test_parameter_space_covers_the_weights_only(self, make_custom_vqa):
+        first, data, second = Parameter("a"), Parameter("b"), Parameter("c")
+        qc = QuantumCircuit(1, 1)
+        qc.ry(first, 0)
+        qc.ry(data, 0)
+        qc.rz(second / 2, 0)
+        qc.measure(0, 0)
+        program = make_custom_vqa(
+            qscript=qc,
+            data_param_indices=[1],
+            feature_batch=np.array([[0.2], [0.9]]),
+        )
+
+        assert program.parameter_space.frequencies == ((1.0, 1), (0.5, 1))
 
     def test_qiskit_circuit_no_measurements_warns(
         self, qiskit_circuit_no_measurements, make_custom_vqa

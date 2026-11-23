@@ -12,6 +12,7 @@ from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.pipeline import ContractViolation
+from divi.qprog import ParameterSpace
 from divi.qprog.algorithms import QNN, VQE, AngleEmbedding, GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import RosalinOptimizer
@@ -21,7 +22,6 @@ from divi.qprog.optimizers._rosalin import (
     _fit_shots_to_budget,
 )
 from divi.qprog.problems import HamiltonianProblem
-from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 from tests._helpers import exact_match
 from tests.qprog.optimizers._checkpointing_contracts import (
     verify_save_creates_directory_if_needed,
@@ -327,7 +327,7 @@ def test_rosalin_recovers_gradient_and_single_shot_variance():
 
 
 def test_rosalin_uses_a_generalized_parameter_shift_rule():
-    shifts, weights = _compute_parameter_shift_rule([(1.0, 2), (1.0, 1)])
+    shifts, weights = ParameterSpace(((1.0, 2), (1.0, 1))).compute_shift_rule()
     callbacks = []
     optimizer = RosalinOptimizer(
         learning_rate=0.1,
@@ -351,7 +351,7 @@ def test_rosalin_uses_a_generalized_parameter_shift_rule():
 
 
 def test_rosalin_binds_the_program_shift_rule(mocker):
-    rule = _compute_parameter_shift_rule([(1.0, 2)])
+    rule = ParameterSpace(((1.0, 2),)).compute_shift_rule()
     optimizer = RosalinOptimizer(learning_rate=0.1, total_shots=10, lipschitz=2.0)
     program = mocker.Mock(_grad_shift_rule=rule)
 

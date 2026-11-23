@@ -19,6 +19,7 @@ from divi.pipeline.stages import (
     PreprocessStage,
     QEMStage,
 )
+from divi.qprog import ParameterSpace
 from divi.qprog.algorithms import (
     QNN,
     AngleEmbedding,
@@ -157,10 +158,12 @@ class TestInitialization:
     ):
         program = make_qnn(ansatz=_DoubleFrequencyAnsatz([RYGate]), n_layers=n_layers)
 
-        assert program._parameter_frequencies() == expected
+        assert program.parameter_space.frequencies == tuple(expected)
 
-    def test_default_parameter_frequencies_are_undeclared(self, make_qnn):
-        assert make_qnn(n_layers=2)._parameter_frequencies() is None
+    def test_undeclared_frequencies_are_derived_for_the_weights_only(self, make_qnn):
+        program = make_qnn(n_layers=2)
+
+        assert program.parameter_space == ParameterSpace(((1.0, 1),) * program.n_params)
 
     def test_meta_circuit_parameter_ordering(self, make_qnn):
         program = make_qnn()

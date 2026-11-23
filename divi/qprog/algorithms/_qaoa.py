@@ -5,7 +5,6 @@
 import logging
 from collections.abc import Mapping
 from functools import cached_property
-from numbers import Integral
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -17,7 +16,6 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._term_ops import (
     ObservableLike,
-    _hamiltonian_parameter_frequency,
     _spo_to_qiskit_basis_gates,
     _spo_wires,
     to_spo,
@@ -30,7 +28,7 @@ from divi.hamiltonians.trotterization import (
 )
 from divi.pipeline import Stage
 from divi.pipeline.stages import TrotterSpecStage
-from divi.qprog import VariationalQuantumAlgorithm
+from divi.qprog import ParameterSpace, VariationalQuantumAlgorithm
 from divi.qprog._program_checkpoint import _to_jsonable
 from divi.qprog.initial_states import InitialState
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
@@ -38,8 +36,6 @@ from divi.qprog.problems import QAOAProblem
 from divi.reporting._events import ProgressEvent
 
 logger = logging.getLogger(__name__)
-
-_MAX_PARAMETER_SHIFT_EVALUATIONS = 256
 
 
 class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
@@ -72,8 +68,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
         max_iterations: Maximum number of optimisation iterations. Defaults to 10.
         n_layers: Number of QAOA layers. Defaults to 1.
-        max_shift_evaluations_per_parameter: Safety limit for generalised
-            parameter-shift evaluations per parameter. Set to ``None`` to opt out.
         **kwargs: Additional keyword arguments passed to
             :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`, including ``optimizer``
             and ``backend``.
@@ -87,9 +81,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         trotterization_strategy: TrotterizationStrategy | None = None,
         max_iterations: int = 10,
         n_layers: int = 1,
-        max_shift_evaluations_per_parameter: int | None = (
-            _MAX_PARAMETER_SHIFT_EVALUATIONS
-        ),
         **kwargs,
     ):
         """Initialise the QAOA algorithm.
@@ -104,26 +95,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             max_iterations: Maximum number of optimisation iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
-            max_shift_evaluations_per_parameter: Safety limit for generalised
-                parameter-shift evaluations per parameter. Set to ``None`` to
-                permit arbitrarily large rules.
             **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
                 including ``optimizer`` and ``backend``.
         """
-        if max_shift_evaluations_per_parameter is not None and (
-            isinstance(max_shift_evaluations_per_parameter, bool)
-            or not isinstance(max_shift_evaluations_per_parameter, Integral)
-            or max_shift_evaluations_per_parameter < 1
-        ):
-            raise ValueError(
-                "max_shift_evaluations_per_parameter must be a positive integer "
-                "or None."
-            )
-        if max_shift_evaluations_per_parameter is not None:
-            max_shift_evaluations_per_parameter = int(
-                max_shift_evaluations_per_parameter
-            )
-
         super().__init__(**kwargs)
 
         self.problem = problem
@@ -131,7 +105,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self._decode_solution_fn = problem.decode_fn
         self.initial_state = initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
-        self.max_shift_evaluations_per_parameter = max_shift_evaluations_per_parameter
 
         # Canonical wire mapping aligned with the cost SPO; problems may
         # surface domain-level labels (e.g. graph node names) via
@@ -223,53 +196,54 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     def n_params_per_layer(self) -> int:
         return 2
 
-    def _parameter_frequencies(self):
-        """Hamiltonian-derived frequency families for each shared layer angle."""
+    def _build_parameter_space(self) -> ParameterSpace:
+        """The circuit's derived frequencies, with the problem's mixer
+        declaration if any; cost angles are unknown under non-exact
+        trotterization."""
+        frequencies = list(super()._build_parameter_space().frequencies)
+        if not isinstance(self.trotterization_strategy, ExactTrotterization):
+            frequencies[0::2] = [None] * self.n_layers
+        mixer = (
+            self.problem.mixer_parameter_frequency()
+            if self._mixer_override is None
+            else None
+        )
+        if mixer is not None:
+            frequencies[1::2] = [mixer] * self.n_layers
+        return ParameterSpace(tuple(frequencies))
+
+    @cached_property
+    def _grad_shift_rule(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """The exact rule, refused under stochastic or approximate trotterization."""
         if not isinstance(self.trotterization_strategy, ExactTrotterization):
             raise NotImplementedError(
                 "QAOA has no parameter-shift gradient for stochastic or "
                 "approximate trotterization. Use a gradient-free optimizer or SPSA."
             )
-        per_layer = [
-            _hamiltonian_parameter_frequency(self.cost_hamiltonian),
-            (
-                self.problem.mixer_parameter_frequency()
-                if self._mixer_override is None
-                else _hamiltonian_parameter_frequency(self._mixer_override)
-            ),
-        ]
-        evaluation_counts = [2 * order for _frequency, order in per_layer]
-        limit = self.max_shift_evaluations_per_parameter
-        if limit is not None and any(count > limit for count in evaluation_counts):
-            total_evaluations = self.n_layers * sum(evaluation_counts)
-            raise NotImplementedError(
-                "QAOA parameter-shift gradients require "
-                f"{evaluation_counts[0]} cost and {evaluation_counts[1]} mixer "
-                "circuit evaluations per parameter; the full "
-                f"{self.n_params}-parameter gradient requires "
-                f"{total_evaluations} evaluations, and the per-parameter limit "
-                f"is {limit}. Increase max_shift_evaluations_per_parameter, "
-                "set it to None to opt out, or use a gradient-free optimizer "
-                "or SPSA for this problem."
-            )
-        return per_layer * self.n_layers
+        return super()._grad_shift_rule
 
     def _spec_stage(self) -> Stage:
         # QAOA trotterizes the cost Hamiltonian into the ansatz: seeded with
         # the Hamiltonian, not a pre-built MetaCircuit.
-        def _make_meta(result: TrotterizationResult, _ham_id: int) -> MetaCircuit:
-            spo = result.effective_hamiltonian
-            dag = circuit_to_dag(self._build_qaoa_qiskit_circuit(spo))
-            return MetaCircuit(
-                circuit_bodies=(((), dag),),
-                parameters=tuple(self._params.flatten()),
-                observable=spo,
-                precision=self._precision,
-            )
-
         return TrotterSpecStage(
             trotterization_strategy=self.trotterization_strategy,
-            meta_circuit_factory=_make_meta,
+            meta_circuit_factory=self._build_meta_circuit,
+        )
+
+    def _build_meta_circuit(
+        self, result: TrotterizationResult, ham_id: int
+    ) -> MetaCircuit:
+        """The QAOA circuit measuring one trotterization result's effective
+        Hamiltonian."""
+        spo = result.effective_hamiltonian
+        dag = circuit_to_dag(self._build_qaoa_qiskit_circuit(spo))
+        return MetaCircuit(
+            circuit_bodies=(((), dag),),
+            parameters=tuple(self._params.flatten()),
+            observable=spo,
+            precision=self._precision,
         )
 
     def _initial_spec(self) -> TrotterSpec:
@@ -280,9 +254,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         state = {
             **super()._save_subclass_state(),
             "problem_metadata": _to_jsonable(self.problem_metadata),
-            "max_shift_evaluations_per_parameter": (
-                self.max_shift_evaluations_per_parameter
-            ),
         }
         if "solution_bitstring" in self._results:
             state["solution_bitstring"] = self._results["solution_bitstring"]
@@ -308,10 +279,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             self._results["solution_bitstring"] = bitstring
             # Decoded by this program's problem, whose labels may differ.
             self._results["decoded_solution"] = self._decode_solution_fn(bitstring)
-        self.max_shift_evaluations_per_parameter = state.get(
-            "max_shift_evaluations_per_parameter",
-            self.max_shift_evaluations_per_parameter,
-        )
 
     @property
     def solution(self):
@@ -376,14 +343,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         This template supports callers that inspect ``cost_circuit`` without
         driving a pipeline.
         """
-        result = self.trotterization_strategy.process_hamiltonian(self._trotter_spec)
-        spo = result.effective_hamiltonian
-        dag = circuit_to_dag(self._build_qaoa_qiskit_circuit(spo))
-        return MetaCircuit(
-            circuit_bodies=(((), dag),),
-            parameters=tuple(self._params.flatten()),
-            observable=spo,
-            precision=self._precision,
+        return self._build_meta_circuit(
+            self.trotterization_strategy.process_hamiltonian(self._trotter_spec),
+            ham_id=0,
         )
 
     def sample_solution(

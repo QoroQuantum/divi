@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter
+from qiskit.circuit import ParameterVector
 from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import OptimizeResult
 
@@ -23,7 +23,7 @@ from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import CircuitPreprocessor, CostEstimate
-from divi.qprog import EarlyStopping, StopReason
+from divi.qprog import EarlyStopping, ParameterSpace, StopReason
 from divi.qprog._program_checkpoint import VQACheckpoint
 from divi.qprog.algorithms import (
     QAOA,
@@ -41,10 +41,7 @@ from divi.qprog.optimizers import (
 )
 from divi.qprog.problems import MaxCutProblem
 from divi.qprog.quantum_program import QuantumProgram
-from divi.qprog.variational_quantum_algorithm import (
-    VariationalQuantumAlgorithm,
-    _compute_parameter_shift_rule,
-)
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent, TerminalStatus
 from tests._helpers import exact_match
 from tests.pipeline._helpers import meta_from_circuit, metric_compatible_vqe
@@ -84,8 +81,10 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def _create_cost_circuit(self) -> MetaCircuit:
         qc = QuantumCircuit(2)
-        qc.rx(Parameter("beta"), 0)
-        qc.u(*(Parameter(f"theta_{i}") for i in range(3)), 1)
+        for index, theta in enumerate(
+            ParameterVector("theta", self._n_params_per_layer)
+        ):
+            qc.ry(theta, index % 2)
         qc.cx(0, 1)
         return meta_from_circuit(
             qc,
@@ -632,8 +631,9 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
 
     def _setup_mock_optimizer_single_run(self, mocker, program, final_params):
         """Helper to set up a mock optimizer for a single optimization run."""
-        mock_optimizer = mocker.MagicMock()
-        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+        mock_optimizer = self._create_mock_optimizer(
+            mocker, n_param_sets=program.optimizer.n_param_sets
+        )
 
         def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
             loss = cost_fn(final_params)
@@ -817,8 +817,9 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
 
     def setup_mock_optimizer(self, program, mocker, side_effects):
         """Configures a mock optimizer that executes callbacks."""
-        mock_optimizer = mocker.MagicMock()
-        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+        mock_optimizer = self._create_mock_optimizer(
+            mocker, n_param_sets=program.optimizer.n_param_sets
+        )
 
         def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
             last_result = None
@@ -2873,8 +2874,9 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         self, program, mocker, n_iterations, loss_value=-0.5
     ):
         """Configure a mock optimizer that produces constant (flat) losses."""
-        mock_optimizer = mocker.MagicMock()
-        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+        mock_optimizer = self._create_mock_optimizer(
+            mocker, n_param_sets=program.optimizer.n_param_sets
+        )
 
         def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
             last_result = None
@@ -2965,8 +2967,9 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         losses = [{0: -0.1 * (i + 1)} for i in range(5)]
         mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=losses)
 
-        mock_optimizer = mocker.MagicMock()
-        mock_optimizer.n_param_sets = program.optimizer.n_param_sets
+        mock_optimizer = self._create_mock_optimizer(
+            mocker, n_param_sets=program.optimizer.n_param_sets
+        )
 
         def mock_optimize_logic(cost_fn, initial_params, callback_fn, **kwargs):
             last_result = None
@@ -3063,115 +3066,46 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_final.assert_called_once()
 
 
-class TestComputeParameterShiftRule:
-    """Spec: _compute_parameter_shift_rule builds shifts and recombination weights."""
-
-    @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
-    def test_default_family_shape(self, n_params):
-        shifts, weights = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
-        assert shifts.shape == (2 * n_params, n_params)
-        assert weights.shape == (n_params, 2 * n_params)
-
-    @pytest.mark.parametrize("n_params", [1, 2, 3, 4, 5, 8])
-    def test_each_row_shifts_exactly_one_parameter(self, n_params):
-        shifts, _ = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
-        for index in range(n_params):
-            for row in shifts[2 * index : 2 * index + 2]:
-                nonzero = np.nonzero(row)[0]
-                assert nonzero.tolist() == [index]
-
-    def test_unit_frequency_reproduces_the_two_term_rule(self):
-        """The historical +-pi/2 rule with +-1/2 weights is the (1, 1) case."""
-        shifts, weights = _compute_parameter_shift_rule([(1.0, 1)] * 2)
-        half = np.pi / 2
-        np.testing.assert_allclose(
-            shifts, [[half, 0], [-half, 0], [0, half], [0, -half]]
-        )
-        np.testing.assert_allclose(
-            weights, [[0.5, -0.5, 0.0, 0.0], [0.0, 0.0, 0.5, -0.5]]
-        )
-
-    @pytest.mark.parametrize("order", [1, 2, 4])
-    def test_order_sets_the_evaluation_count(self, order):
-        shifts, weights = _compute_parameter_shift_rule([(1.0, order)])
-        assert shifts.shape == (2 * order, 1)
-        assert weights.shape == (1, 2 * order)
-
-    def test_families_may_differ_between_parameters(self):
-        """A ragged rule is one flat batch, not padded rows per parameter."""
-        shifts, weights = _compute_parameter_shift_rule([(1.0, 1), (0.5, 4)])
-        assert shifts.shape == (2 + 8, 2)
-        # Each parameter's weights touch only its own rows.
-        assert np.count_nonzero(weights[0]) == 2
-        assert np.count_nonzero(weights[1]) == 8
-        np.testing.assert_array_equal(np.nonzero(weights[0])[0], [0, 1])
-
-    def test_folds_shifts_into_the_principal_interval(self):
-        """Shifts are reduced modulo the energy's period, keeping them smallest."""
-        shifts, _ = _compute_parameter_shift_rule([(0.5, 2)])
-        # Unfolded these are (2k-1) * pi/2 for k = 1..4; the period is 4 * pi.
-        np.testing.assert_allclose(
-            shifts[:, 0],
-            [np.pi / 2, 3 * np.pi / 2, -3 * np.pi / 2, -np.pi / 2],
-        )
-
-    @pytest.mark.parametrize(
-        "frequencies, match",
-        [
-            ([(0.0, 1)], "omega must be positive"),
-            ([(1.0, 0)], "order must be at least"),
-        ],
-    )
-    def test_rejects_invalid_families(self, frequencies, match):
-        with pytest.raises(ValueError, match=match):
-            _compute_parameter_shift_rule(frequencies)
-
-    @pytest.mark.parametrize("omega, order", [(1.0, 1), (2.0, 1), (1.0, 2), (0.5, 4)])
-    def test_differentiates_its_own_frequency_family_exactly(self, omega, order):
-        """The rule must be exact on any trigonometric polynomial it declares."""
-        rng = np.random.default_rng(0)
-        cosines = rng.normal(size=order + 1)
-        sines = rng.normal(size=order + 1)
-
-        def energy(theta):
-            return sum(
-                cosines[r] * np.cos(r * omega * theta)
-                + sines[r] * np.sin(r * omega * theta)
-                for r in range(order + 1)
-            )
-
-        def derivative(theta):
-            return sum(
-                r
-                * omega
-                * (
-                    -cosines[r] * np.sin(r * omega * theta)
-                    + sines[r] * np.cos(r * omega * theta)
-                )
-                for r in range(order + 1)
-            )
-
-        shifts, weights = _compute_parameter_shift_rule([(omega, order)])
-        for theta in rng.uniform(-3.0, 3.0, 5):
-            values = np.array([energy(theta + row[0]) for row in shifts])
-            assert (weights @ values)[0] == pytest.approx(derivative(theta), abs=1e-9)
-
-
 class TestGradShiftRule(BaseVariationalQuantumAlgorithmTest):
-    """Spec: a program's shift rule is built lazily from its declared frequencies."""
+    """Spec: a program's shift rule is built lazily from its parameter space."""
 
     def test_defaults_to_the_two_term_rule(self, mocker):
         program = self._create_program_with_mock_optimizer(mocker)
         shifts, _ = program._grad_shift_rule
         assert shifts.shape == (2 * program.n_params, program.n_params)
 
-    def test_rejects_a_declaration_of_the_wrong_length(self, mocker):
+    def test_refuses_parameters_without_known_frequencies(self, mocker):
         program = self._create_program_with_mock_optimizer(mocker)
         mocker.patch.object(
-            type(program), "_parameter_frequencies", return_value=[(1.0, 1)]
+            type(program),
+            "_build_parameter_space",
+            return_value=ParameterSpace(((1.0, 1), None, None, (1.0, 1))),
         )
-        with pytest.raises(ValueError, match="declared 1 parameter frequencies"):
+        with pytest.raises(
+            NotImplementedError,
+            match=exact_match(
+                "Parameters [1, 2] have no parameter-shift rule: each drives a gate "
+                "outside the supported rotations, enters an angle non-linearly or "
+                "through another symbol, or carries incommensurate frequencies. "
+                "Use a gradient-free optimizer or SPSA."
+            ),
+        ):
             program._grad_shift_rule
+
+    def test_rejects_a_space_of_the_wrong_length(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        mocker.patch.object(
+            type(program),
+            "_build_parameter_space",
+            return_value=ParameterSpace(((1.0, 1),)),
+        )
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                f"SampleVQAProgram describes 1 parameters but has {program.n_params}."
+            ),
+        ):
+            program.parameter_space
 
 
 def _gradient_vqe(backend):

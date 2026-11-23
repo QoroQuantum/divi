@@ -15,7 +15,6 @@ from divi.circuits import MetaCircuit
 from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.algorithms import VQE, CustomVQA, GenericLayerAnsatz
 from divi.qprog.problems import HamiltonianProblem
-from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 
 #: Eigenvalues of the bowl the noisy contracts descend; condition number 10. Its
 #: length fixes the parameter count for every ``noisy_bowl`` run.
@@ -149,14 +148,6 @@ def small_vqe(backend, optimizer, **kwargs) -> VQE:
         optimizer=optimizer,
         **{"seed": 1997, **kwargs},
     )
-
-
-def set_unit_shift_rule(vqe) -> int:
-    """Give every parameter of ``vqe`` a unit two-term shift rule; return the
-    parameter count."""
-    n_params = vqe.n_layers * vqe.n_params_per_layer
-    vqe._grad_shift_rule = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
-    return n_params
 
 
 def inject_term_expectations(monkeypatch, term_values) -> list[np.ndarray]:

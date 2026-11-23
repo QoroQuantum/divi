@@ -6,9 +6,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
+from functools import cached_property
+from math import gcd, lcm
 
 import numpy as np
-from qiskit.circuit import Parameter
+from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import PauliList, SparsePauliOp
 
@@ -84,6 +87,72 @@ def flatten_observable_tuple(
 # through every MetaCircuit-producing path. Users override per-program
 # via ``QuantumProgram(precision=...)``.
 DEFAULT_PRECISION = 8
+
+
+#: Frequency gaps each parametric gate contributes per unit of its angle.
+_GATE_FREQUENCY_GAPS: dict[str, tuple[float, ...]] = {
+    "rx": (1.0,),
+    "ry": (1.0,),
+    "rz": (1.0,),
+    "rxx": (1.0,),
+    "ryy": (1.0,),
+    "rzz": (1.0,),
+    "rzx": (1.0,),
+    "p": (1.0,),
+    "cp": (1.0,),
+    "u": (1.0,),
+    "u2": (1.0,),
+    "crx": (0.5, 1.0),
+    "cry": (0.5, 1.0),
+    "crz": (0.5, 1.0),
+}
+
+
+def _combine_occurrence_frequencies(
+    occurrences_per_body: Sequence[Sequence[Sequence[float]]],
+) -> tuple[float, int] | None:
+    """One parameter's ``(omega, order)`` from its gate occurrences in each body.
+
+    ``omega`` divides every occurrence's frequencies; ``order`` is the largest
+    body's sum of per-occurrence maxima, in units of ``omega``. A parameter
+    that moves no gate gets ``(1, 1)``.
+    """
+    values = [
+        frequency
+        for body in occurrences_per_body
+        for occurrence in body
+        for frequency in occurrence
+        if frequency > 1e-12
+    ]
+    if not values:
+        return 1.0, 1
+    omega = _compute_common_frequency(values)
+    if omega is None:
+        return None
+    order = max(
+        round(sum(max(occurrence) for occurrence in body) / omega)
+        for body in occurrences_per_body
+    )
+    return omega, order
+
+
+def _compute_common_frequency(values: Sequence[float]) -> float | None:
+    """The largest frequency every value is an integer multiple of, or ``None``
+    when their ratios need a denominator above 10 000."""
+    scale = max(values)
+    ratios = [float(value) / scale for value in values]
+    rational = [Fraction(ratio).limit_denominator(10_000) for ratio in ratios]
+    if any(
+        not np.isclose(float(fraction), ratio, rtol=1e-10, atol=1e-12)
+        for fraction, ratio in zip(rational, ratios)
+    ):
+        return None
+    denominator = lcm(*(fraction.denominator for fraction in rational))
+    numerators = (
+        fraction.numerator * (denominator // fraction.denominator)
+        for fraction in rational
+    )
+    return scale * gcd(*numerators) / denominator
 
 
 @dataclass(frozen=True)
@@ -216,6 +285,40 @@ class MetaCircuit:
             and isinstance(self.observable, tuple)
             and len(self.observable) > 0
             and all(obs.size == 0 for obs in self.observable)
+        )
+
+    @cached_property
+    def parameter_frequencies(self) -> tuple[tuple[float, int] | None, ...]:
+        """Each parameter's ``(omega, order)`` across all bodies, derived from
+        the gates it drives.
+
+        A parameter that drives no gate gets ``(1, 1)``. An entry is ``None``
+        for a gate outside the supported rotations, a non-linear or
+        symbol-dependent angle, or incommensurate frequencies.
+        """
+        indices = {parameter: index for index, parameter in enumerate(self.parameters)}
+        occurrences = [[[] for _ in self.parameters] for _ in self.circuit_bodies]
+        unsupported: set[int] = set()
+        for body, (_, dag) in zip(occurrences, self.circuit_bodies):
+            for node in dag.op_nodes():
+                gaps = _GATE_FREQUENCY_GAPS.get(node.op.name)
+                for angle in node.op.params:
+                    if not isinstance(angle, ParameterExpression):
+                        continue
+                    for symbol in angle.parameters:
+                        index = indices.get(symbol)
+                        if index is None:
+                            continue
+                        slope = angle.gradient(symbol)
+                        if gaps is None or isinstance(slope, ParameterExpression):
+                            unsupported.add(index)
+                            continue
+                        body[index].append([abs(float(slope)) * gap for gap in gaps])
+        return tuple(
+            None
+            if index in unsupported
+            else _combine_occurrence_frequencies([body[index] for body in occurrences])
+            for index in range(len(self.parameters))
         )
 
     def set_circuit_bodies(

@@ -398,10 +398,10 @@ class _VertexSubsetProblem(GraphProblemBase):
             circuit, self._constraint_graph, 1 - self._cost_bit, beta, qubits
         )
 
-    def mixer_parameter_frequency(self) -> tuple[float, int]:
-        """``(1, 2·n_nodes)`` for the constrained mixer, else the X mixer's."""
+    def mixer_parameter_frequency(self) -> tuple[float, int] | None:
+        """``(1, 2·n_nodes)`` for the constrained mixer; ``None`` otherwise."""
         if not self._use_constrained_mixer:
-            return super().mixer_parameter_frequency()
+            return None
         return 1.0, 2 * len(self._wire_labels)
 
     def compute_energy(self, bitstring: str) -> float:

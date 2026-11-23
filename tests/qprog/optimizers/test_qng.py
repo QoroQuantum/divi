@@ -68,7 +68,6 @@ from tests.qprog.optimizers._helpers import (
     inject_term_expectations,
     make_one_qubit_meta,
     program_with_cost_circuit,
-    set_unit_shift_rule,
 )
 
 
@@ -444,7 +443,7 @@ def _cosine_terms(coeffs):
 def test_pullback_metric_assembly(injectable_vqe, monkeypatch):
     """grad and G are assembled correctly from the per-term Jacobian; the
     measurement seam is injected, so only the assembly maths is under test."""
-    n_params = set_unit_shift_rule(injectable_vqe)
+    n_params = injectable_vqe.n_params
     fake = np.random.default_rng(0).standard_normal((2 * n_params, len(_COEFFS)))
     inject_term_expectations(monkeypatch, lambda _param_sets: (fake, _COEFFS))
 
@@ -462,7 +461,7 @@ def test_pullback_metric_assembly(injectable_vqe, monkeypatch):
 def test_pullback_shares_one_measurement_per_parameter_point(
     injectable_vqe, monkeypatch
 ):
-    n_params = set_unit_shift_rule(injectable_vqe)
+    n_params = injectable_vqe.n_params
     calls = inject_term_expectations(monkeypatch, _cosine_terms(_COEFFS))
     evaluators = PullbackMetricEstimator().bind(injectable_vqe)
     first, second = np.full(n_params, 0.3), np.full(n_params, 1.1)
@@ -479,7 +478,7 @@ def test_pullback_shares_one_measurement_per_parameter_point(
 def test_pullback_metric_with_all_zero_coefficients_is_zero(
     injectable_vqe, monkeypatch
 ):
-    n_params = set_unit_shift_rule(injectable_vqe)
+    n_params = injectable_vqe.n_params
     inject_term_expectations(monkeypatch, _cosine_terms(np.zeros(3)))
     metric = PullbackMetricEstimator().bind(injectable_vqe)["metric_fn"](
         np.full(n_params, 0.3)
@@ -1389,7 +1388,7 @@ def test_pce_runs_under_fubini_study_qng(default_test_simulator):
 def test_pullback_metric_is_symmetric_psd_low_rank(toy_vqe):
     """The metric computed on a real backend is symmetric, PSD, and rank <= v."""
     toy_vqe.backend.set_seed(7)
-    n_params = set_unit_shift_rule(toy_vqe)
+    n_params = toy_vqe.n_params
     params = np.linspace(0.1, 1.0, n_params)
 
     evaluators = PullbackMetricEstimator().bind(toy_vqe)

@@ -25,7 +25,7 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit.circuit import Gate, QuantumCircuit
+from qiskit.circuit import Gate, ParameterVector, QuantumCircuit
 from qiskit.circuit.library import (
     RXGate,
     RXXGate,
@@ -36,10 +36,13 @@ from qiskit.circuit.library import (
     RZZGate,
     XXPlusYYGate,
 )
+from qiskit.converters import circuit_to_dag
 from scipy.linalg import expm
 from scipy.optimize import least_squares
 
 from divi._optional import import_optional
+from divi.circuits import MetaCircuit
+from divi.circuits._conversions import lower_to_basis_gates
 from divi.hamiltonians._term_ops import _HALF_PI
 
 
@@ -133,16 +136,23 @@ class Ansatz(ABC):
 
     def parameter_frequencies(
         self, n_qubits: int, reference: ElectronCounts | None = None
-    ) -> Sequence[tuple[float, int]] | None:
-        """One layer's per-parameter ``(omega, order)``, or ``None`` for ``(1, 1)``.
+    ) -> Sequence[tuple[float, int] | None]:
+        """One layer's per-parameter ``(omega, order)``, derived from its gates.
 
-        The energy carries frequencies ``{omega, ..., order * omega}`` in that
-        parameter, which sets its parameter-shift rule. Override when a gate's
-        generator has more than two distinct eigenvalues, or when gates share a
-        parameter; both raise the frequency content, and the default two-term
-        rule then returns a wrong gradient. A superset is safe.
+        Override to declare tighter frequencies where the gates overstate them.
+        A superset is safe; a missing frequency gives a wrong gradient.
         """
-        return None
+        weights = np.array(
+            [ParameterVector("w", self.n_params_per_layer(n_qubits, reference))],
+            dtype=object,
+        )
+        layer = lower_to_basis_gates(
+            self.build(weights, n_qubits=n_qubits, n_layers=1, reference=reference)
+        )
+        return MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(layer)),),
+            parameters=tuple(weights.flatten()),
+        ).parameter_frequencies
 
     @abstractmethod
     def build(
@@ -715,7 +725,7 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
 
     def parameter_frequencies(
         self, n_qubits: int, reference: ElectronCounts | None = None
-    ):
+    ) -> Sequence[tuple[float, int]]:
         """``{1, 2}`` per amplitude: each excitation exponentiates a generator
         whose eigenvalues span two distinct gaps."""
         return [(1.0, 2)] * self.n_params_per_layer(n_qubits, reference)
@@ -820,7 +830,7 @@ class HartreeFockAnsatz(Ansatz):
 
     def parameter_frequencies(
         self, n_qubits: int, reference: ElectronCounts | None = None
-    ):
+    ) -> Sequence[tuple[float, int]]:
         """``{1/2, 1}`` per amplitude: both ``SingleExcitation`` and
         ``DoubleExcitation`` have generator eigenvalues ``{0, 0, +-1/2}``."""
         return [(0.5, 2)] * self.n_params_per_layer(n_qubits, reference)
@@ -1272,38 +1282,6 @@ class LUCJAnsatz(AmplitudeSeededAnsatz):
                 n_orb, orbital_phases=True, depth=depth
             )
         return _require_trainable_params(n_params, LUCJAnsatz.__name__)
-
-    def parameter_frequencies(
-        self, n_qubits: int, reference: ElectronCounts | None = None
-    ):
-        """Per-parameter frequency families, which differ by role.
-
-        A gate's mixing angle sets eigenphases ``+-theta / 2``, so one occurrence
-        carries ``{1/2, 1}``; a sandwiched gate appears twice, compounding to
-        ``{1/2, ..., 2}``. A gate's phase enters as ``exp(+-i beta)`` instead, so
-        two occurrences reach degree two in the amplitude and the energy squares
-        that -- measured up to ``4``. The ``RZZ`` Jastrow angles and the
-        per-orbital phases are plain Pauli rotations.
-
-        Trailing parameters appear once rather than twice, halving each family;
-        ``shared_spin_params`` parameters drive both sectors, doubling it.
-        """
-        n_orb = n_qubits // 2
-        n_sectors, same_pairs, opposite_pairs, depth = self._layout(n_orb)
-        n_gates = len(_rotation_schedule(n_orb, depth))
-        sandwiched = 4 // n_sectors
-        trailing = 2 // n_sectors
-
-        frequencies: list[tuple[float, int]] = []
-        for _sector in range(n_sectors):
-            frequencies += [(0.5, 2 * sandwiched), (1.0, 2 * sandwiched)] * n_gates
-        frequencies += [(1.0, 1)] * len(opposite_pairs)
-        frequencies += [(1.0, trailing)] * (n_sectors * len(same_pairs))
-        if self.trailing_rotation:
-            for _sector in range(n_sectors):
-                frequencies += [(0.5, 2 * trailing), (1.0, 2 * trailing)] * n_gates
-                frequencies += [(1.0, trailing)] * n_orb
-        return frequencies
 
     def build(
         self,

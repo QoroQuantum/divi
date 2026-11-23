@@ -428,7 +428,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
     ) -> None:
         """Validate the data-binding kwargs and populate the derived state.
 
-        Sets ``_param_shape``, ``_param_symbols``, and — when data binding is
+        Sets ``_param_shape`` and — when data binding is
         active (``feature_batch is not None``) — the ``_data_symbols`` /
         ``_weight_symbols`` partition and the optional ``labels`` /
         ``_sample_loss_fn`` supervised state used by ``DataBindingStage``.
@@ -456,7 +456,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             self.feature_batch = None
             self.loss_reduction = loss_reduction
             self._param_shape = self._resolve_param_shape(param_shape, n_params)
-            self._param_symbols = self._base_params.reshape(self._param_shape)
             return
 
         if param_shape is not None:
@@ -485,7 +484,6 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             labels, loss_fn, self.feature_batch.shape[0]
         )
         self._param_shape = (len(self._weight_symbols),)
-        self._param_symbols = np.asarray(self._weight_symbols, dtype=object)
 
     @staticmethod
     def _validate_data_indices(

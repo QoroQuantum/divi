@@ -515,9 +515,6 @@ class _SeededWithoutHook(AmplitudeSeededAnsatz):
     def n_params_per_layer(self, n_qubits, reference=None):
         return 1
 
-    def parameter_frequencies(self, n_qubits, reference=None):
-        return None
-
     def build(self, params, n_qubits, n_layers, reference=None):
         return QuantumCircuit(n_qubits)
 
@@ -1255,33 +1252,27 @@ _LUCJ_SANDWICHED_TWO_ORBITALS = [(0.5, 4), (1.0, 4)] * 2 + [(1.0, 1)] * 4
 
 
 @pytest.mark.parametrize(
-    "ansatz, reference, expected",
+    "ansatz, expected",
     [
-        pytest.param(
-            UCCSDAnsatz(),
-            ElectronCounts(2),
-            [(1.0, 2)] * 3,
-            marks=needs_qiskit_nature,
-        ),
-        (HartreeFockAnsatz(), ElectronCounts(2), [(0.5, 2)] * 3),
-        (LUCJAnsatz(), None, _LUCJ_SANDWICHED_TWO_ORBITALS),
+        pytest.param(UCCSDAnsatz(), [(1.0, 2)] * 3, marks=needs_qiskit_nature),
+        (HartreeFockAnsatz(), [(0.5, 2)] * 3),
+        (LUCJAnsatz(), _LUCJ_SANDWICHED_TWO_ORBITALS),
         (
             LUCJAnsatz(trailing_rotation=True),
-            None,
             _LUCJ_SANDWICHED_TWO_ORBITALS + ([(0.5, 2), (1.0, 2)] + [(1.0, 1)] * 2) * 2,
         ),
         (
             LUCJAnsatz(shared_spin_params=True, trailing_rotation=True),
-            None,
             [(0.5, 8), (1.0, 8), (1.0, 1), (1.0, 1), (1.0, 2)]
             + [(0.5, 4), (1.0, 4), (1.0, 2), (1.0, 2)],
         ),
     ],
     ids=["uccsd", "hartree-fock", "lucj", "lucj-trailing", "lucj-shared-trailing"],
 )
-def test_declared_frequencies_are_exact(ansatz, reference, expected):
-    """Each parameter declares exactly its frequencies, with no superset."""
-    assert ansatz.parameter_frequencies(4, reference) == expected
+def test_layer_frequencies_are_exact(ansatz, expected):
+    """Declared or derived from one layer's gates, each parameter's frequencies
+    are exactly its own, with no superset."""
+    assert list(ansatz.parameter_frequencies(4, ElectronCounts(2))) == expected
 
 
 def test_vqe_ansatz_options_reach_both_the_count_and_the_circuit(

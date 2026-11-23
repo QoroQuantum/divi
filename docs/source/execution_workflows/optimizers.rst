@@ -77,10 +77,9 @@ computes these parameter shifts in parallel.
    :class:`~divi.qprog.algorithms.QAOA` generally has no exact *two-term*
    parameter-shift rule because a shared layer angle drives many Hamiltonian
    terms. For exact trotterization, Divi derives a generalised rule from the
-   Hamiltonian frequencies [#wierichs2022]_. QAOA applies
-   ``max_shift_evaluations_per_parameter`` as a safety limit. Adjoint
-   differentiation needs no shift rule, so on a Maestro statevector QAOA also
-   gets exact gradients for Hamiltonians whose frequencies admit none.
+   circuit's gate frequencies [#wierichs2022]_. Adjoint differentiation needs
+   no shift rule, so on a Maestro statevector QAOA also gets exact gradients
+   for Hamiltonians whose frequencies admit none.
    Stochastic or approximate trotterization still requires SPSA or a
    gradient-free method.
 
@@ -438,11 +437,10 @@ A warning is issued if ``max_iterations > 1`` is supplied.
 Program-Specific Constraints
 ----------------------------
 
-- :class:`~divi.qprog.algorithms.QAOA` can derive an exact generalised
-  parameter-shift rule under exact trotterization, subject to its evaluation
-  safety limit.
-- VQE and ``CustomVQA`` can use exact-gradient methods only when their ansatz
-  declares a valid parameter-shift spectrum.
+- A parameter in an unsupported gate or a non-linear angle, or with
+  incommensurate frequencies, has no parameter-shift rule; its program needs
+  adjoint differentiation, SPSA or a gradient-free method. QAOA has a rule only
+  under exact trotterization.
 - A loss computed from raw measurement counts has no gradient, so it needs a
   gradient-free optimizer.
 - Checkpointing requires an optimizer with restorable state. See

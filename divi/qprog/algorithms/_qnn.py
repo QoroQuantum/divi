@@ -29,13 +29,13 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
 from divi.qprog import VariationalQuantumAlgorithm
-from divi.qprog.mixins import DataBindingMixin
+from divi.qprog.mixins import DataBindingMixin, LayeredAnsatzMixin
 
 from ._ansatze import Ansatz
 from ._feature_maps import FeatureMap
 
 
-class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
+class QNN(LayeredAnsatzMixin, DataBindingMixin, VariationalQuantumAlgorithm):
     """Quantum Neural Network trained on a classical feature batch.
 
     Composes a :class:`~divi.qprog.algorithms.FeatureMap` (data-binding
@@ -142,7 +142,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
             ValueError: On shape mismatches, non-positive layer counts, or an
                 unsupported ``fit_bias`` setup.
         """
-        super().__init__(**kwargs)
+        super().__init__(ansatz=ansatz, n_layers=n_layers, **kwargs)
 
         if not isinstance(feature_map, FeatureMap):
             raise TypeError("feature_map must be a FeatureMap instance.")
@@ -166,8 +166,6 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
 
         self.n_qubits = n_qubits
         self.feature_map = feature_map
-        self.ansatz = ansatz
-        self.n_layers = n_layers
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
@@ -249,31 +247,8 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
 
         self._data_symbols = data_params
         self._weight_symbols = weight_params
-        # The optimizer only ever sees the weight parameters.
-        self._param_symbols = np.asarray(weight_params, dtype=object)
 
         self.cost_hamiltonian = observable.simplify(atol=0)
-
-    # ------------------------------------------------------------------ #
-    # Shape contracts the VQA base reads
-    # ------------------------------------------------------------------ #
-
-    @property
-    def n_params_per_layer(self) -> int:
-        """Trainable parameters per ansatz layer (data params are excluded)."""
-        return self.ansatz.n_params_per_layer(self.n_qubits)
-
-    def _parameter_frequencies(self):
-        per_layer = self.ansatz.parameter_frequencies(self.n_qubits)
-        return None if per_layer is None else list(per_layer) * self.n_layers
-
-    @property
-    def _serialized_ansatz_type(self) -> str | None:
-        return repr(self.ansatz)
-
-    # ------------------------------------------------------------------ #
-    # Plumbing
-    # ------------------------------------------------------------------ #
 
     def _create_cost_circuit(self) -> MetaCircuit:
         """Single MetaCircuit carrying both parameter groups.

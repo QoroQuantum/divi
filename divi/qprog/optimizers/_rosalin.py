@@ -15,13 +15,12 @@ import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
 from divi.pipeline import ContractViolation
+from divi.qprog._parameter_space import ParameterSpace
 from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
 from divi.qprog.checkpointing.write import atomic_write
 from divi.qprog.mixins import DataBindingMixin
 
 from ._base import Optimizer
-
-_PARAMETER_SHIFT = np.pi / 2
 
 
 def _compute_icans_shots_and_gains(
@@ -124,20 +123,6 @@ def _fit_shots_to_budget(
                 allocated[index] += 1
                 remainder -= evaluation_cost
     return minimum + allocated
-
-
-def _build_default_shift_rule(
-    n_params: int,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Return the conventional two-term rule for every parameter."""
-    shifts = np.repeat(np.eye(n_params), 2, axis=0)
-    shifts[0::2] *= _PARAMETER_SHIFT
-    shifts[1::2] *= -_PARAMETER_SHIFT
-    weights = np.zeros((n_params, 2 * n_params), dtype=np.float64)
-    indices = np.arange(n_params)
-    weights[indices, 2 * indices] = 0.5
-    weights[indices, 2 * indices + 1] = -0.5
-    return shifts, weights
 
 
 def _resolve_shift_rule_layout(
@@ -322,7 +307,9 @@ class RosalinOptimizer(Optimizer):
         if n_params == 0:
             raise ValueError("initial_params must contain at least one parameter.")
         rule = (
-            _build_default_shift_rule(n_params) if shift_rule is None else shift_rule()
+            ParameterSpace(((1.0, 1),) * n_params).compute_shift_rule()
+            if shift_rule is None
+            else shift_rule()
         )
         rule_shifts, rule_weights = rule
         shifts, weights, owners, evaluation_counts = _resolve_shift_rule_layout(

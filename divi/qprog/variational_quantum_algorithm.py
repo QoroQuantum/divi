@@ -30,6 +30,7 @@ from divi.pipeline import (
 )
 from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
 from divi.qprog._early_stopping import EarlyStopping, StopReason
+from divi.qprog._parameter_space import ParameterSpace
 from divi.qprog._program_checkpoint import (
     OptimizerConfig,
     SubclassState,
@@ -96,60 +97,6 @@ def _with_optimisation_progress(run_method):
             return run_method(self, *args, **kwargs)
 
     return wrapped
-
-
-def _compute_parameter_shift_rule(
-    frequencies: Sequence[tuple[float, int]],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Build a parameter-shift rule from each parameter's frequency family.
-
-    A parameter whose energy carries frequencies ``{omega, ..., order * omega}``
-    is differentiated exactly by ``2 * order`` evaluations at equidistant shifts;
-    ``(1.0, 1)`` is the familiar two-term ``+-pi/2`` rule. Parameters may need
-    different term counts, so the evaluations form one flat batch.
-
-    Args:
-        frequencies: One ``(omega, order)`` pair per parameter.
-
-    Returns:
-        ``(shifts, weights)``: a ``(n_evaluations, n_params)`` array of offsets to
-        add to the parameter vector, and a ``(n_params, n_evaluations)`` array
-        whose product with the evaluated values is the derivative.
-
-    Raises:
-        ValueError: If any ``omega`` is not positive or ``order`` is below 1.
-    """
-    n_params = len(frequencies)
-    for omega, order in frequencies:
-        if not omega > 0:
-            raise ValueError(f"omega must be positive; got {omega}.")
-        if order < 1:
-            raise ValueError(f"order must be at least 1; got {order}.")
-
-    n_evaluations = sum(2 * order for _, order in frequencies)
-    shifts_out = np.zeros((n_evaluations, n_params))
-    weights_out = np.zeros((n_params, n_evaluations))
-    offset = 0
-    for index, (omega, order) in enumerate(frequencies):
-        term = np.arange(1, 2 * order + 1)
-        shifts = (2 * term - 1) * np.pi / (2 * order * omega)
-        # The energy has period 2 pi / omega, so folding the shifts into its
-        # principal interval keeps the rule exact and the single-frequency case
-        # at the conventional +-pi/2.
-        period = 2.0 * np.pi / omega
-        shifts = (shifts + 0.5 * period) % period - 0.5 * period
-        coefficients = (
-            (-1.0) ** (term - 1)
-            * omega
-            / (4 * order * np.sin((2 * term - 1) * np.pi / (4 * order)) ** 2)
-        )
-
-        stop = offset + len(shifts)
-        shifts_out[offset:stop, index] = shifts
-        weights_out[index, offset:stop] = coefficients
-        offset = stop
-
-    return shifts_out, weights_out
 
 
 def _warn_non_finite_iterations(
@@ -665,9 +612,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return hamiltonian
 
     def _drop_built_circuits(self) -> None:
-        """Forget the pipelines, cost circuit and shift rule built from the old ansatz."""
+        """Forget the pipelines, cost circuit, parameter space and shift rule
+        built from the old ansatz."""
         self._preprocessor_pipeline_cache.clear()
         self._cost_circuit = None
+        self.__dict__.pop("parameter_space", None)
         self.__dict__.pop("_grad_shift_rule", None)
 
     @abstractmethod
@@ -1107,13 +1056,25 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         return {idx: float(value[0]) for idx, value in result.items()}
 
-    def _parameter_frequencies(self) -> Sequence[tuple[float, int]] | None:
-        """Per-parameter ``(omega, order)`` for the shift rule, or ``None``.
+    @cached_property
+    def parameter_space(self) -> ParameterSpace:
+        """The frequencies of this program's trainable parameters, derived from
+        :attr:`cost_circuit`'s gates unless declared.
 
-        ``None`` takes the two-term rule for every parameter. Subclasses that own
-        an ansatz delegate to it.
+        Raises:
+            ValueError: If the description does not cover every parameter.
         """
-        return None
+        space = self._build_parameter_space()
+        if len(space.frequencies) != self.n_params:
+            raise ValueError(
+                f"{type(self).__name__} describes {len(space.frequencies)} "
+                f"parameters but has {self.n_params}."
+            )
+        return space
+
+    def _build_parameter_space(self) -> ParameterSpace:
+        """The frequencies derived from the cost circuit's gates."""
+        return ParameterSpace(self.cost_circuit.parameter_frequencies)
 
     def _loss_gradient_by_observable(
         self, params: npt.NDArray[np.float64]
@@ -1137,19 +1098,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """The ``(shifts, weights)`` this program differentiates with.
 
-        Built on first use so a gradient-free run never pays for it, and so a
-        parameterisation with no tractable exact rule only raises when a gradient
-        is actually requested.
+        Raises:
+            NotImplementedError: If a parameter's frequencies are unknown.
         """
-        frequencies = self._parameter_frequencies()
-        if frequencies is None:
-            frequencies = [(1.0, 1)] * self.n_params
-        if len(frequencies) != self.n_params:
-            raise ValueError(
-                f"{type(self).__name__} declared {len(frequencies)} parameter "
-                f"frequencies but has {self.n_params} parameters."
+        frequencies = self.parameter_space.frequencies
+        unknown = [index for index, entry in enumerate(frequencies) if entry is None]
+        if unknown:
+            raise NotImplementedError(
+                f"Parameters {unknown} have no parameter-shift rule: each drives a "
+                "gate outside the supported rotations, enters an angle "
+                "non-linearly or through another symbol, or carries "
+                "incommensurate frequencies. Use a gradient-free optimizer or SPSA."
             )
-        return _compute_parameter_shift_rule(frequencies)
+        return self.parameter_space.compute_shift_rule()
 
     def _evaluate_gradient_at(
         self, params: npt.NDArray[np.float64]

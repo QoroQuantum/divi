@@ -1376,7 +1376,21 @@ class TestConstrainedMixerGates:
             optimizer=default_optimizer,
         )
 
-        assert qaoa._parameter_frequencies()[1] == (1.0, 10)
+        assert qaoa.parameter_space.frequencies[1] == (1.0, 10)
+
+    def test_an_assigned_mixer_replaces_the_declared_frequency(
+        self, dummy_simulator, default_optimizer
+    ):
+        qaoa = QAOA(
+            MaxIndependentSetProblem(nx.bull_graph()),
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+        assert qaoa.parameter_space.frequencies[1] == (1.0, 10)
+
+        qaoa.mixer_hamiltonian = x_mixer(5)
+
+        assert qaoa.parameter_space.frequencies[1] == (2.0, 5)
 
     def test_unconstrained_problem_uses_the_x_mixer(self, make_maestro_simulator):
         simulator = make_maestro_simulator()

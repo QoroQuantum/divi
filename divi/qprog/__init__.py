@@ -19,6 +19,7 @@ the module that owns it:
 """
 
 from ._early_stopping import EarlyStopping, StopReason
+from ._parameter_space import ParameterSpace
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import (
     ParamHistoryMode,
@@ -28,6 +29,7 @@ from .variational_quantum_algorithm import (
 __all__ = [
     "EarlyStopping",
     "ParamHistoryMode",
+    "ParameterSpace",
     "QuantumProgram",
     "StopReason",
     "VariationalQuantumAlgorithm",

@@ -9,6 +9,8 @@ is the uniform return type for decoded solutions.
 :class:`~divi.qprog.EarlyStopping` terminates a variational optimisation once a
 criterion is met: a patience-based plateau, a gradient-norm threshold, or
 settled cost variance. :class:`~divi.qprog.StopReason` reports which one fired.
+:class:`~divi.qprog.ParameterSpace` describes each trainable parameter's
+frequencies, which set its period and parameter-shift rule.
 
 .. automodapi:: divi.qprog
    :headings: ~^

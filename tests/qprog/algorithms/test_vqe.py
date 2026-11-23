@@ -376,7 +376,7 @@ def test_parameter_frequencies_honour_the_spin_counts(
         optimizer=default_optimizer,
     )
 
-    assert vqe._parameter_frequencies() == [(1.0, 2)]
+    assert vqe.parameter_space.frequencies == ((1.0, 2),)
 
 
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)

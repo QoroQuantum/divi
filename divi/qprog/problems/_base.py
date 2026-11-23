@@ -16,7 +16,6 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import x_mixer
 from divi.hamiltonians._term_ops import (
-    _hamiltonian_parameter_frequency,
     _require_qiskit_num_qubits,
     _spo_to_qiskit_basis_gates,
     to_spo,
@@ -93,13 +92,10 @@ class QAOAProblem(ABC):
             circuit, to_spo(self.mixer_hamiltonian), beta, qubits
         )
 
-    def mixer_parameter_frequency(self) -> tuple[float, int]:
-        """``(omega, order)`` of the mixer angle's harmonic spectrum, for
-        parameter-shift gradients.
-
-        Defaults to the frequencies of :attr:`mixer_hamiltonian`.
-        """
-        return _hamiltonian_parameter_frequency(to_spo(self.mixer_hamiltonian))
+    def mixer_parameter_frequency(self) -> tuple[float, int] | None:
+        """The mixer angle's ``(omega, order)``, where tighter than its gates
+        show; ``None`` (default) derives it from them."""
+        return None
 
     @property
     def _applies_mixer_as_gates(self) -> bool:

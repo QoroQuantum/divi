@@ -18,7 +18,6 @@ from divi.hamiltonians.trotterization import (
 )
 from divi.pipeline.stages import TrotterSpecStage, _trotter_spec_stage
 from divi.qprog.algorithms import QAOA
-from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import SuperpositionState, ZerosState
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -41,8 +40,9 @@ from tests.qprog.algorithms._helpers import seed_best_probs
 from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
 
 _INCOMMENSURATE_MESSAGE = exact_match(
-    "QAOA parameter-shift gradients require commensurate Hamiltonian "
-    "coefficients. Use a gradient-free optimizer or SPSA for this problem."
+    "Parameters [0] have no parameter-shift rule: each drives a gate outside the "
+    "supported rotations, enters an angle non-linearly or through another symbol, "
+    "or carries incommensurate frequencies. Use a gradient-free optimizer or SPSA."
 )
 
 
@@ -155,7 +155,7 @@ class TestGeneralQAOA:
 
         verify_correct_circuit_count(qaoa_problem)
 
-    def test_gradient_rule_uses_the_hamiltonian_frequency_content(
+    def test_parameter_space_follows_the_hamiltonian_frequency_content(
         self, dummy_simulator, default_optimizer
     ):
         qaoa = QAOA(
@@ -166,37 +166,42 @@ class TestGeneralQAOA:
             backend=dummy_simulator,
         )
 
-        assert qaoa._parameter_frequencies() == [
-            (1.0, 5),
-            (2.0, 5),
-            (1.0, 5),
-            (2.0, 5),
-        ]
-        shifts, weights = qaoa._grad_shift_rule
-        assert shifts.shape == (40, 4)
-        assert weights.shape == (4, 40)
+        assert qaoa.parameter_space.frequencies == ((1.0, 5), (2.0, 5)) * 2
 
-    @pytest.mark.parametrize(
-        "hamiltonian",
-        [
-            SparsePauliOp(["ZI", "IZ"], coeffs=[0.5, np.sqrt(2)]),
-            SparsePauliOp("Z", 0.5 / 10001),
-        ],
-        ids=["irrational-ratio", "denominator-past-the-limit"],
-    )
-    def test_hamiltonian_frequency_family_rejects_incommensurate_weights(
-        self, hamiltonian
+    def test_incommensurate_cost_refuses_only_the_shift_rule(
+        self, gradient_free_optimizer, dummy_simulator
     ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(2)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+        )
+        qaoa.cost_hamiltonian = SparsePauliOp(["ZI", "IZ"], coeffs=[0.5, np.sqrt(2)])
+
+        assert qaoa.parameter_space.frequencies[0] is None
         with pytest.raises(NotImplementedError, match=_INCOMMENSURATE_MESSAGE):
-            _hamiltonian_parameter_frequency(hamiltonian)
+            qaoa._grad_shift_rule
+
+    def test_parameter_space_follows_the_layer_count(
+        self, gradient_free_optimizer, dummy_simulator
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(3)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+        )
+        assert len(qaoa.parameter_space.frequencies) == 2
+
+        qaoa.n_layers = 3
+
+        assert qaoa.parameter_space.frequencies == ((1.0, 2), (2.0, 3)) * 3
 
     @pytest.mark.parametrize(
         "hamiltonian, expected",
         [
-            (SparsePauliOp(["Z", "I"], coeffs=[1.0, 0.3]), (2.0, 1)),
-            (SparsePauliOp("Z"), (2.0, 1)),
-            (SparsePauliOp("I"), (1.0, 1)),
-            (SparsePauliOp("Z", 5e-13), (1.0, 1)),
+            (SparsePauliOp(["ZI", "II"], coeffs=[1.0, 0.3]), (2.0, 1)),
+            (SparsePauliOp("II"), (1.0, 1)),
+            (SparsePauliOp("ZI", 5e-13), (1.0, 1)),
             (SparsePauliOp(["ZI", "IZ"], coeffs=[0.25, 0.5]), (0.5, 3)),
             (
                 SparsePauliOp(["ZI", "IZ", "ZZ"], coeffs=[0.37, 0.42, 0.58]),
@@ -205,15 +210,23 @@ class TestGeneralQAOA:
         ],
         ids=[
             "identity-ignored",
-            "single-term",
             "identity-only",
             "below-threshold",
             "commensurate-weights",
             "large-shift-rule",
         ],
     )
-    def test_hamiltonian_frequency_family(self, hamiltonian, expected):
-        assert _hamiltonian_parameter_frequency(hamiltonian) == expected
+    def test_cost_frequencies_follow_the_hamiltonian(
+        self, gradient_free_optimizer, dummy_simulator, hamiltonian, expected
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(2)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+        )
+        qaoa.cost_hamiltonian = hamiltonian
+
+        assert qaoa.parameter_space.frequencies[0] == pytest.approx(expected)
 
     def test_qdrift_has_no_parameter_shift_rule(
         self, gradient_free_optimizer, dummy_simulator
@@ -225,6 +238,7 @@ class TestGeneralQAOA:
             backend=dummy_simulator,
         )
 
+        assert qaoa.parameter_space.frequencies[0] is None
         with pytest.raises(
             NotImplementedError,
             match=exact_match(
@@ -232,32 +246,7 @@ class TestGeneralQAOA:
                 "trotterization. Use a gradient-free optimizer or SPSA."
             ),
         ):
-            qaoa._parameter_frequencies()
-
-    def test_shift_limit_admits_its_own_value(
-        self, gradient_free_optimizer, dummy_simulator
-    ):
-        """The path graph needs 4 cost and 6 mixer evaluations per parameter."""
-        qaoa = QAOA(
-            MaxCutProblem(nx.path_graph(3)),
-            optimizer=gradient_free_optimizer,
-            backend=dummy_simulator,
-            max_shift_evaluations_per_parameter=6,
-        )
-
-        assert [2 * order for _, order in qaoa._parameter_frequencies()] == [4, 6]
-
-    def test_qaoa_accepts_a_shift_limit_of_one(
-        self, gradient_free_optimizer, dummy_simulator
-    ):
-        qaoa = QAOA(
-            MaxCutProblem(nx.path_graph(2)),
-            optimizer=gradient_free_optimizer,
-            backend=dummy_simulator,
-            max_shift_evaluations_per_parameter=1,
-        )
-
-        assert qaoa.max_shift_evaluations_per_parameter == 1
+            qaoa._grad_shift_rule
 
     @pytest.mark.parametrize("attribute", ["cost_hamiltonian", "mixer_hamiltonian"])
     def test_assigning_a_non_hermitian_hamiltonian_raises(
@@ -277,65 +266,6 @@ class TestGeneralQAOA:
             ),
         ):
             setattr(qaoa, attribute, SparsePauliOp.from_list([("XI", 1.0j)]))
-
-    @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint8])
-    def test_qaoa_stores_a_numpy_shift_limit_as_a_plain_int(
-        self, dtype, gradient_free_optimizer, dummy_simulator
-    ):
-        qaoa = QAOA(
-            MaxCutProblem(nx.path_graph(2)),
-            optimizer=gradient_free_optimizer,
-            backend=dummy_simulator,
-            max_shift_evaluations_per_parameter=dtype(7),
-        )
-
-        assert qaoa.max_shift_evaluations_per_parameter == 7
-        assert type(qaoa.max_shift_evaluations_per_parameter) is int
-
-    @pytest.mark.parametrize("limit", [0, -1, True, np.True_, 1.5, np.float64(2.0)])
-    def test_qaoa_rejects_invalid_shift_evaluation_limit(
-        self,
-        limit,
-        gradient_free_optimizer,
-        default_test_simulator,
-    ):
-        with pytest.raises(ValueError, match="positive integer or None"):
-            QAOA(
-                MaxCutProblem(nx.path_graph(2)),
-                optimizer=gradient_free_optimizer,
-                backend=default_test_simulator,
-                max_shift_evaluations_per_parameter=limit,
-            )
-
-    def test_qaoa_shift_limit_reports_full_gradient_cost(
-        self,
-        gradient_free_optimizer,
-        default_test_simulator,
-    ):
-        qaoa = QAOA(
-            MaxCutProblem(nx.complete_graph(3)),
-            optimizer=gradient_free_optimizer,
-            backend=default_test_simulator,
-        )
-        qaoa.cost_hamiltonian = SparsePauliOp(
-            ["ZII", "IZI", "IIZ"],
-            coeffs=[0.37, 0.42, 0.58],
-        )
-
-        with pytest.raises(
-            NotImplementedError,
-            match=exact_match(
-                "QAOA parameter-shift gradients require 274 cost and 6 mixer "
-                "circuit evaluations per parameter; the full 2-parameter gradient "
-                "requires 280 evaluations, and the per-parameter limit is 256. "
-                "Increase max_shift_evaluations_per_parameter, set it to None to "
-                "opt out, or use a gradient-free optimizer or SPSA for this problem."
-            ),
-        ):
-            qaoa._parameter_frequencies()
-
-        qaoa.max_shift_evaluations_per_parameter = None
-        assert qaoa._parameter_frequencies()[0] == (0.02, 137)
 
     def test_a_gradient_free_run_never_builds_a_shift_rule(
         self, gradient_free_optimizer, dummy_simulator
@@ -648,45 +578,15 @@ def _path_qaoa(dummy_simulator, default_optimizer, **kwargs):
     )
 
 
-def _checkpointed_path_qaoa(backend, optimizer, checkpoint_dir, **kwargs):
+def _checkpointed_path_qaoa(backend, optimizer, checkpoint_dir):
     """Run a path-graph QAOA for one iteration, checkpointing into ``checkpoint_dir``."""
-    qaoa = _path_qaoa(backend, optimizer, **kwargs)
+    qaoa = _path_qaoa(backend, optimizer)
     qaoa.run(
         max_iterations=1,
         perform_final_computation=False,
         checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir),
     )
     return qaoa
-
-
-@pytest.mark.parametrize(
-    "drop_limit, expected_limit",
-    [(False, 7), (True, 9)],
-    ids=["saved-limit", "legacy-checkpoint-keeps-constructor-limit"],
-)
-def test_loaded_state_restores_metadata_and_shift_limit(
-    dummy_simulator, default_optimizer, tmp_path, drop_limit, expected_limit
-):
-    _checkpointed_path_qaoa(
-        dummy_simulator,
-        default_optimizer,
-        tmp_path,
-        max_shift_evaluations_per_parameter=7,
-    )
-    if drop_limit:
-        edit_checkpointed_subclass_state(
-            tmp_path, lambda data: data.pop("max_shift_evaluations_per_parameter")
-        )
-
-    target = QAOA.load_state(
-        tmp_path,
-        backend=dummy_simulator,
-        problem=MaxCutProblem(nx.path_graph(3)),
-        max_shift_evaluations_per_parameter=9,
-    )
-
-    assert target.problem_metadata == {}
-    assert target.max_shift_evaluations_per_parameter == expected_limit
 
 
 def test_checkpoint_restores_numpy_problem_metadata_as_plain_python(

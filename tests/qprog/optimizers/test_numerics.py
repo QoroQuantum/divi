@@ -30,10 +30,7 @@ from divi.qprog.optimizers.metrics import (
     _fs_blocks,
 )
 from tests._helpers import exact_match
-from tests.qprog.optimizers._helpers import (
-    inject_term_expectations,
-    set_unit_shift_rule,
-)
+from tests.qprog.optimizers._helpers import inject_term_expectations
 
 
 def _solve(metric, grad, *, solver="tikhonov", regularization=0.0, scaled=False):
@@ -79,7 +76,6 @@ def _bind_pullback(vqe, jacobian, coeffs, monkeypatch):
     shifted = np.empty((2 * jacobian.shape[0], jacobian.shape[1]))
     shifted[0::2] = jacobian
     shifted[1::2] = -jacobian
-    set_unit_shift_rule(vqe)
     inject_term_expectations(monkeypatch, lambda _param_sets: (shifted, coeffs))
     return PullbackMetricEstimator().bind(vqe)
 
