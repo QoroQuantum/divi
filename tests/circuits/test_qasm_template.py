@@ -93,6 +93,14 @@ class TestBuildTemplate:
             "rx(Ax) q[0];\nry(xB) q[0];\nrz(xb) q[0];\nrz(1.5) q[0];\n"
         )
 
+    @pytest.mark.parametrize("name", ["q", "c", "h", "rx", "measure"])
+    def test_a_symbol_named_like_a_qasm_token_replaces_only_gate_arguments(self, name):
+        body = f"rx({name}/3) q[0];\nh q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\n"
+        template = build_template(body, (name,))
+        assert render_template(template, ("1.5",)) == (
+            "rx(1.5/3) q[0];\nh q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\n"
+        )
+
 
 class TestRenderTemplate:
     def test_render_replaces_all_symbols_with_values(self):

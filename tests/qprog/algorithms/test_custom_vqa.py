@@ -332,6 +332,20 @@ class TestInitialization:
         assert "theta" in symbol_names
         assert "phi" in symbol_names
 
+    @pytest.mark.parametrize("name", ["q", "c", "h"])
+    def test_a_parameter_named_like_a_qasm_token_evaluates(
+        self, make_custom_vqa, default_test_simulator, name
+    ):
+        theta = Parameter(name)
+        qc = QuantumCircuit(1, 1)
+        qc.ry(theta / 3, 0)
+        qc.measure(0, 0)
+        program = make_custom_vqa(qscript=qc, backend=default_test_simulator)
+
+        (loss,) = program._evaluate_cost_param_sets(np.array([[0.9]])).values()
+
+        assert loss == pytest.approx(np.cos(0.3))
+
     def test_qiskit_circuit_no_measurements_warns(
         self, qiskit_circuit_no_measurements, make_custom_vqa
     ):

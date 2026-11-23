@@ -101,7 +101,8 @@ def _strip_comments(src: str) -> str:
 
 
 def _param_regex(parameters: Collection[str]) -> re.Pattern[str] | None:
-    """Match any declared parameter name verbatim, longest name first.
+    """Match any declared parameter name verbatim inside gate arguments,
+    longest name first.
 
     Placeholder names are substitution tokens, not QASM identifiers: a
     ``ParameterVector`` element is ``w_0[3]`` and Greek letters are common.
@@ -112,7 +113,9 @@ def _param_regex(parameters: Collection[str]) -> re.Pattern[str] | None:
         return None
     escaped = sorted((re.escape(name) for name in parameters), key=len, reverse=True)
     return re.compile(
-        r"(?<![A-Za-z0-9_])(?:" + "|".join(escaped) + r")(?![A-Za-z0-9_])"
+        r"(?<![A-Za-z0-9_])(?:"
+        + "|".join(escaped)
+        + r")(?![A-Za-z0-9_])(?!\s*\()(?=[^;\n]*\))"
     )
 
 
