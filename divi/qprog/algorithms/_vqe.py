@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, Self
 from warnings import warn
 
@@ -12,11 +13,17 @@ import numpy as np
 import numpy.typing as npt
 
 from divi.circuits import MetaCircuit
+from divi.hamiltonians._rdm import (
+    SpinRDMs,
+    assemble_spin_rdms,
+    build_rdm_observables,
+)
 from divi.hamiltonians._term_ops import _require_qiskit_num_qubits
+from divi.pipeline import CircuitPreprocessor, PipelineCadence
 from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.initial_states import InitialState, ZerosState
 from divi.qprog.mixins import LayeredAnsatzMixin, SolutionSamplingMixin
-from divi.qprog.problems import HamiltonianProblem
+from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 from divi.reporting._events import ProgressEvent
 
 from ._ansatze import (
@@ -194,6 +201,51 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
                 )
             )
             return self
+
+    def measure_rdms(self, params: npt.NDArray[np.float64] | None = None) -> SpinRDMs:
+        """Measure the spin-resolved 1- and 2-RDMs of the prepared state.
+
+        Each symmetry-unique element is measured as an expectation value on the
+        program's backend: exact on a backend that computes expectation values,
+        shot-noisy on a sampling one. Only real parts are measured, so the RDMs
+        are exact for real wave functions.
+
+        Args:
+            params: One parameter vector. Defaults to the trained ``best_params``.
+
+        Returns:
+            PySCF's ``make_rdm12s`` layout, ``((dm1a, dm1b), (dm2aa, dm2ab,
+            dm2bb))``, with ``dm1[p, q] = <q† p>`` and
+            ``dm2[p, q, r, s] = <p† r† s q>`` in the problem's orbitals.
+
+        Raises:
+            TypeError: If the problem is not a
+                :class:`~divi.qprog.problems.MolecularProblem`.
+            ValueError: If ``params`` holds more than one parameter vector.
+            RuntimeError: If ``params`` is omitted before
+                :meth:`~divi.qprog.VariationalQuantumAlgorithm.run`.
+        """
+        if not isinstance(self._problem, MolecularProblem):
+            raise TypeError(
+                "measure_rdms needs a MolecularProblem; got "
+                f"{type(self._problem).__name__}."
+            )
+        param_sets = np.atleast_2d(self._resolve_sample_params(params))
+        if len(param_sets) != 1:
+            raise ValueError(
+                f"measure_rdms takes one parameter vector; got {len(param_sets)} rows."
+            )
+        n_orbitals = self._problem.n_orbitals
+        observables = build_rdm_observables(n_orbitals)
+        preprocessor = CircuitPreprocessor(
+            "rdm",
+            cadence=PipelineCadence.ONCE,
+            preprocess=lambda meta: replace(
+                meta, observable=observables, _was_multi_obs=True
+            ),
+        )
+        (expectations,) = self.evaluate(param_sets, preprocessor).values()
+        return assemble_spin_rdms(expectations, n_orbitals)
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save VQE-specific runtime state."""

@@ -18,10 +18,9 @@ from qiskit.quantum_info import PauliList, SparsePauliOp
 from divi._optional import import_optional
 
 
-def _openfermion(module_name: str) -> ModuleType:
-    return import_optional(
-        module_name, extra="chem", capability="Building a molecular Hamiltonian"
-    )
+def import_openfermion(module_name: str, capability: str) -> ModuleType:
+    """Import an OpenFermion module from the ``chem`` extra for ``capability``."""
+    return import_optional(module_name, extra="chem", capability=capability)
 
 
 def qubit_operator_to_spo(
@@ -104,9 +103,10 @@ def _spo_from_integrals(
         ImportError: If the ``chem`` extra is not installed.
         ValueError: If the integral shapes are inconsistent.
     """
-    openfermion = _openfermion("openfermion")
-    molecular_data = _openfermion("openfermion.chem.molecular_data")
-    config = _openfermion("openfermion.config")
+    capability = "Building a molecular Hamiltonian"
+    openfermion = import_openfermion("openfermion", capability)
+    molecular_data = import_openfermion("openfermion.chem.molecular_data", capability)
+    config = import_openfermion("openfermion.config", capability)
 
     one_body = np.asarray(one_body, dtype=float)
     two_body = np.asarray(two_body, dtype=float)

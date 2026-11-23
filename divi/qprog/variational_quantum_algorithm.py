@@ -1188,7 +1188,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     def _resolve_sample_params(
         self, params: npt.NDArray[np.float64] | None
     ) -> npt.NDArray[np.float64]:
-        """Resolve and validate parameters for :meth:`~SolutionSamplingMixin.sample_solution`.
+        """Resolve and validate the parameters a final measurement runs at.
 
         Supplies the variational parameter-model knowledge that
         :class:`~divi.qprog._solution_sampling_mixin.SolutionSamplingMixin` is
@@ -1199,9 +1199,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         if params is None:
             if len(self._best_params) == 0:
                 raise RuntimeError(
-                    "sample_solution() was called without explicit `params` "
-                    "but no trained parameters are available. Either pass "
-                    "`params=...` or call run() first."
+                    "No trained parameters are available. Pass explicit `params` "
+                    "or call run() first."
                 )
             return self._best_params
 

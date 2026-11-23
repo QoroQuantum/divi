@@ -26,7 +26,7 @@ from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 from scipy.linalg import expm
 from scipy.stats import unitary_group
 
-from divi.hamiltonians._chem import _spo_from_integrals
+from divi.hamiltonians._openfermion import _spo_from_integrals
 from divi.qprog.algorithms import (
     VQE,
     AmplitudeSeededAnsatz,

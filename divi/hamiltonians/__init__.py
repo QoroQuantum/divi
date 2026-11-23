@@ -7,7 +7,7 @@ normalisation + evaluation, and QUBO/HUBO-to-Ising conversion. Trotterization
 strategies live in :mod:`divi.hamiltonians.trotterization`.
 """
 
-from ._chem import qubit_operator_to_spo
+from ._openfermion import qubit_operator_to_spo
 from ._ising import (
     BinaryToIsingConverter,
     IsingEncoding,

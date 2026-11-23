@@ -9,6 +9,7 @@ import re
 from threading import Event
 
 import numpy as np
+import pytest
 from qiskit import QuantumCircuit
 
 from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
@@ -129,6 +130,19 @@ def report_status(status: str, attempt: int):
 def exact_match(message: str) -> str:
     """``pytest.raises(match=...)`` pattern matching ``message`` and nothing else."""
     return f"^{re.escape(message)}$"
+
+
+#: Water at its equilibrium geometry, in Ångström.
+WATER_ATOM = "O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692"
+
+
+def run_mean_field(atom: str, basis: str = "sto-3g", spin: int = 0):
+    """A converged PySCF RHF mean field, ROHF when ``spin`` is non-zero; skips
+    the test when PySCF is not installed."""
+    gto = pytest.importorskip("pyscf.gto")
+    scf = pytest.importorskip("pyscf.scf")
+    molecule = gto.M(atom=atom, basis=basis, spin=spin, verbose=0)
+    return (scf.ROHF if spin else scf.RHF)(molecule).run(verbose=0)
 
 
 def unitary(simulator, circuit: QuantumCircuit) -> np.ndarray:

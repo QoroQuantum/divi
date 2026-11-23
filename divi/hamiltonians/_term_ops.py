@@ -19,7 +19,7 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
 
 from divi._optional import module_if_imported
-from divi.hamiltonians._chem import qubit_operator_to_spo
+from divi.hamiltonians._openfermion import qubit_operator_to_spo
 
 if TYPE_CHECKING:
     from openfermion import QubitOperator as _QubitOperator

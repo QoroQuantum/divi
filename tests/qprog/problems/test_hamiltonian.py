@@ -14,6 +14,7 @@ from divi.qprog.problems import (
     MolecularProblem,
     _hamiltonian,
 )
+from tests._helpers import WATER_ATOM, run_mean_field
 
 
 def _two_orbital_integrals():
@@ -246,15 +247,7 @@ def test_from_molecule_rejects_other_inputs():
 
 def _water_mean_field(spin=0):
     """Water's RHF (singlet) or ROHF (higher spin) mean field in STO-3G."""
-    gto = pytest.importorskip("pyscf.gto")
-    scf = pytest.importorskip("pyscf.scf")
-    molecule = gto.M(
-        atom="O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692",
-        basis="sto-3g",
-        spin=spin,
-        verbose=0,
-    )
-    return (scf.ROHF if spin else scf.RHF)(molecule).run(verbose=0)
+    return run_mean_field(WATER_ATOM, spin=spin)
 
 
 @pytest.fixture(scope="module")

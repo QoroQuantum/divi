@@ -10,7 +10,7 @@ from pyscf import ao2mo, fci, gto, mcscf, scf
 from pyscf.fci import cistring
 
 from divi.hamiltonians import molecular_hamiltonian_from_pyscf
-from divi.hamiltonians._chem import _spo_from_integrals
+from divi.hamiltonians._openfermion import _spo_from_integrals
 from divi.qprog.ensembles.lassqd import _integrals as _integrals_module
 from divi.qprog.ensembles.lassqd._integrals import (
     AOIntegrals,

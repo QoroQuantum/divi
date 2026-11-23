@@ -1201,7 +1201,7 @@ class LUCJAnsatz(AmplitudeSeededAnsatz):
             pairs with explicit ``(orbital, orbital)`` pairs.
 
     Assumes the interleaved Jordan-Wigner ordering that
-    ``divi.hamiltonians._chem._spo_from_integrals`` produces: qubit ``2p`` is
+    ``divi.hamiltonians._openfermion._spo_from_integrals`` produces: qubit ``2p`` is
     the alpha spin-orbital of spatial orbital ``p`` and ``2p + 1`` is its beta
     partner. The Hartree-Fock reference is embedded, so no separate initial
     state is needed.

@@ -12,7 +12,6 @@ import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi._optional import import_optional
-from divi.hamiltonians._chem import _spo_from_integrals
 from divi.hamiltonians._molecular import (
     MoleculeLike,
     _PySCFMeanField,
@@ -21,6 +20,7 @@ from divi.hamiltonians._molecular import (
     molecular_hamiltonian,
     molecule_spin_counts,
 )
+from divi.hamiltonians._openfermion import _spo_from_integrals
 from divi.hamiltonians._term_ops import ObservableLike, to_spo
 
 

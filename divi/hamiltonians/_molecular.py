@@ -10,7 +10,7 @@ import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi._optional import module_if_imported
-from divi.hamiltonians._chem import _spo_from_integrals
+from divi.hamiltonians._openfermion import _spo_from_integrals
 from divi.hamiltonians._term_ops import to_spo
 
 if TYPE_CHECKING:

@@ -11,6 +11,7 @@ from qiskit.circuit.library import RYGate, RZGate
 from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.backends import MaestroConfig
 from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import (
     VQE,
@@ -24,9 +25,10 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import SuperpositionState, ZerosState
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 from divi.reporting._events import EventKind, TerminalStatus
-from tests._helpers import exact_match
+from tests._helpers import WATER_ATOM, exact_match, run_mean_field
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
@@ -561,6 +563,145 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     _assert_h2_ground_energy(vqe_problem3.best_loss)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem3.eigenstate, expected_eigenstate)
+
+
+_H4_CHAIN = "H 0 0 0; H 0 0 0.9; H 0 0 1.8; H 0 0 2.7"
+
+#: Problems whose measured RDMs are checked against the cost energy.
+_RDM_PROBLEMS = {
+    "h4-chain": lambda request: MolecularProblem.from_casci(
+        run_mean_field(_H4_CHAIN), 4, 4
+    ),
+    "water-triplet": lambda request: MolecularProblem.from_casci(
+        run_mean_field(WATER_ATOM, spin=2), 4, 4
+    ),
+    "pennylane-h2": lambda request: request.getfixturevalue("h2_problem"),
+}
+
+
+def _build_uccsd_vqe(problem, backend, optimizer, **kwargs):
+    return VQE(
+        problem, ansatz=UCCSDAnsatz(), backend=backend, optimizer=optimizer, **kwargs
+    )
+
+
+def _rdm_energy(problem, rdms):
+    (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = rdms
+    dm2 = dm2aa + dm2bb + dm2ab + dm2ab.transpose(2, 3, 0, 1)
+    return (
+        problem.constant
+        + np.einsum("pq,pq", problem.one_body, dm1a + dm1b)
+        + 0.5 * np.einsum("pqrs,pqrs", problem.two_body, dm2)
+    )
+
+
+@needs_qiskit_nature
+@pytest.mark.parametrize(
+    "build_problem", _RDM_PROBLEMS.values(), ids=_RDM_PROBLEMS.keys()
+)
+def test_measured_rdms_reproduce_the_cost_energy(
+    request, build_problem, default_test_simulator, default_optimizer
+):
+    problem = build_problem(request)
+    vqe = _build_uccsd_vqe(problem, default_test_simulator, default_optimizer)
+    params = np.random.default_rng(3).uniform(-0.2, 0.2, vqe.n_params)
+
+    (cost,) = vqe.evaluate(params, vqe.cost_preprocessor()).values()
+    rdms = vqe.measure_rdms(params)
+
+    assert _rdm_energy(problem, rdms) == pytest.approx(cost[0], abs=1e-9)
+    (dm1a, dm1b), _ = rdms
+    assert np.trace(dm1a) == pytest.approx(problem.n_alpha, abs=1e-9)
+    assert np.trace(dm1b) == pytest.approx(problem.n_beta, abs=1e-9)
+
+
+@needs_qiskit_nature
+def test_sampled_rdms_approach_the_exact_ones(
+    make_maestro_simulator, default_test_simulator, default_optimizer
+):
+    problem = MolecularProblem.from_casci(run_mean_field(_H4_CHAIN), 4, 4)
+    sampler = make_maestro_simulator(
+        shots=4000, force_sampling=True, maestro_config=MaestroConfig(seed=1997)
+    )
+    exact_vqe = _build_uccsd_vqe(problem, default_test_simulator, default_optimizer)
+    params = np.random.default_rng(3).uniform(-0.2, 0.2, exact_vqe.n_params)
+
+    exact = exact_vqe.measure_rdms(params)
+    sampled = _build_uccsd_vqe(problem, sampler, default_optimizer).measure_rdms(params)
+
+    (dm1a, dm1b), _ = sampled
+    assert np.trace(dm1a) == pytest.approx(problem.n_alpha, abs=0.1)
+    assert np.trace(dm1b) == pytest.approx(problem.n_beta, abs=0.1)
+    assert _rdm_energy(problem, sampled) == pytest.approx(
+        _rdm_energy(problem, exact), abs=0.2
+    )
+
+
+@needs_qiskit_nature
+def test_trained_rdms_match_pyscf_fci_for_two_electrons(default_test_simulator):
+    mcscf = pytest.importorskip("pyscf.mcscf")
+    mean_field = run_mean_field("H 0 0 0; H 0 0 0.74", basis="6-31g")
+    vqe = _build_uccsd_vqe(
+        MolecularProblem.from_casci(mean_field, 2, 2),
+        default_test_simulator,
+        ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+        max_iterations=50,
+    )
+    vqe.run(perform_final_computation=False)
+    casci = mcscf.CASCI(mean_field, 2, 2)
+    casci.verbose = 0
+    casci.kernel()
+
+    (dm1s, dm2s) = vqe.measure_rdms()
+
+    (ref1s, ref2s) = casci.fcisolver.make_rdm12s(casci.ci, 2, (1, 1))
+    for measured, reference in zip((*dm1s, *dm2s), (*ref1s, *ref2s), strict=True):
+        np.testing.assert_allclose(measured, reference, atol=1e-6)
+
+
+def test_measure_rdms_without_trained_or_explicit_params_raises(
+    h2_problem, dummy_simulator, default_optimizer
+):
+    vqe = VQE(h2_problem, backend=dummy_simulator, optimizer=default_optimizer)
+
+    with pytest.raises(
+        RuntimeError,
+        match=exact_match(
+            "No trained parameters are available. Pass explicit `params` or call "
+            "run() first."
+        ),
+    ):
+        vqe.measure_rdms()
+
+
+def test_measure_rdms_takes_one_parameter_vector(
+    h2_problem, dummy_simulator, default_optimizer
+):
+    vqe = VQE(h2_problem, backend=dummy_simulator, optimizer=default_optimizer)
+
+    with pytest.raises(
+        ValueError,
+        match=exact_match("measure_rdms takes one parameter vector; got 2 rows."),
+    ):
+        vqe.measure_rdms(np.zeros((2, vqe.n_params)))
+
+
+def test_measure_rdms_needs_a_molecular_problem(
+    four_qubit_hamiltonian, dummy_simulator, default_optimizer
+):
+    vqe = VQE(
+        HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "measure_rdms needs a MolecularProblem; got HamiltonianProblem."
+        ),
+    ):
+        vqe.measure_rdms(np.zeros(vqe.n_params))
 
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):

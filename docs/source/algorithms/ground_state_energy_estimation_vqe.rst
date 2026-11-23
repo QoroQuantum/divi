@@ -191,6 +191,26 @@ preparation, so combining them with a non-``ZerosState`` initial state prepends
 extra operators and emits a :class:`UserWarning` (it can produce unphysical
 circuits).
 
+Reduced Density Matrices
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+For a :class:`~divi.qprog.problems.MolecularProblem`,
+:meth:`~divi.qprog.algorithms.VQE.measure_rdms` measures the spin-resolved one-
+and two-body reduced density matrices of the trained state (or of an explicit
+``params`` vector). Every symmetry-unique element is measured as an observable
+on the program's backend, so the RDMs are exact on a backend that computes
+expectation values and shot-noisy on a sampling one. Continuing from the basic
+example above:
+
+.. code-block:: python
+
+   (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = vqe_problem.measure_rdms()
+   print(f"Electrons: {dm1a.trace() + dm1b.trace():.6f}")
+
+The result uses PySCF's ``make_rdm12s`` layout, so it can be passed to PySCF
+routines that consume spin RDMs. Only real parts are measured, so the RDMs are
+exact for real wave functions. Measuring them requires the ``chem`` extra.
+
 Available Ansätze
 -----------------
 

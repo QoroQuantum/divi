@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the OpenFermion adapters in divi.hamiltonians._chem."""
+"""Tests for the OpenFermion adapters in divi.hamiltonians._openfermion."""
 
 import numpy as np
 import pytest

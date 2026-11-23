@@ -18,7 +18,7 @@ import scipy.linalg
 from pyscf import ao2mo, cc, fci, gto, mcscf, scf, solvent
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._chem import _spo_from_integrals
+from divi.hamiltonians._openfermion import _spo_from_integrals
 from divi.qprog.algorithms import Ansatz, ElectronCounts, UCCSDAnsatz
 from divi.qprog.ensembles import ReportingLevel
 from divi.qprog.ensembles.lassqd import (
