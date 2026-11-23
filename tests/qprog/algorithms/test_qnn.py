@@ -572,7 +572,7 @@ class TestQNNPipelines:
         submit_vjp = mocker.spy(default_test_simulator, "submit_vjp")
         params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
 
-        gradient = program._evaluate_gradient_at(params)
+        (gradient,) = program._evaluate_gradients(params)
 
         submit_vjp.assert_not_called()
         np.testing.assert_allclose(
@@ -608,10 +608,27 @@ class TestQNNPipelines:
         )
         params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
 
-        gradient = program._evaluate_gradient_at(params)
+        (gradient,) = program._evaluate_gradients(params)
 
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
+
+    def test_gradients_of_several_sets_match_each_set_alone(
+        self, make_qnn, default_test_simulator
+    ):
+        program = make_qnn(
+            labels=np.array([0.5, -0.3, 0.8, -0.6]), backend=default_test_simulator
+        )
+        param_sets = np.random.default_rng(7).uniform(-1.0, 1.0, (2, program.n_params))
+
+        gradients = program._evaluate_gradients(param_sets)
+
+        np.testing.assert_allclose(
+            gradients,
+            np.vstack([program._evaluate_gradients(params) for params in param_sets]),
+            rtol=0,
+            atol=1e-9,
         )
 
 

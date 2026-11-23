@@ -508,7 +508,9 @@ def test_pullback_scales_gradient_and_metric_by_the_programs_slopes(
     default = PullbackMetricEstimator().bind(toy_vqe)
     grad, metric = default["jac"](theta), default["metric_fn"](theta)
     monkeypatch.setattr(
-        toy_vqe, "_loss_gradient_by_observable", lambda _params: np.array([-2.5])
+        toy_vqe,
+        "_loss_gradients_by_observable",
+        lambda _param_sets: np.array([[-2.5]]),
     )
     sloped = PullbackMetricEstimator().bind(toy_vqe)
 
@@ -522,7 +524,9 @@ def test_pullback_scales_gradient_and_metric_by_the_programs_slopes(
 def test_pullback_rejects_slopes_that_are_not_finite_and_real(
     toy_vqe, monkeypatch, slopes
 ):
-    monkeypatch.setattr(toy_vqe, "_loss_gradient_by_observable", lambda _params: slopes)
+    monkeypatch.setattr(
+        toy_vqe, "_loss_gradients_by_observable", lambda _param_sets: slopes[None]
+    )
     message = (
         f"The loss gradient by observable must be finite and real, got {slopes!r}."
     )
@@ -545,10 +549,10 @@ def test_default_loss_gradient_is_one_for_the_first_observable(
     program = program_with_cost_circuit(
         mocker, mocker.MagicMock(spec=MetaCircuit, observable=observable)
     )
-    slopes = VariationalQuantumAlgorithm._loss_gradient_by_observable(
-        program, np.array([0.3, 1.2])
+    slopes = VariationalQuantumAlgorithm._loss_gradients_by_observable(
+        program, np.array([[0.3, 1.2], [0.5, 0.7]])
     )
-    np.testing.assert_array_equal(slopes, expected)
+    np.testing.assert_array_equal(slopes, [expected, expected])
 
 
 def test_metric_pipeline_terms_sum_to_energy(toy_vqe):
@@ -776,9 +780,8 @@ def test_pce_pullback_gradient_is_the_exact_chain_rule_gradient(
     estimator.check_compatible(pce)
     evaluators = estimator.bind(pce)
 
-    np.testing.assert_allclose(
-        evaluators["jac"](params), pce._evaluate_gradient_at(params), atol=1e-9
-    )
+    (gradient,) = pce._evaluate_gradients(params)
+    np.testing.assert_allclose(evaluators["jac"](params), gradient, atol=1e-9)
     metric = evaluators["metric_fn"](params)
     assert np.all(np.linalg.eigvalsh(metric) >= -1e-12)
 
@@ -1402,7 +1405,7 @@ def test_pullback_metric_is_symmetric_psd_low_rank(toy_vqe):
 
     # Fused energy gradient agrees with the standard parameter-shift gradient
     # (both analytic on an expval backend).
-    grad_ref = toy_vqe._evaluate_gradient_at(params)
+    (grad_ref,) = toy_vqe._evaluate_gradients(params)
     np.testing.assert_allclose(grad, grad_ref, atol=1e-3)
 
 

@@ -683,24 +683,34 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             dtype=np.float64,
         )
 
-    def _loss_gradient_by_observable(
-        self, params: npt.NDArray[np.float64]
+    def _loss_gradients_by_observable(
+        self, param_sets: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
-        """The objective's slope in each variable's expectation at ``params``.
+        """The objective's slope in each variable's expectation, one row per
+        parameter set.
 
-        Reuses the expectations of the latest cost evaluation at ``params``,
-        which QNG runs just before asking for the gradient, and measures them
-        otherwise.
+        Reuses the expectations of the latest cost evaluation where it covers a
+        set, which QNG runs just before asking for the gradient, and measures
+        the remaining sets in one batch.
 
         Raises:
             ValueError: If the objective scores samples, which have no gradient.
         """
         objective = self._differentiable_objective()
-        params = np.asarray(params, dtype=np.float64).reshape(-1)
-        z = self._cost_expectations.get(_params_key(params))
-        if z is None:
-            z = self._variable_expectations(np.atleast_2d(params))[0]
-        return objective.gradient(z, self.problem)
+        param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
+        keys = [_params_key(params) for params in param_sets]
+        expectations = {
+            key: self._cost_expectations[key]
+            for key in keys
+            if key in self._cost_expectations
+        }
+        missing = [index for index, key in enumerate(keys) if key not in expectations]
+        if missing:
+            measured = self._variable_expectations(param_sets[missing])
+            expectations.update(zip((keys[index] for index in missing), measured))
+        return np.array(
+            [objective.gradient(expectations[key], self.problem) for key in keys]
+        )
 
     def _differentiable_objective(self) -> ExpectationObjective:
         """The objective, which must have a gradient.

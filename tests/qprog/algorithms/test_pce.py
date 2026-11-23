@@ -1513,8 +1513,9 @@ def test_pce_gradient_matches_central_differences(
     )
     params = np.random.default_rng(5).uniform(0, 2 * np.pi, pce.n_params)
 
+    (gradient,) = pce._evaluate_gradients(params)
     np.testing.assert_allclose(
-        pce._evaluate_gradient_at(params),
+        gradient,
         central_difference_of_loss(pce, params, step=1e-5),
         atol=1e-6,
     )
@@ -1527,32 +1528,34 @@ def test_pce_slopes_reuse_the_latest_cost_evaluation(
     need no new measurement; a cold call measures them and agrees."""
     pce = _entangling_pce(make_maestro_simulator(), default_optimizer)
     theta = np.random.default_rng(4).uniform(0, 2 * np.pi, pce.n_params)
-    cold = pce._loss_gradient_by_observable(theta)
+    cold = pce._loss_gradients_by_observable(theta[None])
 
     pce._evaluate_cost_param_sets(np.atleast_2d(theta))
     evaluate = mocker.spy(pce, "evaluate")
-    warm = pce._loss_gradient_by_observable(theta)
+    warm = pce._loss_gradients_by_observable(theta[None])
 
     assert evaluate.call_count == 0
     np.testing.assert_allclose(warm, cold)
 
 
-def test_pce_slopes_at_other_parameters_are_measured(
+def test_pce_slopes_measure_every_other_parameter_set_in_one_batch(
     make_maestro_simulator, default_optimizer, mocker
 ):
     pce = _entangling_pce(make_maestro_simulator(), default_optimizer)
-    rng = np.random.default_rng(4)
-    evaluated, other = rng.uniform(0, 2 * np.pi, (2, pce.n_params))
-    expected = _entangling_pce(
-        make_maestro_simulator(), default_optimizer
-    )._loss_gradient_by_observable(other)
+    evaluated, *others = np.random.default_rng(4).uniform(
+        0, 2 * np.pi, (3, pce.n_params)
+    )
+    fresh = _entangling_pce(make_maestro_simulator(), default_optimizer)
+    expected = np.vstack(
+        [fresh._loss_gradients_by_observable(other[None]) for other in others]
+    )
 
     pce._evaluate_cost_param_sets(np.atleast_2d(evaluated))
     evaluate = mocker.spy(pce, "evaluate")
-    slopes = pce._loss_gradient_by_observable(other)
+    slopes = pce._loss_gradients_by_observable(np.array([evaluated, *others]))
 
     assert evaluate.call_count == 1
-    np.testing.assert_allclose(slopes, expected)
+    np.testing.assert_allclose(slopes[1:], expected)
 
 
 def test_pce_slopes_reuse_every_parameter_set_of_a_batched_evaluation(
@@ -1569,8 +1572,7 @@ def test_pce_slopes_reuse_every_parameter_set_of_a_batched_evaluation(
 
     pce._evaluate_cost_param_sets(batch)
     evaluate = mocker.spy(pce, "evaluate")
-    pce._loss_gradient_by_observable(batch[0])
-    pce._loss_gradient_by_observable(negative_zero)
+    pce._loss_gradients_by_observable(np.array([batch[0], negative_zero]))
 
     assert evaluate.call_count == 0
 
@@ -1732,7 +1734,7 @@ def test_pce_sample_objective_has_no_gradient(make_pce):
             "gradient-free optimizer."
         ),
     ):
-        pce._evaluate_gradient_at(np.zeros(pce.n_params))
+        pce._evaluate_gradients(np.zeros(pce.n_params))
 
 
 def test_pce_rejects_shot_variance_requests(make_pce):

@@ -3296,7 +3296,7 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         program = make_program(default_test_simulator)
         params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
 
-        gradient = program._evaluate_gradient_at(params)
+        (gradient,) = program._evaluate_gradients(params)
 
         assert program.total_circuit_count == 1
         np.testing.assert_allclose(
@@ -3313,11 +3313,35 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
         shifts, _ = program._grad_shift_rule
 
-        gradient = program._evaluate_gradient_at(params)
+        (gradient,) = program._evaluate_gradients(params)
 
         assert program.total_circuit_count == len(shifts)
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
+
+    @pytest.mark.parametrize(
+        "simulation_type",
+        ["Statevector", "MatrixProductState"],
+        ids=["adjoint", "shift-rule"],
+    )
+    def test_gradients_of_several_sets_match_each_set_alone(
+        self, make_maestro_simulator, simulation_type
+    ):
+        program = _gradient_vqe(
+            make_maestro_simulator(
+                maestro_config=MaestroConfig(simulation_type=simulation_type)
+            )
+        )
+        param_sets = np.random.default_rng(7).uniform(-1.0, 1.0, (3, program.n_params))
+
+        gradients = program._evaluate_gradients(param_sets)
+
+        np.testing.assert_allclose(
+            gradients,
+            np.vstack([program._evaluate_gradients(params) for params in param_sets]),
+            rtol=0,
+            atol=1e-9,
         )
 
     def test_stochastic_trotterisation_still_refuses_a_gradient(
@@ -3337,14 +3361,14 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
                 "trotterization. Use a gradient-free optimizer or SPSA."
             ),
         ):
-            qaoa._evaluate_gradient_at(np.zeros(qaoa.n_params))
+            qaoa._evaluate_gradients(np.zeros(qaoa.n_params))
 
     def test_overriding_the_loss_requires_its_slope(self):
         with pytest.raises(
             TypeError,
             match=exact_match(
                 "_LossOnly overrides _evaluate_cost_param_sets, so it must also "
-                "override _loss_gradient_by_observable with its loss's slope in "
+                "override _loss_gradients_by_observable with its loss's slope in "
                 "each cost observable."
             ),
         ):
@@ -3470,7 +3494,7 @@ def test_optimizer_evaluators_reach_the_optimizer(mocker, mock_backend):
         script,
         evaluators={"jac": jac, "metric_fn": metric_fn},
     )
-    default_gradient = mocker.spy(program, "_evaluate_gradient_at")
+    default_gradient = mocker.spy(program, "_evaluate_gradients")
     program.run(perform_final_computation=False)
 
     jac.assert_called_once()
@@ -3513,7 +3537,9 @@ def test_grad_norm_threshold_uses_the_reported_gradient(
         },
     )
     mocker.patch.object(
-        program, "_evaluate_gradient_at", side_effect=lambda p: 2.0 * (p - 1.0)
+        program,
+        "_evaluate_gradients",
+        side_effect=lambda p: 2.0 * (np.atleast_2d(p) - 1.0),
     )
 
     program.run(max_iterations=20, perform_final_computation=False)

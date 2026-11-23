@@ -397,7 +397,7 @@ def _loss_gradient(
     Raises:
         ContractViolation: If the slopes are complex or not finite.
     """
-    slopes = np.asarray(program._loss_gradient_by_observable(params))
+    (slopes,) = np.asarray(program._loss_gradients_by_observable(np.atleast_2d(params)))
     if np.iscomplexobj(slopes) or not np.all(np.isfinite(slopes)):
         raise ContractViolation(
             f"The loss gradient by observable must be finite and real, got {slopes!r}."

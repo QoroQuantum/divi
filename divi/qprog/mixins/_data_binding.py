@@ -518,16 +518,18 @@ class DataBindingMixin(_MixinBase):
         }
         return np.asarray([indexed[i] for i in range(len(indexed))], dtype=np.float64)
 
-    def _evaluate_gradient_at(
-        self, params: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
-        """The loss gradient at a single parameter vector."""
+    def _evaluate_gradients(self, param_sets: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """The loss gradient at each parameter set, one row per set."""
         feature_batch = self.feature_batch
         if feature_batch is None:
-            return super()._evaluate_gradient_at(params)
+            return super()._evaluate_gradients(param_sets)
+        param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
+        n_sets, n_params = param_sets.shape
         features = self._validate_feature_batch(feature_batch, len(self._data_symbols))
         shifts, weights = self._grad_shift_rule
-        weight_rows = np.vstack([params, shifts + params])
+        weight_rows = (
+            param_sets[:, None, :] + np.vstack([np.zeros(n_params), shifts])
+        ).reshape(-1, n_params)
         values = self._measure_observable_for(
             np.hstack(
                 [
@@ -535,19 +537,19 @@ class DataBindingMixin(_MixinBase):
                     np.tile(weight_rows, (len(features), 1)),
                 ]
             )
-        ).reshape(len(features), -1)
-        predictions, prediction_gradients = values[:, 0], values[:, 1:] @ weights.T
-
+        ).reshape(len(features), n_sets, -1)
+        predictions = values[:, :, 0]
+        prediction_gradients = values[:, :, 1:] @ weights.T
         stage = self._build_data_binding_stage()
-        n_params = len(weights)
         return derivative(
             np.vectorize(
-                lambda step, column: stage.compute_loss(
-                    predictions + step * prediction_gradients[:, int(column)],
+                lambda step, index, column: stage.compute_loss(
+                    predictions[:, int(index)]
+                    + step * prediction_gradients[:, int(index), int(column)],
                     self.labels,
                 )
             ),
-            np.zeros(n_params),
-            args=(np.arange(n_params),),
+            np.zeros((n_sets, n_params)),
+            args=(np.arange(n_sets)[:, None], np.arange(n_params)[None, :]),
             initial_step=1e-3,
         ).df

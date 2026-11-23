@@ -385,7 +385,7 @@ class TestInitialization:
         )
         params = np.array([0.4, -0.7])
 
-        gradient = program._evaluate_gradient_at(params)
+        (gradient,) = program._evaluate_gradients(params)
 
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6

@@ -1242,7 +1242,7 @@ def test_declared_frequencies_give_exact_gradients(
     )
 
     params = np.random.default_rng(5).uniform(0.2, 1.2, vqe.n_params)
-    analytic = vqe._evaluate_gradient_at(params)
+    (analytic,) = vqe._evaluate_gradients(params)
     numerical = _finite_difference_gradient(vqe, params)
 
     np.testing.assert_allclose(analytic, numerical, atol=1e-6)
