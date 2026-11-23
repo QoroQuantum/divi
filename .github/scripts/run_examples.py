@@ -173,8 +173,7 @@ TUTORIALS: dict[str, dict] = {
         "patches": [
             ("grid_points=5", "grid_points=3"),
             ("max_iterations=5", "max_iterations=1"),
-            ("pop_size = 10", "pop_size = 3"),
-            ("population_size=10", "population_size=3"),
+            ("population_size=10", "population_size=4"),
         ],
     },
     "dynamics/time_evolution.py": {

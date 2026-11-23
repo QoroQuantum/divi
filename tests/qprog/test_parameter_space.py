@@ -35,6 +35,53 @@ def test_periods_follow_the_base_frequency():
     np.testing.assert_allclose(space.periods, [_TWO_PI, 4 * np.pi, np.pi, np.nan])
 
 
+def test_search_widths_are_periods_up_to_four_pi():
+    space = ParameterSpace(((1.0, 1), (2.0, 1), (0.5, 2), (0.25, 4), None))
+
+    np.testing.assert_allclose(
+        space.search_widths, [_TWO_PI, np.pi, 4 * np.pi, _TWO_PI, _TWO_PI]
+    )
+
+
+def test_wrap_moves_points_by_whole_periods_and_leaves_unknown_ones():
+    space = ParameterSpace(((0.5, 1), (2.0, 1), None))
+
+    wrapped = space.wrap(
+        np.array([[4 * np.pi + 0.1, np.pi + 0.2, 9.0], [-0.1, -0.2, -9.0]]),
+        np.zeros(3),
+    )
+
+    np.testing.assert_allclose(wrapped, [[0.1, 0.2, 9.0], [-0.1, -0.2, -9.0]])
+
+
+def test_build_population_keeps_the_center_as_its_first_set():
+    space = ParameterSpace(((1.0, 1), (0.5, 2)))
+    center = np.array([0.3, -0.2])
+
+    population = space.build_population(center, 6, np.random.default_rng(0))
+
+    assert population.shape == (6, 2)
+    np.testing.assert_array_equal(population[0], center)
+    assert len(np.unique(population, axis=0)) == 6
+
+
+def test_build_population_of_one_set_is_the_center():
+    population = ParameterSpace(((1.0, 1),) * 3).build_population(
+        np.array([0.1, 0.2, 0.3]), 1, np.random.default_rng(0)
+    )
+
+    np.testing.assert_array_equal(population, [[0.1, 0.2, 0.3]])
+
+
+def test_build_population_spread_scales_with_the_search_width():
+    space = ParameterSpace(((1.0, 1), (0.5, 2), (2.0, 1), None))
+
+    population = space.build_population(np.zeros(4), 20_000, np.random.default_rng(0))
+
+    spread = population[1:].std(axis=0)
+    np.testing.assert_allclose(spread / spread[0], [1.0, 2.0, 0.5, 1.0], rtol=0.05)
+
+
 def test_shift_rule_needs_every_frequency():
     with pytest.raises(
         ValueError,

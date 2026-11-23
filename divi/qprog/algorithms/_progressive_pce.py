@@ -403,9 +403,7 @@ class ProgressivePCE(PCE):
                 self._step = step
                 self._reset_optimization_state()
                 if warm_start is not None:
-                    step_initial_params = np.tile(
-                        warm_start, (self.optimizer.n_param_sets, 1)
-                    )
+                    step_initial_params = warm_start
                 elif self._attempt == 0 and initial_params is not None:
                     step_initial_params = initial_params
             resumes_mid_step = False

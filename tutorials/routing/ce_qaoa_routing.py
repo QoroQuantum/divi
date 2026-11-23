@@ -264,11 +264,7 @@ def run_tsp_walkthrough(backend) -> None:
     # ── 3) Parameter transfer: grid → variational ─────────────────────
     _section("TSP — Parameter Transfer → Monte Carlo Refinement")
 
-    pop_size = 10
     best_grid_params = ce_grid.best_params.copy()
-    rng = np.random.default_rng(42)
-    warm_start = best_grid_params + rng.normal(0, 0.1, size=(pop_size, 2))
-    warm_start = warm_start % (2 * np.pi)
 
     print(
         f"Warm-start from grid: (γ, β) = "
@@ -279,10 +275,12 @@ def run_tsp_walkthrough(backend) -> None:
         problem,
         n_layers=1,
         backend=backend,
-        optimizer=MonteCarloOptimizer(population_size=pop_size, n_best_sets=3),
+        optimizer=MonteCarloOptimizer(population_size=10, n_best_sets=3),
         max_iterations=5,
+        seed=42,
     )
-    ce_mc.run(initial_params=warm_start)
+    # One parameter set: the other population members start near it.
+    ce_mc.run(initial_params=best_grid_params)
 
     print(f"Best loss after refinement: {ce_mc.best_loss:.4f}")
 

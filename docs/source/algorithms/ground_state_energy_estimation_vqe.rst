@@ -180,8 +180,9 @@ Without ``initial_params``,
 :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
 :class:`~divi.qprog.algorithms.UCCSDAnsatz` start with every excitation
 amplitude at zero, which prepares exactly the Hartree-Fock state, so the energy
-starts at the Hartree-Fock energy. Every other ansatz starts from random
-parameters.
+starts at the Hartree-Fock energy; the other sets of a population start near
+it. Every other ansatz starts from random parameters across each parameter's
+period.
 
 Pass ``initial_params`` to ``run()`` to warm-start from known parameters or
 continue a geometry sweep or interrupted optimisation. See

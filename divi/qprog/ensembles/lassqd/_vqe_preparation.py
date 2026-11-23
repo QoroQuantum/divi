@@ -75,7 +75,9 @@ class _FragmentVQE(VQE):
     def _initialize_param_sets(self):
         if self._seed_params is None:
             return super()._initialize_param_sets()
-        return np.tile(self._seed_params, (self.optimizer.n_param_sets, 1))
+        return self.parameter_space.build_population(
+            self._seed_params, self.optimizer.n_param_sets, self._rng
+        )
 
     @property
     def sampled_problem(self) -> MolecularProblem:

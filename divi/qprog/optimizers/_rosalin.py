@@ -481,6 +481,11 @@ class RosalinOptimizer(Optimizer):
         """ROSALIN persists its iterate, budget, and adaptive allocation state."""
         return True
 
+    @property
+    def has_resume_state(self) -> bool:
+        """Whether an iterate from an earlier run is held."""
+        return self._theta is not None
+
     def get_config(self) -> dict[str, Any]:
         """Return constructor configuration for checkpoint reconstruction."""
         return {

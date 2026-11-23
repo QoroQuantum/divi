@@ -459,7 +459,7 @@ class CharacterizationResult:
     def qaoa_initial_params(self, layers: int | None = None) -> np.ndarray | None:
         """Angles ready for :class:`~divi.qprog.algorithms.QAOA`'s ``run``.
 
-        Returns an ``initial_params`` array of shape ``(1, 2 * layers)``,
+        Returns one ``initial_params`` set of shape ``(2 * layers,)``,
         ordered per layer as ``[γ₀, β₀, γ₁, β₁, …]``, so warm-starting a real
         run from a characterisation is one line::
 
@@ -493,7 +493,7 @@ class CharacterizationResult:
         if not gammas or len(gammas) != len(betas):
             return None
         return np.asarray(
-            [[angle for g, b in zip(gammas, betas) for angle in (g, b)]], dtype=float
+            [angle for g, b in zip(gammas, betas) for angle in (g, b)], dtype=float
         )
 
     def __repr__(self) -> str:

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
+from divi.qprog import ParameterSpace
 from divi.qprog._program_checkpoint import OptimizerConfig
 from divi.qprog.optimizers import (
     PymooMethod,
@@ -112,12 +113,10 @@ class TestPymooOptimizer:
             sphere_cost_fn_population, initial_params, max_iterations=3, rng=self.rng
         )
 
-        # Verify state is set
-        assert optimizer._curr_algorithm_obj is not None
+        assert optimizer.has_resume_state
 
-        # Reset and verify state is cleared
         optimizer.reset()
-        assert optimizer._curr_algorithm_obj is None
+        assert not optimizer.has_resume_state
 
     def test_save_state_creates_checkpoint_file(self, tmp_path):
         """Test that save_state() creates the expected checkpoint file."""
@@ -339,7 +338,7 @@ class TestPymooOptimizer:
         optimizer.optimize(
             sphere_cost_fn_population, initial_params, max_iterations=1, rng=self.rng
         )
-        assert optimizer._curr_algorithm_obj is not None
+        assert optimizer.has_resume_state
 
         copied = optimizer.copy()
 
@@ -348,7 +347,7 @@ class TestPymooOptimizer:
         assert copied.population_size == optimizer.population_size
         assert copied.algorithm_kwargs["popsize"] == 4
         assert copied.algorithm_kwargs["sigma"] == 0.5
-        assert copied._curr_algorithm_obj is None
+        assert not copied.has_resume_state
 
 
 def test_default_population_iterations_and_config():
@@ -418,17 +417,82 @@ def test_de_forwards_algorithm_kwargs():
     assert optimizer._curr_algorithm_obj.mating.CR.value == 0.9
 
 
-def test_de_offspring_stay_within_one_period():
+def test_de_offspring_stay_within_one_period_of_the_first_set():
+    initial = np.full((6, 2), 6.2) + np.arange(6)[:, None] * 0.01
     _, populations = _run(
         PymooOptimizer(method=PymooMethod.DE, population_size=6),
         cost_fn=lambda X: -np.sum(X, axis=1),
-        initial=np.full((6, 2), 6.2) + np.arange(6)[:, None] * 0.01,
+        initial=initial,
         max_iterations=6,
     )
 
     evaluated = np.vstack(populations)
-    assert np.all(evaluated >= 0.0)
-    assert np.all(evaluated <= 2 * np.pi)
+    assert np.all(np.abs(evaluated - initial[0]) <= np.pi)
+    assert evaluated.max() > 2 * np.pi
+
+
+def test_de_box_spans_each_parameter_period():
+    space = ParameterSpace(((0.5, 1), None))
+    _, populations = _run(
+        PymooOptimizer(method=PymooMethod.DE, population_size=6),
+        cost_fn=lambda X: -np.sum(X, axis=1),
+        initial=np.arange(12.0).reshape(6, 2) * 0.01,
+        max_iterations=10,
+        parameter_space=lambda: space,
+    )
+
+    assert np.pi < np.vstack(populations)[:, 0].max() <= 2 * np.pi
+
+
+def test_de_wraps_the_initial_population_into_the_box():
+    initial = np.array([[0.1], [2 * np.pi + 0.2], [-2 * np.pi + 0.3], [0.4]])
+    _, populations = _run(
+        PymooOptimizer(method=PymooMethod.DE, population_size=4),
+        initial=initial,
+        max_iterations=1,
+    )
+
+    np.testing.assert_allclose(populations[0], [[0.1], [0.2], [0.3], [0.4]])
+
+
+def test_de_clips_rows_it_cannot_wrap_into_the_box():
+    """An unknown period cannot be wrapped, so its column is clipped instead."""
+    initial = np.array([[0.0, 0.0], [0.5, 15.0], [-0.5, -15.0], [0.2, 2.0]])
+    _, populations = _run(
+        PymooOptimizer(method=PymooMethod.DE, population_size=4),
+        initial=initial,
+        max_iterations=6,
+        parameter_space=lambda: ParameterSpace(((1.0, 1), None)),
+    )
+
+    np.testing.assert_allclose(populations[0][:, 1], [0.0, np.pi, -np.pi, 2.0])
+    assert np.all(np.abs(np.vstack(populations)[:, 1]) <= np.pi)
+
+
+def test_de_never_loses_its_best_set():
+    optimizer = PymooOptimizer(method=PymooMethod.DE, population_size=6)
+    initial = np.random.default_rng(1).uniform(0.0, 2 * np.pi, (6, 3))
+    evaluated, best = [], []
+    for _ in range(15):
+        result, populations = _run(
+            optimizer, initial=None if evaluated else initial, max_iterations=1
+        )
+        evaluated.extend(populations)
+        best.append(result.fun.item())
+
+    assert best == sorted(best, reverse=True)
+    assert best[-1] == pytest.approx(
+        sphere_cost_fn_population(np.vstack(evaluated)).min()
+    )
+
+
+def test_binds_the_program_parameter_space(mocker):
+    space = ParameterSpace(((0.5, 1),))
+    program = mocker.Mock(parameter_space=space)
+
+    evaluators = PymooOptimizer(method=PymooMethod.DE).build_evaluators(program)
+
+    assert evaluators["parameter_space"]() is space
 
 
 def test_cmaes_survives_a_non_finite_loss():

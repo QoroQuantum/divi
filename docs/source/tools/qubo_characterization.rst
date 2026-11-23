@@ -79,8 +79,8 @@ Shortcuts read individual values:
      - Variables fixed at values one optimum takes, as ``{index: value}``;
        substituting them leaves a smaller problem with the same minimum.
    * - ``qaoa_initial_params(layers)``
-     - The angles at a layer count (default: the recommended one), in the
-       layout :class:`~divi.qprog.algorithms.QAOA`'s ``run`` expects.
+     - The angles at a layer count (default: the recommended one), as one
+       parameter set for :class:`~divi.qprog.algorithms.QAOA`'s ``run``.
 
 Starting QAOA from the service's angles:
 

@@ -847,8 +847,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Get the expected shape for initial parameters.
 
         Returns:
-            tuple[int, int]: Shape (n_param_sets, n_layers * n_params_per_layer) that
-                initial parameters should have for this quantum program.
+            tuple[int, int]: Shape (n_param_sets, n_layers * n_params_per_layer) of
+                a full set of initial parameters; ``run`` also accepts one 1-D set.
         """
         return (self.optimizer.n_param_sets, self.n_params)
 
@@ -871,35 +871,34 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
 
     def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
-        """Generate fresh parameter sets for a new optimisation run."""
+        """Draw fresh parameter sets uniformly across each parameter's search width."""
         return self._rng.uniform(
-            0, 2 * np.pi, (self.optimizer.n_param_sets, self.n_params)
+            0.0,
+            self.parameter_space.search_widths,
+            (self.optimizer.n_param_sets, self.n_params),
         )
-
-    def _optimizer_has_resume_state(self) -> bool:
-        """Return True when the optimizer already carries resumable state."""
-        if isinstance(self.optimizer, MonteCarloOptimizer):
-            return self.optimizer._has_checkpoint
-        if isinstance(self.optimizer, PymooOptimizer):
-            return self.optimizer._curr_algorithm_obj is not None
-        return False
 
     def _resolve_initial_param_sets(
         self, initial_params: npt.NDArray[np.float64] | None
     ) -> npt.NDArray[np.float64] | None:
-        """Resolve the initial parameter sets for a fresh or resumed run."""
-        if initial_params is not None and self._optimizer_has_resume_state():
+        """Resolve the initial parameter sets for a fresh or resumed run; a
+        single 1-D set seeds a population around it."""
+        if initial_params is not None and self.optimizer.has_resume_state:
             raise ValueError(
                 "initial_params cannot be provided when resuming from optimizer state. "
                 "Load a fresh program instance or reset the optimizer first."
             )
 
         if initial_params is not None:
-            validated = np.atleast_2d(initial_params)
-            self._validate_initial_params(validated)
-            return validated.copy()
+            params = np.asarray(initial_params, dtype=np.float64)
+            if params.shape == (self.n_params,):
+                return self.parameter_space.build_population(
+                    params, self.optimizer.n_param_sets, self._rng
+                )
+            self._validate_initial_params(params)
+            return params.copy()
 
-        if self._optimizer_has_resume_state():
+        if self.optimizer.has_resume_state:
             return None
 
         return self._initialize_param_sets()
@@ -1190,9 +1189,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         Args:
             initial_params (npt.NDArray[np.float64] | None): Optional initial parameter
-                sets for a fresh optimisation run. Must have shape
-                ``(n_param_sets, n_layers * n_params_per_layer)``. Cannot be
-                combined with a checkpoint-resumed optimizer state.
+                sets for a fresh optimisation run: shape
+                ``(n_param_sets, n_layers * n_params_per_layer)``, or one 1-D set
+                that seeds a population of small perturbations around it.
+                Cannot be combined with a checkpoint-resumed optimizer state.
             perform_final_computation (bool): Whether to run the final
                 computation after optimisation: for solution-sampling programs,
                 sampling at ``best_params``. Results computed from the training

@@ -153,20 +153,24 @@ For deeper variational workflow details, use these focused guides:
   ``param_history(...)``
 - :doc:`program_ensembles` for multi-run orchestration and sweep-style workflows
 
-**Warm starts.** Pass ``initial_params`` to ``run()``. Match
-``get_expected_param_shape()`` when changing optimizer type; population
-optimizers require one row per member. Set ``perform_final_computation=False``
-when only the trained parameters matter.
+**Warm starts.** Pass ``initial_params`` to ``run()``: one parameter set, or
+one row per population member (``get_expected_param_shape()``). A single set
+seeds a population of small perturbations around it. Set
+``perform_final_computation=False`` when only the trained parameters matter.
 
 .. skip: next
 
 .. code-block:: python
 
-   # One parameter set for a single-set optimizer.
+   # One parameter set, for any optimizer.
    program.run(
-       initial_params=program.best_params.reshape(1, -1),
+       initial_params=program.best_params,
        perform_final_computation=False,
    )
+
+Without ``initial_params``, starting points are drawn uniformly across one
+period of each parameter (:math:`2\pi` where the period is unknown or above
+:math:`4\pi`).
 
 **Sampling from Pre-Trained Parameters**
    VQE, QAOA, and PCE expose

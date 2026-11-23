@@ -678,8 +678,8 @@ class TestCharacterizationResult:
     @pytest.mark.parametrize(
         ("layers", "expected"),
         [
-            (None, [[0.2, 1.0, 0.4, 0.6, 0.6, 0.3]]),
-            (2, [[0.3, 0.9, 0.5, 0.4]]),
+            (None, [0.2, 1.0, 0.4, 0.6, 0.6, 0.3]),
+            (2, [0.3, 0.9, 0.5, 0.4]),
         ],
         ids=["recommended", "explicit"],
     )
@@ -699,7 +699,7 @@ class TestCharacterizationResult:
         )
 
         np.testing.assert_array_equal(
-            result.qaoa_initial_params(), [[0.1, 0.2, 0.3, 0.4]]
+            result.qaoa_initial_params(), [0.1, 0.2, 0.3, 0.4]
         )
 
     def test_qaoa_initial_params_reject_layers_without_angles(self):

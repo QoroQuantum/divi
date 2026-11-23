@@ -360,6 +360,17 @@ def test_rosalin_binds_the_program_shift_rule(mocker):
     assert evaluators["shift_rule"]() is rule
 
 
+def test_rosalin_holds_resume_state_until_reset():
+    optimizer = _rosalin()
+    assert not optimizer.has_resume_state
+
+    optimizer.optimize(_parameter_shift_cost, np.array([0.4, 0.8]), max_iterations=1)
+    assert optimizer.has_resume_state
+
+    optimizer.reset()
+    assert not optimizer.has_resume_state
+
+
 def test_rosalin_never_overspends_the_total_shot_budget():
     requested = []
 

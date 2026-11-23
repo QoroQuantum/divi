@@ -8,7 +8,7 @@ from collections.abc import Callable
 from enum import Enum
 from numbers import Integral
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import cma
 import dill
@@ -24,11 +24,15 @@ from pymoo.core.termination import NoTermination
 from pymoo.problems.static import StaticProblem
 from scipy.optimize import OptimizeResult
 
+from divi.qprog._parameter_space import ParameterSpace
 from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
 from divi.qprog.checkpointing.read import load_and_validate_pydantic_model
 from divi.qprog.checkpointing.write import atomic_write
 
 from ._base import Optimizer
+
+if TYPE_CHECKING:
+    from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
 class PymooState(BaseModel):
@@ -104,6 +108,17 @@ class PymooOptimizer(Optimizer):
             return self.algorithm_kwargs.get("popsize", self.population_size)
         return self.population_size
 
+    @property
+    def has_resume_state(self) -> bool:
+        """Whether an algorithm from an earlier run is held."""
+        return self._curr_algorithm_obj is not None
+
+    def build_evaluators(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> dict[str, Callable[..., Any]]:
+        """Bind the program's parameter space, which sizes the DE box."""
+        return {"parameter_space": lambda: program.parameter_space}
+
     def get_config(self) -> dict[str, Any]:
         """Get optimizer configuration for checkpoint reconstruction.
 
@@ -146,8 +161,9 @@ class PymooOptimizer(Optimizer):
         self,
         initial_params: npt.NDArray[np.float64],
         rng: np.random.Generator,
+        space: ParameterSpace,
     ) -> Any:
-        """Initialise Pymoo strategy (DE)."""
+        """Initialise Pymoo strategy (DE) in a box centred on the first set."""
         optimizer_obj = globals()[self.method.value](
             pop_size=self.population_size,
             parallelize=False,
@@ -158,11 +174,10 @@ class PymooOptimizer(Optimizer):
         # at runtime it's always the concrete SeedSequence.
         seed_seq = cast(np.random.SeedSequence, rng.bit_generator.seed_seq)
         seed = seed_seq.spawn(1)[0].generate_state(1)[0]
-        n_var = initial_params.shape[-1]
-
-        xl = np.zeros(n_var)
-        xu = np.ones(n_var) * 2 * np.pi
-        problem = Problem(n_var=n_var, n_obj=1, xl=xl, xu=xu)
+        center = initial_params[0]
+        xl = center - space.search_widths / 2
+        xu = center + space.search_widths / 2
+        problem = Problem(n_var=initial_params.shape[-1], n_obj=1, xl=xl, xu=xu)
 
         optimizer_obj.setup(
             problem,
@@ -172,31 +187,11 @@ class PymooOptimizer(Optimizer):
         )
         optimizer_obj.start_time = time.time()
 
-        init_pop = Population.create(
-            *[Individual(X=initial_params[i]) for i in range(self.n_param_sets)]
-        )
-        optimizer_obj.pop = init_pop
+        # Wrap known periods into the box, then clip what wrapping cannot reach.
+        rows = np.clip(space.wrap(initial_params[: self.n_param_sets], center), xl, xu)
+        optimizer_obj.pop = Population.create(*[Individual(X=row) for row in rows])
 
         return optimizer_obj
-
-    def _initialize_optimizer(
-        self,
-        initial_params: npt.NDArray[np.float64],
-        rng: np.random.Generator,
-    ) -> Any:
-        """Initialise a fresh optimizer instance.
-
-        Args:
-            initial_params: Initial parameter values.
-            rng: Random number generator.
-
-        Returns:
-            Optimizer object (cma.CMAEvolutionStrategy or pymoo.DE).
-        """
-        if self.method == PymooMethod.CMAES:
-            return self._initialize_cmaes(initial_params, rng)
-        else:
-            return self._initialize_pymoo(initial_params, rng)
 
     def _optimize_cmaes(
         self,
@@ -207,8 +202,7 @@ class PymooOptimizer(Optimizer):
         """Run CMA-ES optimisation loop."""
         if self._curr_algorithm_obj is None:
             raise RuntimeError(
-                "_curr_algorithm_obj is not initialised; call optimize() first "
-                "so _initialize_optimizer runs."
+                "_curr_algorithm_obj is not initialised; call optimize() first."
             )
         es = self._curr_algorithm_obj
         for _ in range(iterations_to_run):
@@ -239,24 +233,21 @@ class PymooOptimizer(Optimizer):
         """Run Pymoo (DE) optimisation loop."""
         if self._curr_algorithm_obj is None:
             raise RuntimeError(
-                "_curr_algorithm_obj is not initialised; call optimize() first "
-                "so _initialize_optimizer runs."
+                "_curr_algorithm_obj is not initialised; call optimize() first."
             )
         algo = self._curr_algorithm_obj
-        problem = algo.problem
 
         for _ in range(iterations_to_run):
-            pop = algo.pop
-            evaluated_X = pop.get("X")
+            # Evaluate the initial population first, then each generation's offspring.
+            infills = algo.ask() if algo.is_initialized else algo.pop
+            evaluated_X = infills.get("X")
 
             curr_losses = cost_fn(evaluated_X)
             # Non-finite losses become worst so a NaN individual is never kept as best.
             safe_losses = np.where(np.isfinite(curr_losses), curr_losses, np.inf)
-            Evaluator().eval(StaticProblem(problem, F=safe_losses), pop)
+            Evaluator().eval(StaticProblem(algo.problem, F=safe_losses), infills)
 
-            algo.tell(infills=pop)
-
-            algo.pop = algo.ask()
+            algo.tell(infills=infills)
 
             if callback_fn:
                 callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
@@ -293,11 +284,15 @@ class PymooOptimizer(Optimizer):
                   The caller subtracts whatever a previous run already spent, so a
                   resumed optimisation receives only what is left. Defaults to 5.
                 - rng (np.random.Generator): Random number generator.
+                - parameter_space (Callable[[], ParameterSpace], optional):
+                  Returns the space whose search widths size the DE box, centred
+                  on the first initial set. Defaults to ``2 * pi`` widths.
 
         Returns:
             OptimizeResult: Optimisation result with final parameters and cost value.
         """
         max_iterations = kwargs.pop("max_iterations", 5)
+        parameter_space = kwargs.pop("parameter_space", None)
 
         # Resume from checkpoint or initialise fresh
         if self._curr_algorithm_obj is not None:
@@ -313,7 +308,17 @@ class PymooOptimizer(Optimizer):
                     f"{max_iterations}."
                 )
             rng = kwargs.pop("rng", np.random.default_rng())
-            self._curr_algorithm_obj = self._initialize_optimizer(initial_params, rng)
+            if self.method == PymooMethod.CMAES:
+                self._curr_algorithm_obj = self._initialize_cmaes(initial_params, rng)
+            else:
+                space = (
+                    ParameterSpace(((1.0, 1),) * initial_params.shape[-1])
+                    if parameter_space is None
+                    else parameter_space()
+                )
+                self._curr_algorithm_obj = self._initialize_pymoo(
+                    initial_params, rng, space
+                )
             iterations_to_run = max_iterations
 
         if self.method == PymooMethod.CMAES:

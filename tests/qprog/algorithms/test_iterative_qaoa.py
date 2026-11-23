@@ -601,6 +601,30 @@ class TestIterativeQAOA:
         assert len(iterative.depth_history) == 2
         assert iterative.solution is not None
 
+    def test_deeper_population_starts_around_the_interpolated_angles(
+        self, default_test_simulator, mocker
+    ):
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=2,
+            strategy=InterpolationStrategy.INTERP,
+            max_iterations_per_depth=2,
+            backend=default_test_simulator,
+            optimizer=MonteCarloOptimizer(population_size=5),
+        )
+        optimize = mocker.spy(iterative.optimizer, "optimize")
+
+        iterative.run(perform_final_computation=False)
+
+        depth_one_best = iterative.depth_history[0]["best_params"]
+        second_start = optimize.call_args_list[-1].kwargs["initial_params"]
+        np.testing.assert_allclose(
+            second_start[0],
+            interpolate_qaoa_params(depth_one_best, 1, InterpolationStrategy.INTERP),
+        )
+        assert second_start.shape == (5, 4)
+        assert len(np.unique(second_start, axis=0)) == 5
+
     def test_expected_total_iterations_constant(self, default_test_simulator):
         """_expected_total_iterations equals max_depth * max_iterations_per_depth."""
         graph = make_bull_graph()
@@ -861,11 +885,20 @@ class TestIterativeQAOACheckpointing:
         sample.assert_not_called()
 
     def test_unsampled_finished_run_restores_best_depth(
-        self, default_test_simulator, tmp_path
+        self, default_test_simulator, tmp_path, mocker
     ):
+        # Depth 2 is best, so the deepest-depth fallback cannot pass on its own.
+        mocker.patch.object(
+            IterativeQAOA,
+            "_evaluate_cost_param_sets",
+            autospec=True,
+            side_effect=lambda program, param_sets, **_: {
+                index: -1.0 if program.n_layers == 2 else 0.0
+                for index in range(len(param_sets))
+            },
+        )
         program = self._run_unsampled(default_test_simulator, tmp_path)
-        # Otherwise the deepest-depth fallback would pass on its own.
-        assert program.best_depth != self.MAX_DEPTH
+        assert program.best_depth == 2
 
         loaded = self._load(default_test_simulator, tmp_path)
 

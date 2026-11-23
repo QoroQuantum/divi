@@ -11,6 +11,14 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 
+#: Longest period a search spans; longer and unknown periods fall back to
+#: ``2 pi``.
+_MAX_SEARCH_PERIOD = 4 * np.pi
+_FALLBACK_WIDTH = 2 * np.pi
+#: Standard deviation of a warm-start population, as a fraction of each
+#: parameter's search width over ``2 pi``.
+_WARM_START_SPREAD = 0.05
+
 
 @dataclass(frozen=True)
 class ParameterSpace:
@@ -49,6 +57,36 @@ class ParameterSpace:
                 for entry in self.frequencies
             ]
         )
+
+    @property
+    def search_widths(self) -> npt.NDArray[np.float64]:
+        """The width a search spans in each parameter, which is its period when
+        known and at most ``4 * pi``, and ``2 * pi`` otherwise."""
+        periods = self.periods
+        return np.where(periods <= _MAX_SEARCH_PERIOD, periods, _FALLBACK_WIDTH)
+
+    def wrap(
+        self, points: npt.ArrayLike, center: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]:
+        """``points`` moved by whole periods to within half a period of
+        ``center``; parameters with unknown periods are left unchanged."""
+        points = np.asarray(points, dtype=np.float64)
+        center = np.asarray(center, dtype=np.float64)
+        periods = self.periods
+        known = np.isfinite(periods)
+        period = np.where(known, periods, 1.0)
+        wrapped = center + (points - center + period / 2) % period - period / 2
+        return np.where(known, wrapped, points)
+
+    def build_population(
+        self, center: npt.ArrayLike, n_sets: int, rng: np.random.Generator
+    ) -> npt.NDArray[np.float64]:
+        """``n_sets`` starting points: ``center``, then Gaussian perturbations of
+        it scaled to each parameter's search width."""
+        center = np.asarray(center, dtype=np.float64)
+        scale = _WARM_START_SPREAD * self.search_widths / (2 * np.pi)
+        perturbed = center + rng.normal(0.0, scale, (n_sets - 1, center.size))
+        return np.vstack([center, perturbed])
 
     def compute_shift_rule(
         self,

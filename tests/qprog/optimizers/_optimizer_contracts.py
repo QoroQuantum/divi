@@ -163,6 +163,7 @@ def verify_reset_is_idempotent(optimizer: Optimizer) -> None:
     optimizer.reset()
     optimizer.reset()
     optimizer.reset()
+    assert not optimizer.has_resume_state
 
     result = optimizer.optimize(cost_fn, initial_params, max_iterations=2)
     assert isinstance(result, OptimizeResult)

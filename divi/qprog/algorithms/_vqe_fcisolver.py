@@ -163,14 +163,14 @@ class VQEFCISolver:
         return self._last_energy, self._last_vqe
 
     def _build_initial_params(self, vqe: VQE) -> npt.NDArray[np.float64] | None:
-        """The last run's best parameters for every set of ``vqe``, or None
-        when there is no last run or its parameter count differs."""
+        """The last run's best parameters, or None when there is no last run
+        or its parameter count differs."""
         if self._last_vqe is None:
             return None
         params = self._last_vqe.best_params
         if params.shape != (vqe.n_params,):
             return None
-        return np.tile(params, (vqe.optimizer.n_param_sets, 1))
+        return params
 
     def make_rdm12s(self, ci: VQE, norb: int, nelec: int | tuple[int, int]) -> SpinRDMs:
         """Spin RDMs of ``ci``, in :meth:`VQE.measure_rdms`'s layout."""

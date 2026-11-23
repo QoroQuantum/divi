@@ -14,7 +14,7 @@ from divi.pipeline.stages import DataBindingStage
 from divi.qprog.algorithms import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.mixins import DataBindingMixin
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from tests._helpers import exact_match
 from tests.qprog._helpers import central_difference_of_loss
 from tests.qprog._program_contracts import (
@@ -346,6 +346,24 @@ class TestInitialization:
         (loss,) = program._evaluate_cost_param_sets(np.array([[0.9]])).values()
 
         assert loss == pytest.approx(np.cos(0.3))
+
+    def test_random_starts_span_each_parameter_period(self, make_custom_vqa):
+        half, full = Parameter("a"), Parameter("b")
+        qc = QuantumCircuit(1, 1)
+        qc.h(0)
+        qc.rz(half / 2, 0)
+        qc.rz(full, 0)
+        qc.measure(0, 0)
+        program = make_custom_vqa(
+            qscript=qc,
+            optimizer=MonteCarloOptimizer(population_size=200, n_best_sets=1),
+            seed=0,
+        )
+
+        starts = program._initialize_param_sets()
+
+        assert 2 * np.pi < starts[:, 0].max() < 4 * np.pi
+        assert starts[:, 1].max() < 2 * np.pi
 
     def test_supervised_gradient_matches_central_differences(
         self, make_custom_vqa, default_test_simulator

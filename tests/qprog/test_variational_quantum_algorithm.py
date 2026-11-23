@@ -247,6 +247,7 @@ class BaseVariationalQuantumAlgorithmTest:
         """Helper to create a mock optimizer with specified n_param_sets."""
         mock_optimizer = mocker.MagicMock()
         mock_optimizer.n_param_sets = n_param_sets
+        mock_optimizer.has_resume_state = False
         return mock_optimizer
 
     def _create_program_with_mock_optimizer(self, mocker, **kwargs):
@@ -685,6 +686,29 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
             call_args.kwargs["initial_params"], custom_initial_params
         )
 
+    def test_resuming_optimizer_takes_no_initial_params(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        mock_optimizer = self._setup_mock_optimizer_single_run(
+            mocker, program, np.array([[0.5, 1.0, 1.5, 2.0]])
+        )
+        mock_optimizer.has_resume_state = True
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "initial_params cannot be provided when resuming from optimizer "
+                "state. Load a fresh program instance or reset the optimizer first."
+            ),
+        ):
+            program.run(initial_params=np.array([[1.0, 2.0, 3.0, 4.0]]))
+        program.run()
+
+        assert mock_optimizer.optimize.call_args.kwargs["initial_params"] is None
+
     def test_run_initializes_params_when_not_provided(self, mocker):
         """Test that run() generates fresh initial parameters when needed."""
         program = self._create_program_with_mock_optimizer(mocker, seed=42)
@@ -741,6 +765,46 @@ class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
 
         call_args = program.optimizer.optimize.call_args
         np.testing.assert_array_equal(call_args.kwargs["initial_params"], custom_params)
+
+    def _create_three_set_program(self, mocker, backend):
+        program = SampleVQAProgram(
+            circ_count=1,
+            run_time=0.1,
+            backend=backend,
+            optimizer=self._create_mock_optimizer(mocker, n_param_sets=3),
+        )
+        program.max_iterations = 1
+        return program
+
+    def test_run_spreads_one_initial_set_across_the_population(
+        self, mocker, mock_backend
+    ):
+        program = self._create_three_set_program(mocker, mock_backend)
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        self._setup_mock_optimizer_single_run(
+            mocker, program, np.array([[0.5, 1.0, 1.5, 2.0]])
+        )
+        center = np.array([1.0, 2.0, 3.0, 4.0])
+
+        program.run(initial_params=center)
+
+        forwarded = program.optimizer.optimize.call_args.kwargs["initial_params"]
+        assert forwarded.shape == (3, 4)
+        np.testing.assert_array_equal(forwarded[0], center)
+        assert not np.array_equal(forwarded[1], center)
+
+    def test_run_rejects_one_initial_set_of_the_wrong_length(
+        self, mocker, mock_backend
+    ):
+        program = self._create_three_set_program(mocker, mock_backend)
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match("Initial parameters must have shape (3, 4), got (2,)"),
+        ):
+            program.run(initial_params=np.array([0.1, 0.2]))
 
 
 class TestOptimizerBehavior(BaseVariationalQuantumAlgorithmTest):

@@ -189,8 +189,7 @@ def test_kernel_warm_starts_from_the_previous_parameters(
     first_call, second_call = run.call_args_list
     assert first_call.kwargs["initial_params"] is None
     np.testing.assert_array_equal(
-        second_call.kwargs["initial_params"],
-        np.tile(first.best_params, (default_optimizer.n_param_sets, 1)),
+        second_call.kwargs["initial_params"], first.best_params
     )
 
 

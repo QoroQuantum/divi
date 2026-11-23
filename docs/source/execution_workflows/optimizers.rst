@@ -31,7 +31,7 @@ Monte Carlo Optimisation
 
 The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimisation approach. It works by randomly sampling the parameter space and selecting configurations that minimise the target cost function.
 
-Configure :class:`~divi.qprog.optimizers.MonteCarloOptimizer` by passing ``population_size`` (the number of parameter sets evaluated per iteration) and optionally ``n_best_sets`` (how many top-performing sets are carried to the next iteration) to its constructor. The read-only ``n_param_sets`` property then reflects the configured population size.
+Configure :class:`~divi.qprog.optimizers.MonteCarloOptimizer` by passing ``population_size`` (the number of parameter sets evaluated per iteration) and optionally ``n_best_sets`` (how many top-performing sets seed the next iteration) to its constructor. The read-only ``n_param_sets`` property then reflects the configured population size. By default (``keep_best_params=True``) the best sets also carry over unchanged, which requires ``n_best_sets < population_size``.
 
 SciPy Optimizers
 ----------------
@@ -130,6 +130,10 @@ Differential Evolution [#storn1997]_ is a method that optimises a problem by ite
 .. code-block:: python
 
    optimizer = PymooOptimizer(method=PymooMethod.DE)
+
+DE searches a box centred on the first initial parameter set, one period wide
+in each parameter (:math:`2\pi` where the period is unknown or above
+:math:`4\pi`).
 
 Quantum Natural Gradient
 ------------------------

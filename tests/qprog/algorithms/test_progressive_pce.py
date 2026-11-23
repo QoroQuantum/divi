@@ -182,13 +182,7 @@ class TestProgressivePCE:
 
         first, second = (call.args[0] for call in optimize.call_args_list)
         np.testing.assert_array_equal(first, seed)
-        np.testing.assert_array_equal(
-            second,
-            np.tile(
-                program.step_history[0]["best_params"],
-                (program.optimizer.n_param_sets, 1),
-            ),
-        )
+        np.testing.assert_array_equal(second, program.step_history[0]["best_params"])
 
     def test_gives_each_step_its_own_iteration_budget(self, make_maestro_simulator):
         program = _progressive(

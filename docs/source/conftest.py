@@ -76,8 +76,8 @@ SNIPPET_PATCHES: list[tuple[str, str]] = [
     ),
     # IterativeQAOA depth — 5 QAOA depths → 2.
     ("max_depth=5", "max_depth=2"),
-    # MonteCarloOptimizer population.
-    ("population_size=10", "population_size=3"),
+    # MonteCarloOptimizer population, above its default n_best_sets=3.
+    ("population_size=10", "population_size=4"),
     # ZNE: fewer scale factors → fewer circuits per iteration.
     ("scale_factors = [1.0, 1.5, 2.0]", "scale_factors = [1.0, 1.5]"),
     # TimeEvolutionTrajectory: 20 parallel time points → 3.

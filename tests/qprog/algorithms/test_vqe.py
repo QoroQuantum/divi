@@ -26,7 +26,12 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import SuperpositionState, ZerosState
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import (
+    PymooMethod,
+    PymooOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 from divi.reporting._events import EventKind, TerminalStatus
 from tests._helpers import WATER_ATOM, exact_match, run_mean_field
@@ -147,23 +152,24 @@ def test_vqe_basic_initialization(
 def test_excitation_ansatze_start_at_the_hartree_fock_point(
     dummy_simulator,
     four_qubit_hamiltonian,
-    default_optimizer,
     ansatz,
     starts_at_reference,
 ):
-    """All-zero excitation amplitudes prepare the Hartree-Fock reference."""
+    """All-zero excitation amplitudes prepare the Hartree-Fock reference; the
+    other sets of a population spread around it."""
     vqe = VQE(
         HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
         ansatz=ansatz,
         backend=dummy_simulator,
-        optimizer=default_optimizer,
+        optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=4),
         seed=1997,
     )
 
     params = vqe._initialize_param_sets()
 
     assert params.shape == vqe.get_expected_param_shape()
-    assert bool(np.all(params == 0.0)) is starts_at_reference
+    assert bool(np.all(params[0] == 0.0)) is starts_at_reference
+    assert len(np.unique(params, axis=0)) == len(params)
 
 
 def test_vqe_cost_includes_the_hamiltonian_constant(

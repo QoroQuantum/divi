@@ -150,6 +150,11 @@ class Optimizer(ABC):
         """
         return True
 
+    @property
+    def has_resume_state(self) -> bool:
+        """Whether a run left state that the next :meth:`optimize` continues from."""
+        return False
+
     def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
         """Check that this optimizer can be applied to ``program``.
 

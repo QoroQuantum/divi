@@ -28,7 +28,13 @@ from divi.qprog.ensembles import (
     HierarchicalStrategy,
     PartitioningProgramEnsemble,
 )
-from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import (
+    MonteCarloOptimizer,
+    PymooMethod,
+    PymooOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     CommunityDecomposer,
@@ -711,7 +717,7 @@ class TestQUBOInput:
                 quadratization_strength=5.0,
             ),
             n_layers=2,
-            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            optimizer=PymooOptimizer(method=PymooMethod.DE, population_size=10),
             max_iterations=18,
             backend=default_test_simulator,
             seed=1997,

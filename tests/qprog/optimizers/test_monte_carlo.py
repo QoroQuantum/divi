@@ -326,7 +326,7 @@ class TestMonteCarloOptimizer:
     def test_compute_new_parameters_preserves_population_size(
         self, keep_best_params: bool
     ):
-        """Low level test to ensure sampling logic preserves shapes and bounds."""
+        """Low level test to ensure sampling logic preserves shapes."""
         optimizer = self._create_optimizer(keep_best_params=keep_best_params)
         population = self._create_initial_params()
         losses = sphere_cost_fn_population(population)
@@ -338,8 +338,6 @@ class TestMonteCarloOptimizer:
         )
 
         assert new_population.shape == (optimizer.population_size, self.n_params)
-        assert np.all(new_population >= 0.0)
-        assert np.all(new_population < 2 * np.pi)
 
         if keep_best_params:
             np.testing.assert_allclose(
@@ -521,7 +519,7 @@ def test_default_configuration():
         "type": "MonteCarloOptimizer",
         "population_size": 10,
         "n_best_sets": 3,
-        "keep_best_params": False,
+        "keep_best_params": True,
     }
 
 
@@ -536,19 +534,21 @@ def test_rejects_more_best_sets_than_the_population():
 @pytest.mark.parametrize(
     ("curr_iteration", "spread"), [(0, 0.5), (1, 0.25), (3, 0.125)]
 )
-def test_new_population_samples_around_the_best_with_shrinking_spread_and_wraps(
+def test_new_population_samples_around_the_best_with_shrinking_spread(
     curr_iteration, spread
 ):
-    optimizer = MonteCarloOptimizer(population_size=3, n_best_sets=1)
+    optimizer = MonteCarloOptimizer(
+        population_size=3, n_best_sets=1, keep_best_params=False
+    )
 
     new_population = optimizer._compute_new_parameters(
-        np.zeros((3, 2)),
+        np.full((3, 2), 7.0),
         curr_iteration=curr_iteration,
         best_indices=np.array([0]),
         rng=np.random.default_rng(0),
     )
 
-    expected = np.random.default_rng(0).normal(0.0, spread, size=(3, 2)) % (2 * np.pi)
+    expected = np.random.default_rng(0).normal(7.0, spread, size=(3, 2))
     np.testing.assert_allclose(new_population, expected)
 
 
@@ -651,6 +651,22 @@ def test_reset_forgets_the_previous_run():
     )
     assert result.fun == 1.0
     assert result.nit == 1
+
+
+def test_holds_resume_state_until_reset():
+    optimizer = _small_optimizer()
+    assert not optimizer.has_resume_state
+
+    optimizer.optimize(
+        sphere_cost_fn_population,
+        _POPULATION,
+        max_iterations=1,
+        rng=np.random.default_rng(0),
+    )
+    assert optimizer.has_resume_state
+
+    optimizer.reset()
+    assert not optimizer.has_resume_state
 
 
 def test_checkpoint_predating_best_ever_tracking_seeds_it_from_the_last_evaluation(

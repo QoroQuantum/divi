@@ -147,10 +147,13 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         All-zero amplitudes make every excitation gate the identity, so
         :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
         :class:`~divi.qprog.algorithms.UCCSDAnsatz` start from exactly the
-        Hartree–Fock state. Other ansätze start at random.
+        Hartree–Fock state; further sets of a population start near it.
+        Other ansätze start at random.
         """
         if isinstance(self.ansatz, (HartreeFockAnsatz, UCCSDAnsatz)):
-            return np.zeros((self.optimizer.n_param_sets, self.n_params))
+            return self.parameter_space.build_population(
+                np.zeros(self.n_params), self.optimizer.n_param_sets, self._rng
+            )
         return super()._initialize_param_sets()
 
     @property

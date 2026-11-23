@@ -517,14 +517,11 @@ class IterativeQAOA(QAOA):
                 self._reset_optimization_state()
 
                 if depth > 1 and prev_best_params is not None:
-                    interpolated = interpolate_qaoa_params(
+                    depth_initial_params = interpolate_qaoa_params(
                         prev_best_params,
                         depth - 1,
                         self._strategy,
                         self._n_basis_terms,
-                    )
-                    depth_initial_params = np.tile(
-                        interpolated, (self.optimizer.n_param_sets, 1)
                     )
 
             self.max_iterations = (

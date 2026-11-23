@@ -55,7 +55,7 @@ class MonteCarloOptimizer(Optimizer):
         self,
         population_size: int = 10,
         n_best_sets: int = 3,
-        keep_best_params: bool = False,
+        keep_best_params: bool = True,
     ):
         """
         Initialise a Monte Carlo optimizer.
@@ -67,7 +67,7 @@ class MonteCarloOptimizer(Optimizer):
                 use as seeds for the next generation. Defaults to 3.
             keep_best_params (bool, optional): If True, includes the best parameter sets
                 directly in the new population. If False, generates all new parameters
-                by sampling around the best ones. Defaults to False.
+                by sampling around the best ones. Defaults to True.
 
         Raises:
             ValueError: If n_best_sets is greater than population_size.
@@ -108,7 +108,8 @@ class MonteCarloOptimizer(Optimizer):
         self._curr_best_loss: float | None = None
 
     @property
-    def _has_checkpoint(self) -> bool:
+    def has_resume_state(self) -> bool:
+        """Whether a population from an earlier run is waiting to be evaluated."""
         return self._curr_population is not None and self._curr_iteration is not None
 
     @property
@@ -200,10 +201,7 @@ class MonteCarloOptimizer(Optimizer):
         # 5. Generate new parameters by sampling around the best ones
         new_params = rng.normal(loc=new_means, scale=scale)
 
-        # 6. Apply periodic boundary conditions
-        new_params = new_params % (2 * np.pi)
-
-        # 7. Conditionally combine with best params if keeping them
+        # 6. Conditionally combine with best params if keeping them
         if self._keep_best_params:
             return np.vstack([best_params, new_params])
         else:
