@@ -283,6 +283,22 @@ def test_from_casci_gives_the_pyscf_casci_energy(spin, counts):
     )
 
 
+def test_from_casci_builds_the_active_space_of_given_orbitals():
+    mcscf = pytest.importorskip("pyscf.mcscf")
+    avas = pytest.importorskip("pyscf.mcscf.avas")
+    mean_field = run_mean_field("N 0 0 0; N 0 0 1.1", basis="cc-pvdz")
+    n_orbitals, n_electrons, orbitals = avas.kernel(mean_field, ["N 2p"], verbose=0)
+
+    problem = MolecularProblem.from_casci(
+        mean_field, n_orbitals, n_electrons, mo_coeff=orbitals
+    )
+
+    expected = mcscf.CASCI(mean_field, n_orbitals, n_electrons).kernel(orbitals)[0]
+    assert _fci_energy(problem) == pytest.approx(expected, abs=1e-8)
+    default = MolecularProblem.from_casci(mean_field, n_orbitals, n_electrons)
+    assert abs(_fci_energy(default) - expected) > 1e-4
+
+
 def _with_electrons(problem, n_alpha, n_beta, **kwargs):
     return MolecularProblem(
         problem.one_body,

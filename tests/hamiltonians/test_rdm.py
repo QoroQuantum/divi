@@ -10,7 +10,11 @@ import numpy as np
 import pytest
 
 from divi.hamiltonians import qubit_operator_to_spo
-from divi.hamiltonians._rdm import assemble_spin_rdms, build_rdm_observables
+from divi.hamiltonians._rdm import (
+    assemble_spin_rdms,
+    build_rdm_observables,
+    sum_spin_rdms,
+)
 
 openfermion = pytest.importorskip("openfermion")
 
@@ -68,3 +72,19 @@ def test_rdm_observables_are_hermitian():
         observable.equiv(observable.adjoint())
         for observable in build_rdm_observables(3)
     )
+
+
+@pytest.mark.parametrize("nelec", [(2, 1), (2, 2)], ids=["doublet", "singlet-sector"])
+def test_spin_summed_rdms_match_pyscf(nelec):
+    direct_spin1 = pytest.importorskip("pyscf.fci.direct_spin1")
+    cistring = pytest.importorskip("pyscf.fci.cistring")
+    n_orbitals = 3
+    shape = tuple(cistring.num_strings(n_orbitals, count) for count in nelec)
+    ci = np.random.default_rng(5).normal(size=shape)
+    ci /= np.linalg.norm(ci)
+
+    summed = sum_spin_rdms(direct_spin1.make_rdm12s(ci, n_orbitals, nelec))
+
+    expected = direct_spin1.make_rdm12(ci, n_orbitals, nelec)
+    for value, oracle in zip(summed, expected, strict=True):
+        np.testing.assert_allclose(value, oracle, atol=1e-12)

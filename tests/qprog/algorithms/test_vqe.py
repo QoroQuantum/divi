@@ -12,6 +12,7 @@ from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import MaestroConfig
+from divi.hamiltonians._rdm import sum_spin_rdms
 from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import (
     VQE,
@@ -586,11 +587,10 @@ def _build_uccsd_vqe(problem, backend, optimizer, **kwargs):
 
 
 def _rdm_energy(problem, rdms):
-    (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = rdms
-    dm2 = dm2aa + dm2bb + dm2ab + dm2ab.transpose(2, 3, 0, 1)
+    dm1, dm2 = sum_spin_rdms(rdms)
     return (
         problem.constant
-        + np.einsum("pq,pq", problem.one_body, dm1a + dm1b)
+        + np.einsum("pq,pq", problem.one_body, dm1)
         + 0.5 * np.einsum("pqrs,pqrs", problem.two_body, dm2)
     )
 

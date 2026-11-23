@@ -16,6 +16,11 @@ The problem is built with one of these constructors:
   :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`. Divi runs
   Hartree-Fock and supplies both the qubit Hamiltonian and the electron
   counts.
+- **An active space of a PySCF mean field** — call
+  :meth:`~divi.qprog.problems.MolecularProblem.from_casci` with the number of
+  active orbitals and electrons. The core is folded into the integrals, as in
+  PySCF's ``mcscf.CASCI``; pass ``mo_coeff`` to take the active space from
+  your own orbitals, such as those AVAS selects.
 - **Your own one-/two-electron integrals** — construct
   ``MolecularProblem(one_body, two_body, n_alpha=..., n_beta=...)``
   (:class:`~divi.qprog.problems.MolecularProblem`) directly.
@@ -38,6 +43,9 @@ the ecosystem where it already lives:
      - ``pennylane``
    * - ``MolecularProblem.from_molecule(molecule)``
      - PySCF ``gto.Mole`` or restricted mean-field object
+     - ``chem``
+   * - ``MolecularProblem.from_casci(mean_field, n_orbitals, n_electrons)``
+     - Converged PySCF mean field, optionally with ``mo_coeff``
      - ``chem``
    * - ``MolecularProblem(one_body, two_body, n_alpha=.., n_beta=..)``
      - Raw one-/two-electron integrals, chemist order ``(pq|rs)``
@@ -210,6 +218,43 @@ example above:
 The result uses PySCF's ``make_rdm12s`` layout, so it can be passed to PySCF
 routines that consume spin RDMs. Only real parts are measured, so the RDMs are
 exact for real wave functions. Measuring them requires the ``chem`` extra.
+
+PySCF Active-Space Solver
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~divi.qprog.algorithms.VQEFCISolver` lets PySCF's ``mcscf.CASCI`` and
+``mcscf.CASSCF`` solve their active space with VQE. Assign it as the
+``fcisolver``:
+
+.. code-block:: python
+
+   from pyscf import gto, mcscf, scf
+   from divi.backends import MaestroSimulator
+   from divi.qprog.algorithms import UCCSDAnsatz, VQEFCISolver
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+
+   molecule = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="6-31g", verbose=0)
+   casscf = mcscf.CASSCF(scf.RHF(molecule).run(), 2, 2)
+   casscf.fcisolver = VQEFCISolver(
+       backend=MaestroSimulator(),
+       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       ansatz=UCCSDAnsatz(),
+       max_iterations=50,
+   )
+   casscf.kernel()
+   print(f"CASSCF energy: {casscf.e_tot:.6f} Ha")
+
+Each time PySCF calls the solver, it trains a new VQE on the active-space
+integrals, starting from the previous call's parameters, and measures the
+RDMs PySCF needs with :meth:`~divi.qprog.algorithms.VQE.measure_rdms`. The
+trained VQE takes the place of PySCF's CI vector, so ``casscf.ci`` is that
+program. A CASCI's ``converged`` reports whether the VQE's optimizer
+converged.
+
+Natural orbitals (``natorb = True``) are supported: PySCF reruns the solver in
+the rotated orbitals. The solver finds one state (``nroots = 1``), needs
+restricted integrals, and cannot serve methods that read the CI vector
+directly, such as NEVPT2. The solver requires the ``chem`` extra.
 
 Available Ansätze
 -----------------

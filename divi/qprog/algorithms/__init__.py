@@ -20,6 +20,7 @@ from ._ansatze import (
 from ._custom_vqa import CustomVQA
 from ._feature_maps import AngleEmbedding, FeatureMap, ZZFeatureMap
 from ._vqe import VQE
+from ._vqe_fcisolver import VQEFCISolver
 from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
 from ._pce import (
     PCE,
@@ -72,5 +73,6 @@ __all__ = [
     "TimeEvolution",
     "UCCSDAnsatz",
     "VQE",
+    "VQEFCISolver",
     "ZZFeatureMap",
 ]

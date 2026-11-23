@@ -61,6 +61,7 @@ checkpointed
 checkpointing
 Cherrat
 Cholesky
+ci
 Cincio
 cma
 CMake
@@ -111,6 +112,7 @@ docstring
 docstrings
 durations
 dwave
+ecore
 Eidenbenz
 eigenbasis
 eigenphases
@@ -126,6 +128,7 @@ entanglers
 env
 eps
 Eq
+eri
 et
 eV
 excitations
@@ -240,10 +243,12 @@ nd
 ndarray
 NDArray
 neb
+nelec
 Nelder
 NetworkX
 Nocedal
 NoMitigation
+norb
 normalize
 np
 npt

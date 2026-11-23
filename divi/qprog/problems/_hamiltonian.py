@@ -219,6 +219,8 @@ class MolecularProblem(HamiltonianProblem):
         mean_field: _PySCFMeanField,
         n_orbitals: int,
         n_electrons: int | tuple[int, int],
+        *,
+        mo_coeff: np.ndarray | None = None,
     ) -> Self:
         """Build the active space of a converged PySCF mean field.
 
@@ -232,6 +234,8 @@ class MolecularProblem(HamiltonianProblem):
             n_orbitals: Active spatial orbitals.
             n_electrons: Active electrons, as a total split by the mean
                 field's spin, or as ``(n_alpha, n_beta)``.
+            mo_coeff: Orbitals to take the core and active space from, e.g.
+                from AVAS. Defaults to the mean field's own orbitals.
         """
         mcscf = import_optional(
             "pyscf.mcscf", extra="chem", capability="MolecularProblem.from_casci"
@@ -240,11 +244,11 @@ class MolecularProblem(HamiltonianProblem):
             "pyscf.ao2mo", extra="chem", capability="MolecularProblem.from_casci"
         )
         casci = mcscf.CASCI(mean_field, n_orbitals, n_electrons)
-        one_body, constant = casci.get_h1eff()
+        one_body, constant = casci.get_h1eff(mo_coeff)
         n_alpha, n_beta = casci.nelecas
         return cls(
             one_body,
-            ao2mo.restore(1, casci.get_h2eff(), n_orbitals),
+            ao2mo.restore(1, casci.get_h2eff(mo_coeff), n_orbitals),
             n_alpha=int(n_alpha),
             n_beta=int(n_beta),
             constant=float(constant),
