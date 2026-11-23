@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
-from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 from scipy.special import logsumexp
 
 # Fitting stops once no probability moves by more than this in a sweep.
@@ -49,11 +49,6 @@ class _ShadowMethod:
     draw_covers: Callable[[int], _Covers]
     weigh_terms: Callable[[npt.NDArray[np.int64], int], npt.NDArray[np.float64]]
     is_random: bool
-
-
-def _encode_paulis(paulis: PauliList) -> npt.NDArray[np.uint8]:
-    """Per-term, per-qubit Pauli codes ``x + 2z``: 0 I, 1 X, 2 Z, 3 Y."""
-    return paulis.x.astype(np.uint8) + 2 * paulis.z.astype(np.uint8)
 
 
 def _make_uniform_bases(n_qubits: int) -> npt.NDArray[np.float64]:

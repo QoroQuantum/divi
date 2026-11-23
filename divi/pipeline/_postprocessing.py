@@ -204,7 +204,8 @@ def _counts_to_expvals(
     then the correct observable group and wire order are looked up from
     the MetaCircuit to compute the expectation value.
 
-    Returns an ``{obs_idx: float}`` dict per branch key.
+    Returns a ``{position: float}`` dict per branch key, one entry per term of
+    the branch's measurement group.
     """
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
 
@@ -226,11 +227,7 @@ def _counts_to_expvals(
             [counts for _, counts in members], labels, n_qubits
         )
         for (branch_key, _), col in zip(members, expvals.T):
-            values[branch_key] = (
-                float(col[0])
-                if len(col) == 1
-                else {i: float(v) for i, v in enumerate(col)}
-            )
+            values[branch_key] = dict(enumerate(col.tolist()))
 
     return {branch_key: values[branch_key] for branch_key in raw}
 
@@ -441,32 +438,27 @@ def _expval_dicts_to_indexed(raw: ChildResults, ham_ops: str) -> ChildResults:
     """Normalise ``{pauli_str: float}`` dicts from expval-native backends.
 
     Converts each result value into the same format that
-    ``_counts_to_expvals`` produces: ``float`` for single-observable groups
-    and ``{obs_idx: float}`` for multi-observable groups.  The ordering is
-    determined by the semicolon-separated *ham_ops* string.
-
-    Duck-type check: only converts when values are actually Pauli dicts
-    (custom execute_fns may return other dict types like probability dicts).
+    ``_counts_to_expvals`` produces: a ``{position: float}`` dict ordered by
+    the semicolon-separated *ham_ops* string.
 
     Raises:
-        ValueError: If a converted result lacks a requested observable.
+        TypeError: If a result is not a mapping.
+        ValueError: If a result lacks a requested observable.
     """
     ops = ham_ops.split(";")
-    sample = next(iter(raw.values()), None)
-    if not isinstance(sample, dict) or ops[0] not in sample:
-        return raw
-
     out: ChildResults = {}
     for key, pauli_dict in raw.items():
+        if not isinstance(pauli_dict, Mapping):
+            raise TypeError(
+                "Expected a Pauli-term→expectation-value mapping from the backend "
+                f"for branch {key!r}, got {type(pauli_dict).__name__}."
+            )
         if missing := [op for op in ops if op not in pauli_dict]:
             raise ValueError(
                 f"Backend results for {key!r} lack the requested observables "
                 f"{missing}; they hold {sorted(pauli_dict)}."
             )
-        if len(ops) == 1:
-            out[key] = float(pauli_dict[ops[0]])
-        else:
-            out[key] = {i: float(pauli_dict[op]) for i, op in enumerate(ops)}
+        out[key] = {i: float(pauli_dict[op]) for i, op in enumerate(ops)}
     return out
 
 

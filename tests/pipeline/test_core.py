@@ -53,6 +53,8 @@ from divi.pipeline import (
 from divi.pipeline._compilation import (
     _batch_has_free_parameters,
     _compile_batch,
+    _insert_unmeasured_rows,
+    batch_lineage,
     reject_colliding_body_tags,
 )
 from divi.pipeline._core import _scope_token, _sigint_to_cancellation
@@ -84,6 +86,7 @@ from ._helpers import (
     ShotsBackendSpy,
     StatefulFanoutStage,
     assert_builds_without_performance_warning,
+    fill_measurement_groups,
     meta_from_circuit,
     ones_execute_fn,
     run_binding_pipeline,
@@ -1063,8 +1066,7 @@ def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
     pipeline = CircuitPipeline(stages=two_group_pipeline_stages(fanout=("fold", 3)))
 
     def _execute_fn(trace, env):
-        _, lineage_by_label = _compile_bound(trace.final_batch)
-        return {bk: 2 for bk in lineage_by_label.values()}
+        return fill_measurement_groups(trace, lambda _branch_key: 2.0)
 
     reduced = pipeline.run(
         initial_spec="ignored",
@@ -2352,6 +2354,39 @@ class TestCircuitPipelineUnmeasuredNodes:
             list(result.values()), _MIXED_EXPECTED, rtol=0, atol=1e-9
         )
         assert env.artifacts["circuit_count"] == 4
+
+    def test_unmeasured_rows_are_empty_groups_in_batch_order(
+        self, default_test_simulator
+    ):
+        env = PipelineEnv(backend=default_test_simulator, param_sets=_ANGLE_PARAM_SETS)
+        final_batch = (
+            _build_angle_pipeline()
+            .run_forward_pass(_build_mixed_batch(), env)
+            .final_batch
+        )
+        n_param_sets = len(_ANGLE_PARAM_SETS)
+        branches = {
+            key: list(batch_lineage({key: node}, n_param_sets).values())
+            for key, node in final_batch.items()
+        }
+        measured = {
+            branch: {0: 1.0}
+            for key, node in final_batch.items()
+            if not node.is_unmeasured
+            for branch in branches[key]
+        }
+
+        rows = _insert_unmeasured_rows(measured, final_batch, n_param_sets)
+
+        assert list(rows) == [branch for keys in branches.values() for branch in keys]
+        unmeasured = [
+            branch
+            for key, node in final_batch.items()
+            if node.is_unmeasured
+            for branch in branches[key]
+        ]
+        assert unmeasured
+        assert all(rows[branch] == {} for branch in unmeasured)
 
     def test_deferred_binding_keeps_batch_order_and_submits_only_measured_nodes(self):
         backend = _AngleCountsBackend()

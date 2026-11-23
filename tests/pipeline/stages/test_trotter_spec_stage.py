@@ -22,7 +22,7 @@ from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
 from divi.qprog.initial_states import ZerosState
 from tests._helpers import exact_match
-from tests.pipeline._helpers import meta_with_observable
+from tests.pipeline._helpers import fill_measurement_groups, meta_with_observable
 
 _Z0 = SparsePauliOp("Z")
 _Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
@@ -189,7 +189,8 @@ class TestReduce:
         def _execute_fn(trace: PipelineTrace, env: PipelineEnv) -> ChildResults:
             lineage_by_label = batch_lineage(trace.final_batch)
             branch_keys = sorted(lineage_by_label.values(), key=str)
-            return {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
+            scores = {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
+            return fill_measurement_groups(trace, scores.__getitem__)
 
         reduced = pipeline.run(
             initial_spec=TrotterSpec(_Z0), env=env, execute_fn=_execute_fn

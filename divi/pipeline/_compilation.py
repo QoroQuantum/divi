@@ -160,13 +160,13 @@ def _insert_unmeasured_rows(
     batch: Mapping[Any, MetaCircuit],
     n_param_sets: int,
 ) -> dict[BranchKey, Any]:
-    """Return ``raw`` plus a ``0.0`` row per branch of each unmeasured node.
+    """Return ``raw`` plus an empty group row per branch of each unmeasured node.
 
     Every node's rows keep ``batch`` order.
     """
     rows_by_node: dict[Any, dict[BranchKey, Any]] = {
         key: (
-            dict.fromkeys(batch_lineage({key: node}, n_param_sets).values(), 0.0)
+            {branch: {} for branch in batch_lineage({key: node}, n_param_sets).values()}
             if node.is_unmeasured
             else {}
         )

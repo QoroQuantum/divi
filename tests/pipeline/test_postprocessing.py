@@ -95,7 +95,7 @@ class TestCountsToExpvals:
 
         assert result
         for value in result.values():
-            assert value == pytest.approx(expected)
+            assert value == {0: pytest.approx(expected)}
 
     def test_multi_obs_group_returns_dict_in_term_order(
         self, dummy_sampling_pipeline_env
@@ -118,10 +118,8 @@ class TestCountsToExpvals:
 
         result = _counts_to_expvals(raw, trace.final_batch)
 
-        dict_results = [v for v in result.values() if isinstance(v, dict)]
-        assert len(dict_results) >= 1
-
-        for d in dict_results:
+        assert result
+        for d in result.values():
             assert len(d) == 3
             assert d[0] == pytest.approx(0.4)  # <Z0>
             assert d[1] == pytest.approx(0.6)  # <Z1>
@@ -640,16 +638,38 @@ class TestExpvalDictsToIndexed:
         result = _expval_dicts_to_indexed({("k",): expvals}, "XII;IZI;IIX")
         assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
 
-    def test_single_op_returns_float(self):
+    def test_single_op_returns_position_dict(self):
         raw = {("k",): {"ZII": 0.7}}
         result = _expval_dicts_to_indexed(raw, "ZII")
-        assert result[("k",)] == pytest.approx(0.7)
+        assert result[("k",)] == {0: pytest.approx(0.7)}
+
+    def test_empty_results_stay_empty(self):
+        assert _expval_dicts_to_indexed({}, "XII;IZI") == {}
+
+    def test_non_mapping_result_raises(self):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "Expected a Pauli-term→expectation-value mapping from the backend "
+                "for branch ('k',), got float."
+            ),
+        ):
+            _expval_dicts_to_indexed({("k",): 1.5}, "XII;IZI")
 
     @pytest.mark.parametrize(
-        "raw", [{("k",): 1.5}, {}], ids=["non-dict-values", "empty"]
+        ("result", "held"),
+        [({"00": 40, "11": 60}, "['00', '11']"), ({0: 0.5, 1: -0.3}, "[0, 1]")],
+        ids=["bitstring-keyed", "position-keyed"],
     )
-    def test_non_pauli_dict_input_passes_through(self, raw):
-        assert _expval_dicts_to_indexed(raw, "XII;IZI") == raw
+    def test_dict_keyed_by_other_labels_is_reported_missing(self, result, held):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Backend results for ('k',) lack the requested observables "
+                f"['XII', 'IZI']; they hold {held}."
+            ),
+        ):
+            _expval_dicts_to_indexed({("k",): result}, "XII;IZI")
 
     def test_results_missing_a_requested_observable_raises(self):
         raw = {("a",): {"XII": 0.5, "IZI": 0.1}, ("b",): {"XII": 0.5, "ZZZ": 0.1}}

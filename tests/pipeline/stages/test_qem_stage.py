@@ -37,6 +37,7 @@ from tests._helpers import exact_match
 from tests.pipeline._helpers import (
     DummySpecStage,
     assert_builds_without_performance_warning,
+    fill_measurement_groups,
     ones_execute_fn,
     two_group_meta,
 )
@@ -567,10 +568,7 @@ class TestQuEPPLocalEffectiveness:
         )
 
         def noisy_execute_fn(trace, env):
-            lineage_by_label = batch_lineage(trace.final_batch)
-            return {
-                branch_key: noisy_target for branch_key in lineage_by_label.values()
-            }
+            return fill_measurement_groups(trace, lambda _branch_key: noisy_target)
 
         noisy_result = list(
             noisy_pipeline.run(
@@ -603,7 +601,7 @@ class TestQuEPPLocalEffectiveness:
                             * noise_scale
                             + twirl_jitter
                         )
-                return out
+                return fill_measurement_groups(trace, out.__getitem__)
 
             return execute_fn
 

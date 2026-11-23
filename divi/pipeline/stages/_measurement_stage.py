@@ -23,6 +23,7 @@ from divi.pipeline._grouping import (
     _build_observable_union,
     _compute_measurement_groups,
     _create_postprocessing_fn,
+    _encode_paulis,
     _ResolvedGroupingStrategy,
 )
 from divi.pipeline._postprocessing import (
@@ -42,7 +43,6 @@ from divi.pipeline._shadows import (
     _RANDOM_SHADOW_STRATEGIES,
     _SHADOW_STRATEGIES,
     _count_unique_rows,
-    _encode_paulis,
     _make_shadow_method,
     _ShadowMethod,
     _sum_squared_coefficients,
@@ -75,7 +75,7 @@ class _GroupShotPlan:
 
     surviving_indices: list[int]
     shots_by_group: dict[int, int] | None
-    missing_group_results: dict[int, object] = field(default_factory=dict)
+    missing_group_results: dict[int, dict[int, float]] = field(default_factory=dict)
     scales_by_group: dict[int, float] = field(default_factory=dict)
     term_weights_by_group: dict[int, np.ndarray] = field(default_factory=dict)
     """Estimator weight of each group's terms, aligned with the group: the
@@ -96,29 +96,19 @@ class _GroupShotPlan:
         }
 
 
-def _scale_group_result(result: Any, factor: float | np.ndarray) -> Any:
-    """Scale a scalar or indexed group expectation result, term by term."""
-    factors = np.broadcast_to(factor, len(result) if isinstance(result, dict) else 1)
-    if isinstance(result, dict):
-        return {idx: factors[idx] * value for idx, value in result.items()}
-    return factors[0] * result
-
-
 def _apply_group_shot_plan(
-    group_results: dict[int, Any], plan: _GroupShotPlan | None
-) -> dict[int, Any]:
+    group_results: dict[int, dict[int, float]], plan: _GroupShotPlan | None
+) -> dict[int, dict[int, float]]:
     """Apply missing-group defaults and estimator factors in one pass."""
     if plan is None:
         return group_results
     factors = plan.compute_term_factors()
-    measured_results = {
-        group_idx: (
-            _scale_group_result(result, factors[group_idx])
-            if group_idx in factors
-            else result
-        )
-        for group_idx, result in group_results.items()
-    }
+    measured_results = {}
+    for group_idx, result in group_results.items():
+        scales = np.broadcast_to(factors.get(group_idx, 1.0), len(result))
+        measured_results[group_idx] = {
+            position: scales[position] * value for position, value in result.items()
+        }
     return {**plan.missing_group_results, **measured_results}
 
 
@@ -185,7 +175,7 @@ def _plan_group_shots(
             stacklevel=2,
         )
     # Zero per observable in the group (an absent draw for weighted_random).
-    missing_group_results: dict[int, object] = {
+    missing_group_results: dict[int, dict[int, float]] = {
         idx: dict.fromkeys(range(len(measurement_groups[idx])), 0.0)
         for idx in dropped_indices
     }

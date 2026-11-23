@@ -6,14 +6,16 @@
 
 import re
 import warnings
+from collections.abc import Callable, Sequence
 from typing import cast
 
 import numpy as np
+import numpy.typing as npt
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.converters import circuit_to_dag
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
@@ -28,6 +30,7 @@ from divi.pipeline import (
     dry_run_pipeline,
 )
 from divi.pipeline._compilation import batch_lineage
+from divi.pipeline._grouping import _encode_paulis
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -83,7 +86,10 @@ class FakeBackend(CircuitRunner):
         self.calls.append((payloads, kwargs))
         return ExecutionResult(
             results=[
-                {"label": label, "results": 0.42}
+                {
+                    "label": label,
+                    "results": dict.fromkeys(kwargs["ham_ops"].split(";"), 0.42),
+                }
                 for payload in payloads
                 for label, _values in payload.parameter_sets
             ]
@@ -135,7 +141,15 @@ class FanoutAndSumStage(BundleStage):
                 for e in child_key
                 if not (isinstance(e, tuple) and e[0] == self._branch_prefix)
             )
-            rolled_up[parent_key] = rolled_up.get(parent_key, 0) + value
+            previous = rolled_up.get(parent_key)
+            rolled_up[parent_key] = (
+                value
+                if previous is None
+                else {
+                    position: previous[position] + term
+                    for position, term in value.items()
+                }
+            )
         return rolled_up
 
 
@@ -368,17 +382,37 @@ def two_group_pipeline_stages(
     return stages
 
 
+def fill_measurement_groups(
+    trace: PipelineTrace, value_of: Callable[[tuple], float]
+) -> ChildResults:
+    """Every branch's result as an expectation-value backend returns it:
+    ``value_of(branch_key)`` for each ``ham_ops`` term."""
+    terms = trace.env_artifacts["ham_ops"].split(";")
+    return {
+        branch_key: dict.fromkeys(terms, value_of(branch_key))
+        for branch_key in batch_lineage(trace.final_batch).values()
+    }
+
+
+def encode_labels(labels: Sequence[str]) -> npt.NDArray[np.uint8]:
+    """Per-term, per-qubit Pauli codes of ``labels`` (qubit 0 rightmost)."""
+    return _encode_paulis(PauliList(labels))
+
+
+def assert_qubit_wise_commuting(
+    codes: npt.NDArray[np.uint8], members: Sequence[int]
+) -> None:
+    """Assert the ``members`` rows of ``codes`` use at most one Pauli per qubit."""
+    for column in codes[list(members)].T:
+        assert len(np.unique(column[column != 0])) <= 1
+
+
 def ones_execute_fn(
     trace: PipelineTrace,
     env: PipelineEnv,
 ) -> ChildResults:
-    """Return 1 for each branch key so reduce stages get correct key structure (BranchKeys)."""
-    try:
-        return {
-            branch_key: 1 for branch_key in batch_lineage(trace.final_batch).values()
-        }
-    except (ValueError, AttributeError):
-        return {key: 1 for key in trace.final_batch}
+    """``1.0`` at every measurement-group position of every branch."""
+    return fill_measurement_groups(trace, lambda _branch_key: 1.0)
 
 
 def build_measurement_pipeline(meta: MetaCircuit, **stage_kw) -> CircuitPipeline:

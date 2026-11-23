@@ -141,7 +141,7 @@ class TestMeasurementStageExpvalBackendReduce:
         """_reduce_expval handles {int: float} dicts (normalised by _core.py).
 
         After _expval_dicts_to_indexed normalises backend results, reduce
-        receives {obs_idx: float} dicts — same format as _counts_to_expvals.
+        receives {position: float} dicts — same format as _counts_to_expvals.
         """
         stage = MeasurementStage()
 
@@ -152,13 +152,7 @@ class TestMeasurementStageExpvalBackendReduce:
         }
 
         def _postprocess(values):
-            total = 0.0
-            for v in values:
-                if isinstance(v, dict):
-                    total += sum(v.values())
-                else:
-                    total += v
-            return [total]
+            return [sum(sum(group.values()) for group in values)]
 
         token = MeasurementToken(
             postprocess_fn_by_spec={base_key: _postprocess},
@@ -1347,13 +1341,13 @@ class TestPlanGroupShotsHelper:
     ("group_results", "expected"),
     [
         pytest.param(
-            {0: 0.4, 1: {0: 0.1, 1: 0.5}},
-            {0: 0.25 * 4.0 * 0.4, 1: {0: 0.5 * 3.0 * 0.1, 1: 0.5 * 2.0 * 0.5}},
+            {0: {0: 0.4}, 1: {0: 0.1, 1: 0.5}},
+            {0: {0: 0.25 * 4.0 * 0.4}, 1: {0: 0.5 * 3.0 * 0.1, 1: 0.5 * 2.0 * 0.5}},
             id="measured",
         ),
         pytest.param(
             {1: {0: 0.1, 1: 0.5}},
-            {0: 0.0, 1: {0: 0.5 * 3.0 * 0.1, 1: 0.5 * 2.0 * 0.5}},
+            {0: {0: 0.0}, 1: {0: 0.5 * 3.0 * 0.1, 1: 0.5 * 2.0 * 0.5}},
             id="missing-group-unweighted",
         ),
     ],
@@ -1362,7 +1356,7 @@ def test_group_shot_plan_scales_each_term_by_its_weight(group_results, expected)
     plan = _GroupShotPlan(
         surviving_indices=[0, 1],
         shots_by_group={0: 1, 1: 2},
-        missing_group_results={0: 0.0},
+        missing_group_results={0: {0: 0.0}},
         scales_by_group={0: 0.25, 1: 0.5},
         term_weights_by_group={0: np.array([4.0]), 1: np.array([3.0, 2.0])},
     )

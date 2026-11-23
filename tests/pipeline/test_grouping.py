@@ -12,10 +12,15 @@ from divi.circuits._core import flatten_observable_tuple
 from divi.pipeline._grouping import (
     _compute_measurement_groups,
     _create_postprocessing_fn,
+    _group_qubit_wise_commuting,
     _wire_grouping_from_labels,
 )
 from tests._helpers import exact_match
-from tests.pipeline._helpers import meta_from_circuit
+from tests.pipeline._helpers import (
+    assert_qubit_wise_commuting,
+    encode_labels,
+    meta_from_circuit,
+)
 
 
 def _wrap(obs: SparsePauliOp) -> tuple[SparsePauliOp, ...]:
@@ -45,7 +50,7 @@ class TestComputeMeasurementGroupsSingle:
         assert len(groups) == 1
         assert len(groups[0]) == 1
         assert partition == [[0]]
-        assert postproc([0.5]) == pytest.approx([0.5])
+        assert postproc([{0: 0.5}]) == pytest.approx([0.5])
 
     @pytest.mark.parametrize("strategy", ["qwc", "default", None])
     def test_single_term_one_group(self, strategy):
@@ -69,7 +74,7 @@ class TestComputeMeasurementGroupsSingle:
         )
         assert len(groups) == 2
         assert len(partition) == 2
-        out = postproc([0.5, 0.3])
+        out = postproc([{0: 0.5}, {0: 0.3}])
         assert out == pytest.approx([0.5 * 0.5 + 0.3 * 0.3])
 
     @pytest.mark.parametrize(
@@ -88,6 +93,13 @@ class TestComputeMeasurementGroupsSingle:
         obs = SparsePauliOp("Z")
         with pytest.raises(ValueError, match="Unknown grouping strategy"):
             _compute_measurement_groups(_wrap(obs), "invalid_strategy", 1)
+
+    def test_qwc_groups_terms_with_y(self):
+        obs = SparsePauliOp.from_list(
+            [("YY", 1.0), ("YI", 0.5), ("XX", 0.3), ("IY", 0.2)]
+        )
+        groups, _, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
+        assert sorted(map(sorted, groups)) == [["IY", "YI", "YY"], ["XX"]]
 
 
 class TestComputeMeasurementGroupsMulti:
@@ -197,7 +209,7 @@ class TestComputeMeasurementGroupsMulti:
         groups, _, postproc, _ = _group_and_build_postprocessing((obs1, obs2), "qwc", 2)
         assert len(groups) == 2
         with pytest.raises(RuntimeError, match="Expected 2"):
-            postproc([0.5])
+            postproc([{0: 0.5}])
 
     def test_sign_canceling_observables_preserve_per_obs_values(self):
         obs1 = SparsePauliOp("Z")
@@ -347,6 +359,57 @@ def _measure_lines(qasm: str) -> list[str]:
 )
 def test_wire_grouping_partitions_labels_by_disjoint_wires(labels, expected):
     assert _wire_grouping_from_labels(labels) == expected
+
+
+def _group_by_reference_first_fit(codes):
+    """Heaviest-first first-fit QWC grouping, written plainly as the test oracle."""
+    rows = codes.tolist()
+    order = sorted(range(len(rows)), key=lambda term: -sum(map(bool, rows[term])))
+    groups, letters = [], []
+    for term in order:
+        for group, used in zip(groups, letters):
+            if all(not a or not b or a == b for a, b in zip(used, rows[term])):
+                group.append(term)
+                used[:] = [a or b for a, b in zip(used, rows[term])]
+                break
+        else:
+            groups.append([term])
+            letters.append(list(rows[term]))
+    return groups
+
+
+@pytest.mark.parametrize("chunk", [2048, 4], ids=["one-chunk", "many-chunks"])
+@pytest.mark.parametrize("n_qubits", [5, 64, 65, 70, 128, 130])
+def test_group_qubit_wise_commuting_matches_reference_first_fit(
+    mocker, n_qubits, chunk
+):
+    mocker.patch("divi.pipeline._grouping._QWC_GROUP_CHUNK", chunk)
+    rng = np.random.default_rng(n_qubits)
+    codes = np.zeros((300, n_qubits), dtype=np.uint8)
+    for row in codes:
+        weight = rng.integers(1, 5)
+        row[rng.choice(n_qubits, size=weight, replace=False)] = rng.integers(
+            1, 4, size=weight
+        )
+
+    groups = _group_qubit_wise_commuting(codes)
+
+    assert groups == _group_by_reference_first_fit(codes)
+    for group in groups:
+        assert_qubit_wise_commuting(codes, group)
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        (["ZI", "ZZ", "XX", "IX"], [[1, 0], [2, 3]]),
+        (["II", "II", "II"], [[0, 1, 2]]),
+        (["ZI", "IZ", "ZZ"], [[2, 0, 1]]),
+    ],
+    ids=["heaviest-first", "identity-only", "all-commuting"],
+)
+def test_group_qubit_wise_commuting_places_heaviest_terms_first(labels, expected):
+    assert _group_qubit_wise_commuting(encode_labels(labels)) == expected
 
 
 def test_postprocessing_sums_a_term_over_every_group_measuring_it():

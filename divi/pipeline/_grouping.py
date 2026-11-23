@@ -9,13 +9,13 @@ dependency.  Groups are returned as tuples of big-endian Pauli label
 strings (qubit 0 on the left), the order backends key histograms in.
 """
 
-from collections import defaultdict, deque
-from collections.abc import Callable, Sequence
-from operator import itemgetter
+from collections.abc import Callable, Mapping, Sequence
+from itertools import chain
 from typing import Literal
 
 import numpy as np
-from qiskit.quantum_info import SparsePauliOp
+import numpy.typing as npt
+from qiskit.quantum_info import PauliList, SparsePauliOp
 from scipy.sparse import csr_matrix
 
 from divi.circuits._core import flatten_observable_tuple
@@ -74,12 +74,68 @@ def _wire_grouping_from_labels(
     return groups
 
 
+#: Groups scanned per vectorised conflict check in QWC first-fit grouping.
+_QWC_GROUP_CHUNK = 2048
+
+
+def _encode_paulis(paulis: PauliList) -> npt.NDArray[np.uint8]:
+    """Per-term, per-qubit Pauli codes ``x + 2z``: 0 I, 1 X, 2 Z, 3 Y."""
+    return paulis.x.astype(np.uint8) + 2 * paulis.z.astype(np.uint8)
+
+
+def _pack_bit_planes(bits: npt.NDArray[np.bool_]) -> npt.NDArray[np.uint64]:
+    """Rows of ``bits`` packed into 64-bit words, ``(n_rows, ceil(n_cols / 64))``."""
+    packed = np.packbits(bits, axis=1)
+    padding = (-packed.shape[1]) % 8
+    packed = np.pad(packed, ((0, 0), (0, padding)))
+    return np.ascontiguousarray(packed).view(np.uint64)
+
+
+def _group_qubit_wise_commuting(codes: npt.NDArray[np.uint8]) -> list[list[int]]:
+    """Partition Pauli terms into qubit-wise commuting groups by first fit.
+
+    Terms are visited heaviest first (stable in input order) and join the first
+    group whose letters they do not contradict on any shared qubit. Returns
+    partition indices into ``codes``, each group in visit order.
+    """
+    acts = codes != 0
+    support = _pack_bit_planes(acts)
+    low = _pack_bit_planes((codes & 1).astype(bool))
+    high = _pack_bit_planes((codes >> 1).astype(bool))
+    group_support = np.zeros_like(support)
+    group_low = np.zeros_like(low)
+    group_high = np.zeros_like(high)
+    groups: list[list[int]] = []
+
+    for term in np.argsort(-acts.sum(axis=1), kind="stable"):
+        target = len(groups)
+        for start in range(0, len(groups), _QWC_GROUP_CHUNK):
+            stop = min(start + _QWC_GROUP_CHUNK, len(groups))
+            mismatch = (group_low[start:stop] ^ low[term]) | (
+                group_high[start:stop] ^ high[term]
+            )
+            conflicts = (group_support[start:stop] & support[term] & mismatch).any(
+                axis=1
+            )
+            fits = np.flatnonzero(~conflicts)
+            if fits.size:
+                target = start + int(fits[0])
+                break
+        if target == len(groups):
+            groups.append([])
+        group_support[target] |= support[term]
+        group_low[target] |= low[term]
+        group_high[target] |= high[term]
+        groups[target].append(int(term))
+    return groups
+
+
 def _create_postprocessing_fn(
     observables: Sequence[SparsePauliOp],
     per_obs_term_indices: Sequence[list[int]],
     partition_indices: Sequence[list[int]],
     n_union_terms: int,
-) -> Callable:
+) -> Callable[[Sequence[Mapping[int, float]]], list[float]]:
     """Build a callable that reassembles per-group results into per-observable expvals.
 
     Returns a function that takes per-group results (one entry per
@@ -87,13 +143,11 @@ def _create_postprocessing_fn(
     expectation values. A union term measured in several groups takes the
     sum of its per-group results.
     """
-    slots_by_group = [
-        np.asarray(indices, dtype=np.intp) for indices in partition_indices
-    ]
-    getters = [
-        itemgetter(*range(len(slots))) if len(slots) else None
-        for slots in slots_by_group
-    ]
+    group_sizes = [len(indices) for indices in partition_indices]
+    n_slots = sum(group_sizes)
+    union_index_of_slot = np.fromiter(
+        chain.from_iterable(partition_indices), dtype=np.intp, count=n_slots
+    )
     # Row i holds observable i's coefficients at its union-term columns.
     weights = csr_matrix(
         (
@@ -105,24 +159,29 @@ def _create_postprocessing_fn(
         ),
         shape=(len(observables), n_union_terms),
     )
+    scatter = csr_matrix(
+        (np.ones(n_slots), (union_index_of_slot, np.arange(n_slots))),
+        shape=(n_union_terms, n_slots),
+    )
+    slot_weights = (weights @ scatter).tocsr()
 
-    def postprocessing_fn(grouped_results):
+    def postprocessing_fn(
+        grouped_results: Sequence[Mapping[int, float]],
+    ) -> list[float]:
         if len(grouped_results) != len(partition_indices):
             raise RuntimeError(
                 f"Expected {len(partition_indices)} grouped results, "
                 f"got {len(grouped_results)}."
             )
-        flat = np.zeros(n_union_terms, dtype=np.float64)
-        for slots, getter, val in zip(slots_by_group, getters, grouped_results):
-            if getter is None:
-                continue
-            if isinstance(val, dict):
-                flat[slots] += np.asarray(getter(val), dtype=np.float64).reshape(
-                    len(slots), -1
-                )[:, 0]
-            else:
-                flat[slots] += float(np.asarray(val).flat[0])
-        return (weights @ flat).tolist()
+        values = np.fromiter(
+            chain.from_iterable(
+                map(result.__getitem__, range(size))
+                for result, size in zip(grouped_results, group_sizes)
+            ),
+            dtype=np.float64,
+            count=n_slots,
+        )
+        return (slot_weights @ values).tolist()
 
     return postprocessing_fn
 
@@ -190,45 +249,21 @@ def _compute_measurement_groups(
     n_union_terms = len(be_labels)
 
     if strategy in ("qwc", "default"):
-        grouped_ops = union.group_commuting(qubit_wise=True)
-        # Reconstruct partition_indices by matching labels back to originals.
-        # One queue of union indices per label, consumed in order, so repeated
-        # labels are handed out once each without rescanning the union.
-        indices_by_label: dict[str, deque[int]] = defaultdict(deque)
-        for index, label in enumerate(be_labels):
-            indices_by_label[label].append(index)
-
-        partition_indices: list[list[int]] = []
-        grouped_be_labels: list[tuple[str, ...]] = []
-        for group_op in grouped_ops:
-            indices = []
-            group_labels = []
-            for gl in group_op.paulis.to_labels():
-                gl_be = gl[::-1].ljust(n_qubits, "I")
-                queue = indices_by_label.get(gl_be)
-                if queue:
-                    indices.append(queue.popleft())
-                    group_labels.append(gl_be)
-            partition_indices.append(indices)
-            grouped_be_labels.append(tuple(group_labels))
-        measurement_groups = tuple(grouped_be_labels)
-
+        partition_indices = _group_qubit_wise_commuting(_encode_paulis(union.paulis))
     elif strategy == "wires":
         partition_indices = _wire_grouping_from_labels(be_labels)
-        measurement_groups = tuple(
-            tuple(be_labels[i] for i in group) for group in partition_indices
-        )
-
     elif strategy is None:
         partition_indices = [[i] for i in range(n_union_terms)]
-        measurement_groups = tuple((label,) for label in be_labels)
-
     elif strategy == BACKEND_EXPVAL:
         partition_indices = [list(range(n_union_terms))]
-        measurement_groups = BACKEND_EXPVAL_GROUPS
-
     else:
         raise ValueError(f"Unknown grouping strategy: {strategy}")
+
+    measurement_groups = (
+        BACKEND_EXPVAL_GROUPS
+        if strategy == BACKEND_EXPVAL
+        else tuple(tuple(be_labels[i] for i in group) for group in partition_indices)
+    )
 
     covered = np.zeros(n_union_terms, dtype=bool)
     for indices in partition_indices:
