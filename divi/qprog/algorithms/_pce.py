@@ -712,6 +712,12 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             [objective.gradient(expectations[key], self.problem) for key in keys]
         )
 
+    def _evaluate_hessian(
+        self, center: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The objective's Hessian at ``center``, from its gradients."""
+        return self._compute_hessian_from_gradients(center)
+
     def _differentiable_objective(self) -> ExpectationObjective:
         """The objective, which must have a gradient.
 

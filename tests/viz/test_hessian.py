@@ -5,6 +5,7 @@
 import numpy as np
 import pytest
 
+from divi.qprog import ParameterSpace
 from divi.viz import GradientMethod, HessianResult, compute_hessian
 
 _QUADRATIC = np.array([[3.0, 1.0], [1.0, 5.0]])
@@ -36,12 +37,6 @@ class TestComputeHessian:
         session.__enter__.assert_called_once_with()
         assert session.__exit__.call_count == 1
         assert session.__exit__.call_args.args[0] is ValueError
-
-    def test_returns_symmetric_matrix(self, vqe_program):
-        center = np.zeros(2)
-        result = compute_hessian(vqe_program, center)
-
-        np.testing.assert_allclose(result.hessian, result.hessian.T, atol=1e-8)
 
     def test_shapes(self, vqe_program):
         center = np.zeros(2)
@@ -137,7 +132,7 @@ class TestComputeHessian:
         np.testing.assert_allclose(result.hessian, expected, atol=1e-5)
 
     def test_single_parameter(self, vqe_program, mocker, mock_landscape):
-        """n_params=1: off-diagonal loop is empty, 1x1 Hessian."""
+        """n_params=1 gives a 1x1 Hessian."""
         mocker.patch("divi.viz._api._n_program_params", return_value=1)
         mock_landscape(vqe_program, lambda p: p[0] ** 2)
         result = compute_hessian(
@@ -150,20 +145,90 @@ class TestComputeHessian:
         assert result.hessian.shape == (1, 1)
         np.testing.assert_allclose(result.hessian[0, 0], 2.0, atol=1e-8)
 
-    def test_parameter_shift_hessian_for_trig(self, vqe_program, mock_landscape):
-        """Verify parameter-shift Hessian of f(x) = sin(x0)*cos(x1) at (pi/4, 0)."""
-        mock_landscape(vqe_program, _sin_cos)
-        center = np.array([np.pi / 4, 0.0])
-        result = compute_hessian(
+    @pytest.mark.parametrize(
+        "frequencies, gradient, expected",
+        [
+            pytest.param(
+                ((0.5, 1), (1.0, 1)),
+                lambda p: [
+                    np.cos(p[0] / 2) * np.cos(p[1]) / 2,
+                    -np.sin(p[0] / 2) * np.sin(p[1]),
+                ],
+                lambda x0, x1: [
+                    [
+                        -np.sin(x0 / 2) * np.cos(x1) / 4,
+                        -np.cos(x0 / 2) * np.sin(x1) / 2,
+                    ],
+                    [-np.cos(x0 / 2) * np.sin(x1) / 2, -np.sin(x0 / 2) * np.cos(x1)],
+                ],
+                id="sin(x0/2)*cos(x1)",
+            ),
+            pytest.param(
+                ((1.0, 2), (0.5, 1)),
+                lambda p: [
+                    -np.sin(p[0]) - 2 * np.sin(2 * p[0]) * np.sin(p[1] / 2),
+                    np.cos(2 * p[0]) * np.cos(p[1] / 2) / 2,
+                ],
+                lambda x0, x1: [
+                    [
+                        -np.cos(x0) - 4 * np.cos(2 * x0) * np.sin(x1 / 2),
+                        -np.sin(2 * x0) * np.cos(x1 / 2),
+                    ],
+                    [
+                        -np.sin(2 * x0) * np.cos(x1 / 2),
+                        -np.cos(2 * x0) * np.sin(x1 / 2) / 4,
+                    ],
+                ],
+                id="cos(x0)+cos(2x0)*sin(x1/2)",
+            ),
+        ],
+    )
+    def test_program_hessian_applies_the_shift_rule_to_the_gradients(
+        self, vqe_program, mocker, frequencies, gradient, expected
+    ):
+        mocker.patch.object(
             vqe_program,
+            "_grad_shift_rule",
+            ParameterSpace(frequencies).compute_shift_rule(),
+        )
+        gradients = mocker.patch.object(
+            vqe_program,
+            "_evaluate_gradients",
+            side_effect=lambda param_sets: np.array([gradient(p) for p in param_sets]),
+        )
+        x0, x1 = 0.4, -0.9
+
+        result = compute_hessian(vqe_program, np.array([x0, x1]))
+
+        np.testing.assert_allclose(result.hessian, expected(x0, x1), atol=1e-10)
+        gradients.assert_called_once()
+
+    @pytest.mark.parametrize("program", ["exact_vqe", "supervised_qnn", "pce_program"])
+    def test_program_hessian_matches_finite_differences_of_the_loss(
+        self, request, program
+    ):
+        program = request.getfixturevalue(program)
+        center = np.random.default_rng(3).uniform(-1.0, 1.0, program.n_params)
+
+        exact = compute_hessian(program, center)
+        reference = compute_hessian(
+            program,
             center,
-            gradient_method=GradientMethod.PARAMETER_SHIFT,
+            gradient_method=GradientMethod.FINITE_DIFFERENCE,
+            eps=1e-3,
         )
 
-        s = -np.sqrt(2) / 2
-        expected = np.array([[s, 0.0], [0.0, s]])
-        # Parameter-shift is exact for trig functions.
-        np.testing.assert_allclose(result.hessian, expected, atol=1e-10)
+        np.testing.assert_allclose(exact.hessian, reference.hessian, atol=1e-5)
+
+    def test_program_hessian_stays_accurate_on_a_sampling_backend(
+        self, make_two_qubit_vqe, default_test_simulator, sampling_test_simulator
+    ):
+        center = np.random.default_rng(3).uniform(-1.0, 1.0, 8)
+
+        exact = compute_hessian(make_two_qubit_vqe(default_test_simulator), center)
+        sampled = compute_hessian(make_two_qubit_vqe(sampling_test_simulator), center)
+
+        np.testing.assert_allclose(sampled.hessian, exact.hessian, atol=0.2)
 
     def test_fluent_api(self, vqe_program):
         center = np.zeros(2)

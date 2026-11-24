@@ -83,10 +83,10 @@ if __name__ == "__main__":
     print(f"  {interp_1d.values.min():.6f}")
 
     # ---- 2. Hessian eigenvalue analysis ----
-    # GradientMethod.PARAMETER_SHIFT (default) gives exact derivatives for
-    # standard quantum gates; use FINITE_DIFFERENCE as a universal fallback.
+    # GradientMethod.PROGRAM (default) takes the program's own Hessian;
+    # FINITE_DIFFERENCE differences the loss directly.
     hess = compute_hessian(qaoa, center=best)
-    print("\nHessian at best_params (parameter-shift):")
+    print("\nHessian at best_params (program):")
     print(f"  Eigenvalues: {hess.eigenvalues}")
     ratio = (
         hess.eigenvalues[0] / hess.eigenvalues[-1] if hess.eigenvalues[-1] != 0 else 0

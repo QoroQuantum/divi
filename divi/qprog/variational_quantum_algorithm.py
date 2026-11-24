@@ -1147,6 +1147,33 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         ).reshape(len(param_sets), len(shifts), -1)
         return np.einsum("ps,msj,mj->mp", weights, expectations, cotangents)
 
+    def _evaluate_hessian(
+        self, center: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The loss Hessian at ``center``.
+
+        The parameter-shift rule applied to the loss gradients, in one batch.
+        """
+        shifts, weights = self._grad_shift_rule
+        hessian = weights @ self._evaluate_gradients(center + shifts)
+        return (hessian + hessian.T) / 2
+
+    def _compute_hessian_from_gradients(
+        self, center: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The loss Hessian at ``center`` for a loss non-linear in the
+        expectation values.
+
+        Centred differences of the gradients a step of ``1e-3`` away, in one
+        batch.
+        """
+        steps = 1e-3 * np.eye(len(center))
+        gradients = self._evaluate_gradients(
+            np.vstack([center + steps, center - steps])
+        )
+        hessian = (gradients[: len(center)] - gradients[len(center) :]).T / 2e-3
+        return (hessian + hessian.T) / 2
+
     def _resolve_sample_params(
         self, params: npt.NDArray[np.float64] | None
     ) -> npt.NDArray[np.float64]:

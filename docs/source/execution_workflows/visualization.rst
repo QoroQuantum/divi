@@ -183,6 +183,8 @@ Periodic Wrapping for PCA
 
 The function iterates forward through the rows, wrapping each row relative to
 its predecessor so that no single-step jump exceeds half a period.
+``vqe.viz.scan_pca(wrap_periodic=True)`` does the same with each parameter's own
+period, leaving parameters of unknown period unwrapped.
 
 Trajectory Overlay
 ~~~~~~~~~~~~~~~~~~
@@ -233,14 +235,19 @@ Hessian Analysis
 :func:`~divi.viz.compute_hessian` computes the matrix of second partial
 derivatives at a parameter point.
 
-By default, the **parameter-shift rule** is used. Pass ``gradient_method=GradientMethod.FINITE_DIFFERENCE`` for a
-finite-difference fallback with configurable ``eps``:
+By default (``GradientMethod.PROGRAM``) the program computes its own Hessian:
+the **parameter-shift rule** applied to its gradients, or centred differences of
+them where the loss is non-linear in the expectation values, as for
+:class:`~divi.qprog.algorithms.PCE` and supervised losses. Pass
+``gradient_method=GradientMethod.FINITE_DIFFERENCE`` for centred finite
+differences of the loss with step ``eps``, which also cover QAOA with stochastic
+or approximate trotterisation:
 
 .. code-block:: python
 
    from divi.viz import GradientMethod
 
-   # Exact (parameter-shift, default):
+   # The program's own Hessian (default):
    hess = program.viz.compute_hessian()
 
    # Finite-difference alternative:
@@ -262,9 +269,10 @@ Via ``program.viz``, the center defaults to ``best_params``:
    scan = program.viz.scan_2d(direction_x=d1, direction_y=d2)
    scan.plot(show=True)
 
-The total number of evaluations is :math:`2n^2 + 1` where *n* is the number of
-parameters. For a 2-layer QAOA with 4 parameters per layer (*n* = 8), that is
-129 evaluations; for 20 parameters, 801.
+With *n* parameters, the default evaluates the program's gradient at :math:`2n`
+points (more for parameters with several frequencies, such as a QAOA cost
+angle) and finite differences evaluate the loss at :math:`4n^2` points, each in
+one batch.
 
 Fourier Analysis
 ----------------
@@ -289,7 +297,8 @@ Nudged Elastic Band (NEB)
 :func:`~divi.viz.run_neb` finds a minimum-energy path by relaxing a chain of
 images via gradient descent perpendicular to the chain tangent. Like
 :func:`~divi.viz.compute_hessian`, it accepts a ``gradient_method`` parameter
-(defaults to :attr:`~divi.viz.GradientMethod.PARAMETER_SHIFT`):
+(defaults to :attr:`~divi.viz.GradientMethod.PROGRAM`, the program's own
+gradients); each step differentiates every image in one batch:
 
 .. code-block:: python
 

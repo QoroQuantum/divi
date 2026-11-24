@@ -107,7 +107,8 @@ if __name__ == "__main__":
     )
 
     # PCA scans using the fluent .viz wrapper with auto-collected samples.
-    # wrap_periodic=True ensures continuity across 2*pi boundaries for PCA.
+    # wrap_periodic=True keeps the trajectory continuous across each
+    # parameter's period for PCA.
     qaoa_pca = qaoa.viz.scan_pca(
         wrap_periodic=True,
         center=qaoa.best_params,

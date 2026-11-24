@@ -400,6 +400,7 @@ transpilation
 transpile
 transpiler
 treewidth
+trotterisation
 trotterization
 Trotterized
 truthy

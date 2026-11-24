@@ -29,8 +29,9 @@ plane scans.
 from collections.abc import Callable, Hashable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from typing import (
+    TYPE_CHECKING,
     ClassVar,
     Concatenate,
     Literal,
@@ -47,13 +48,12 @@ from sklearn.decomposition import PCA
 from divi.circuits._conversions import _real_float_array
 from divi.reporting._events import ProgressEmitter, ProgressEvent, TerminalStatus
 
-from ._gradients import GradientMethod, _compute_gradients
+from ._gradients import GradientMethod, _compute_finite_difference_gradients
 from ._neb import (
     _cumulative_distances,
     _neb_perpendicular_gradients,
     _redistribute_uniform,
 )
-from ._periodic import periodic_trajectory_wrap, periodic_wrap
 from ._results import (
     Fourier2DResult,
     HessianResult,
@@ -62,6 +62,9 @@ from ._results import (
     Scan1DResult,
     Scan2DResult,
 )
+
+if TYPE_CHECKING:
+    from divi.qprog import ParameterSpace
 
 # orqviz-style 1D/2D scans use scalar endpoints in (-pi, pi) along the direction vector.
 _DEFAULT_SCAN_SPAN: tuple[float, float] = (-np.pi, np.pi)
@@ -88,6 +91,17 @@ class _SupportsVizScan(Protocol):
 
     @property
     def n_params_per_layer(self) -> int: ...
+
+    @property
+    def parameter_space(self) -> "ParameterSpace": ...
+
+    def _evaluate_gradients(
+        self, param_sets: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]: ...
+
+    def _evaluate_hessian(
+        self, center: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]: ...
 
     def _has_run_optimization(self) -> bool: ...
 
@@ -182,6 +196,8 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
     required_methods = (
         "_has_run_optimization",
         "_evaluate_cost_param_sets",
+        "_evaluate_gradients",
+        "_evaluate_hessian",
         "_ensure_progress_session",
         "_progress_emitter",
     )
@@ -974,17 +990,14 @@ def compute_hessian(
     program: _SupportsVizScan,
     center: npt.ArrayLike,
     *,
-    gradient_method: GradientMethod = GradientMethod.PARAMETER_SHIFT,
+    gradient_method: GradientMethod = GradientMethod.PROGRAM,
     eps: float = 1e-3,
 ) -> HessianResult:
     """Compute the Hessian matrix at *center*.
 
     Eigenvalues reveal local curvature; eigenvectors can be used as scan
-    directions via :meth:`HessianResult.top_eigenvectors`.
-
-    All evaluations are batched into a single call to
-    ``_evaluate_cost_param_sets``.  The total number of evaluation points is
-    :math:`2n^2 + 1` where *n* is the number of parameters.
+    directions via :meth:`HessianResult.top_eigenvectors`. All evaluations go
+    out in one batch.
 
     Args:
         program: Variational program whose Hessian is computed.
@@ -993,12 +1006,15 @@ def compute_hessian(
             ``program.viz.compute_hessian()``, this defaults to
             ``best_params`` if omitted.
         gradient_method: Strategy for computing second derivatives.
-            :attr:`GradientMethod.PARAMETER_SHIFT` (default) uses the
-            double parameter-shift rule (exact for standard quantum gates).
-            :attr:`GradientMethod.FINITE_DIFFERENCE` uses centred finite
-            differences with step size *eps*.
-        eps: Finite-difference step size.  Only used when *gradient_method*
-            is :attr:`GradientMethod.FINITE_DIFFERENCE`.  Defaults to ``1e-3``.
+            :attr:`GradientMethod.PROGRAM` (default) takes the program's own
+            Hessian: the parameter-shift rule applied to its gradients, or
+            centred differences of them when the loss is non-linear in the
+            expectation values.
+            :attr:`GradientMethod.FINITE_DIFFERENCE` applies centred finite
+            differences to the loss twice: off-diagonal entries shift each
+            parameter by ``+-eps`` and diagonal entries by ``+-2 * eps``.
+        eps: Finite-difference step.  Only used when *gradient_method* is
+            :attr:`GradientMethod.FINITE_DIFFERENCE`.  Defaults to ``1e-3``.
 
     Returns:
         HessianResult: Hessian matrix, eigenvalues (ascending), eigenvectors,
@@ -1006,8 +1022,12 @@ def compute_hessian(
 
     Raises:
         TypeError: If ``program`` is not a supported variational program.
-        NotImplementedError: If ``program`` is an ``IterativeQAOA`` instance.
-        ValueError: If ``center`` has the wrong shape or ``eps`` is non-positive.
+        NotImplementedError: If ``program`` is an ``IterativeQAOA`` instance,
+            or has no exact derivatives (such as QAOA with stochastic
+            trotterisation) under :attr:`GradientMethod.PROGRAM`; use
+            :attr:`GradientMethod.FINITE_DIFFERENCE` instead.
+        ValueError: If ``center`` has the wrong shape, ``eps`` is non-positive,
+            or an evaluation is not finite.
     """
     gradient_method = GradientMethod(gradient_method)
 
@@ -1019,56 +1039,24 @@ def compute_hessian(
     if c.shape != (n_params,):
         raise ValueError(f"center must have shape ({n_params},), got {c.shape}")
 
-    # Shifts and coefficients depend on the gradient method.
-    if gradient_method is GradientMethod.PARAMETER_SHIFT:
-        diag_shift = np.pi
-        cross_shift = 0.5 * np.pi
-        diag_coeff = 0.25
-        cross_coeff = 0.25
+    program._progress_emitter(
+        ProgressEvent.show(program._progress_key, "💸 divi.viz Hessian: evaluating")
+    )
+    if gradient_method is GradientMethod.PROGRAM:
+        H = program._evaluate_hessian(c)
     else:
-        diag_shift = eps
-        cross_shift = eps
-        diag_coeff = 1.0 / (eps * eps)
-        cross_coeff = 1.0 / (4.0 * eps * eps)
-
-    n = n_params
-    eye_diag = diag_shift * np.eye(n)
-    eye_cross = cross_shift * np.eye(n)
-
-    # Layout: [center, +e0, -e0, ..., +ei+ej, +ei-ej, -ei+ej, -ei-ej, ...]
-    diag_probes = (c + np.stack([eye_diag, -eye_diag], axis=1)).reshape(2 * n, n)
-
-    ii, jj = np.triu_indices(n, k=1)
-    n_pairs = len(ii)
-    signs = np.array([[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]])
-    cross_probes = (
-        c
-        + signs[:, :1] * eye_cross[ii][:, None, :]
-        + signs[:, 1:] * eye_cross[jj][:, None, :]
-    ).reshape(4 * n_pairs, n)
-
-    param_sets = np.concatenate([[c], diag_probes, cross_probes])
-    vals = _evaluate_param_sets_reported(program, param_sets, scan_label="Hessian")
-    if not np.all(np.isfinite(vals)):
+        steps = eps * np.eye(n_params)
+        gradients = _compute_finite_difference_gradients(
+            partial(_evaluate_param_sets, program),
+            np.vstack([c + steps, c - steps]),
+            eps,
+        )
+        H = (gradients[:n_params] - gradients[n_params:]).T / (2 * eps)
+        H = (H + H.T) / 2
+    if not np.all(np.isfinite(H)):
         raise ValueError(
             "Cost evaluations returned NaN or Inf; Hessian cannot be computed."
         )
-
-    f0 = vals[0]
-    H = np.zeros((n, n))
-
-    # Diagonal: H_ii = coeff * (f+ - 2*f0 + f-)
-    diag_vals = vals[1 : 1 + 2 * n].reshape(n, 2)
-    np.fill_diagonal(H, diag_coeff * (diag_vals[:, 0] - 2 * f0 + diag_vals[:, 1]))
-
-    # Off-diagonal: H_ij = coeff * (f++ - f+- - f-+ + f--)
-    if n_pairs > 0:
-        cross_vals = vals[1 + 2 * n :].reshape(n_pairs, 4)
-        h_off = cross_coeff * (
-            cross_vals[:, 0] - cross_vals[:, 1] - cross_vals[:, 2] + cross_vals[:, 3]
-        )
-        H[ii, jj] = h_off
-        H[jj, ii] = h_off
 
     eigenvalues, eigenvectors = np.linalg.eigh(H)
 
@@ -1090,7 +1078,7 @@ def run_neb(
     n_pivots: int = 12,
     n_steps: int = 50,
     learning_rate: float = 0.1,
-    gradient_method: GradientMethod = GradientMethod.PARAMETER_SHIFT,
+    gradient_method: GradientMethod = GradientMethod.PROGRAM,
     eps: float = 1e-3,
     convergence_tol: float | None = None,
 ) -> NEBResult:
@@ -1115,8 +1103,8 @@ def run_neb(
         n_steps: Maximum number of NEB relaxation iterations.
         learning_rate: Step size for gradient descent on interior images.
         gradient_method: Strategy for computing gradients.
-            :attr:`GradientMethod.PARAMETER_SHIFT` (default) uses the
-            parameter-shift rule.
+            :attr:`GradientMethod.PROGRAM` (default) uses the program's
+            own gradients, one batch per step.
             :attr:`GradientMethod.FINITE_DIFFERENCE` uses centred finite
             differences with step size *eps*.
         eps: Finite-difference step size.  Only used when *gradient_method*
@@ -1149,15 +1137,19 @@ def run_neb(
     # Initialise: straight-line interpolation.
     chain = np.linspace(t1, t2, n_pivots).astype(np.float64)
     all_paths: list[npt.NDArray[np.float64]] = [chain.copy()]
+    evaluate_gradients = (
+        program._evaluate_gradients
+        if gradient_method is GradientMethod.PROGRAM
+        else partial(
+            _compute_finite_difference_gradients,
+            partial(_evaluate_param_sets, program),
+            eps=eps,
+        )
+    )
 
     for step in range(n_steps):
         interior = chain[1:-1]  # (n_pivots - 2, n_params)
-        grads = _compute_gradients(
-            lambda ps: _evaluate_param_sets(program, ps),
-            interior,
-            gradient_method,
-            eps,
-        )
+        grads = evaluate_gradients(interior)
         perp_grads = _neb_perpendicular_gradients(chain, grads)
 
         program._progress_emitter(
@@ -1268,9 +1260,9 @@ class ProgramViz:
 
         When ``samples`` is omitted, automatically collects parameter vectors
         from ``program.param_history(mode="best_per_iteration")``.  Set
-        ``wrap_periodic=True`` to apply
-        :func:`~divi.viz.periodic_trajectory_wrap` to the auto-collected
-        samples before fitting PCA.
+        ``wrap_periodic=True`` to unwrap the auto-collected samples by each
+        parameter's period from ``program.parameter_space`` before fitting PCA,
+        so consecutive samples lie within half a period of each other.
         """
         if "samples" not in kwargs:
             blocks = self.program.param_history(mode="best_per_iteration")
@@ -1281,18 +1273,14 @@ class ProgramViz:
                 )
             samples = np.vstack(blocks)
             if wrap_periodic:
-                samples = periodic_trajectory_wrap(samples)
-                # periodic_trajectory_wrap anchors at samples[0]; the unwrapped
-                # trajectory generically lives in a different 2π-copy than a
-                # raw `center` argument.  Rigidly shift so samples[-1] (= the
-                # converged best_per_iteration row) aligns to the center's copy,
-                # otherwise `shift = center - mean` carries a stray 2π·k that
-                # offsets the projected cloud from the heatmap in score space.
+                space = self.program.parameter_space
+                for k in range(1, len(samples)):
+                    samples[k] = space.wrap(samples[k], samples[k - 1])
+                # Shift the trajectory into the periodic copy holding ``center``.
                 center = kwargs.get("center")
                 if center is not None:
                     ref = _real_float_array(center, source="center").reshape(-1)
-                    delta = periodic_wrap(samples[-1], reference=ref) - samples[-1]
-                    samples = samples + delta
+                    samples = samples + space.wrap(samples[-1], ref) - samples[-1]
             kwargs["samples"] = samples
         return scan_pca(self.program, **kwargs)
 

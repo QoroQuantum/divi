@@ -7,11 +7,7 @@ import numpy as np
 import pytest
 
 from divi.viz import GradientMethod, run_neb
-from divi.viz._gradients import (
-    _compute_finite_difference_gradients,
-    _compute_gradients,
-    _compute_parameter_shift_gradients,
-)
+from divi.viz._gradients import _compute_finite_difference_gradients
 from divi.viz._neb import (
     _cumulative_distances,
     _neb_perpendicular_gradients,
@@ -19,19 +15,10 @@ from divi.viz._neb import (
 )
 
 _SPHERE_PIVOTS = np.array([[1.0, 2.0], [-0.5, 0.3]])
-_TRIG_PIVOTS = np.array([[0.3, 0.7], [1.0, -0.5]])
 
 
 def _sphere(param_sets):
     return np.sum(param_sets**2, axis=1)
-
-
-def _trig(param_sets):
-    return np.sin(param_sets[:, 0]) + np.cos(param_sets[:, 1])
-
-
-def _trig_gradient(pivots):
-    return np.column_stack([np.cos(pivots[:, 0]), -np.sin(pivots[:, 1])])
 
 
 class TestRunNEB:
@@ -124,7 +111,13 @@ class TestRunNEB:
         init_barrier = float(np.max(init_losses))
 
         result = run_neb(
-            vqe_program, t1, t2, n_pivots=8, n_steps=30, learning_rate=0.05
+            vqe_program,
+            t1,
+            t2,
+            n_pivots=8,
+            n_steps=30,
+            learning_rate=0.05,
+            gradient_method=GradientMethod.FINITE_DIFFERENCE,
         )
         final_barrier = float(np.max(result.energies))
 
@@ -135,15 +128,44 @@ class TestRunNEB:
 
     def test_finite_difference_gradients_correct_for_known_function(self):
         """Verify finite-difference gradients of f(x) = x0^2 + x1^2."""
-        grads = _compute_finite_difference_gradients(_sphere, _SPHERE_PIVOTS, eps=1e-5)
+        grads = _compute_finite_difference_gradients(_sphere, _SPHERE_PIVOTS, 1e-5)
 
         np.testing.assert_allclose(grads, 2.0 * _SPHERE_PIVOTS, atol=1e-8)
 
-    def test_parameter_shift_gradients_correct_for_trig(self):
-        """Verify parameter-shift gradients of f(x) = sin(x0) + cos(x1)."""
-        grads = _compute_parameter_shift_gradients(_trig, _TRIG_PIVOTS)
+    def test_finite_difference_method_differences_the_loss_one_batch_per_step(
+        self, vqe_program, mock_landscape
+    ):
+        """Each step shifts every interior image's parameters both ways at
+        once, then the relaxed chain is evaluated once more."""
+        landscape = mock_landscape(vqe_program, lambda p: np.sum(p**2))
 
-        np.testing.assert_allclose(grads, _trig_gradient(_TRIG_PIVOTS), atol=1e-10)
+        run_neb(
+            vqe_program,
+            np.zeros(2),
+            np.ones(2),
+            n_pivots=6,
+            n_steps=3,
+            gradient_method=GradientMethod.FINITE_DIFFERENCE,
+        )
+
+        sizes = [len(call.args[0]) for call in landscape.call_args_list]
+        assert sizes == [16, 16, 16, 6]
+
+    @pytest.mark.parametrize("program", ["vqe_program", "supervised_qnn"])
+    def test_program_method_takes_the_programs_gradients_one_batch_per_step(
+        self, request, mocker, program
+    ):
+        """Each step asks the program for every interior image's gradient at
+        once, then the relaxed chain is evaluated once more."""
+        program = request.getfixturevalue(program)
+        gradients = mocker.spy(program, "_evaluate_gradients")
+        evaluate = mocker.spy(program, "_evaluate_cost_param_sets")
+        n_params = program.n_params
+
+        run_neb(program, np.zeros(n_params), np.ones(n_params), n_pivots=6, n_steps=3)
+
+        assert [len(call.args[0]) for call in gradients.call_args_list] == [4] * 3
+        assert [len(call.args[0]) for call in evaluate.call_args_list] == [6]
 
     def test_neb_with_finite_difference_method(self, vqe_program):
         t1 = np.zeros(2)
@@ -239,30 +261,3 @@ def test_perpendicular_gradients(chain, grads, expected):
     perp = _neb_perpendicular_gradients(np.array(chain), np.array(grads))
 
     np.testing.assert_allclose(perp, expected, atol=1e-12)
-
-
-@pytest.mark.parametrize(
-    "method, fn, pivots, expected, atol",
-    [
-        pytest.param(
-            GradientMethod.FINITE_DIFFERENCE,
-            _sphere,
-            _SPHERE_PIVOTS,
-            2.0 * _SPHERE_PIVOTS,
-            1e-8,
-            id="finite_difference",
-        ),
-        pytest.param(
-            GradientMethod.PARAMETER_SHIFT,
-            _trig,
-            _TRIG_PIVOTS,
-            _trig_gradient(_TRIG_PIVOTS),
-            1e-10,
-            id="parameter_shift",
-        ),
-    ],
-)
-def test_compute_gradients_dispatches_on_method(method, fn, pivots, expected, atol):
-    grads = _compute_gradients(fn, pivots, method, eps=1e-5)
-
-    np.testing.assert_allclose(grads, expected, atol=atol)

@@ -423,6 +423,28 @@ class TestProgramVizWrapper:
         assert np.all(np.abs(result.projected_samples[:, 0]) <= 0.5 + 1e-9)
         assert np.all(np.abs(result.projected_samples[:, 1]) <= 0.5 + 1e-9)
 
+    def test_scan_pca_wrap_periodic_uses_each_parameter_period(
+        self, qaoa_program, mocker
+    ):
+        """beta has period pi here, so a jump of pi in it is no jump at all."""
+        assert qaoa_program.parameter_space.periods[1] == pytest.approx(np.pi)
+        traj = np.array([[0.0, 0.0], [0.1, 0.05 + np.pi], [0.2, 0.1], [0.3, 0.2]])
+        mocker.patch.object(
+            qaoa_program,
+            "param_history",
+            return_value=[row.reshape(1, -1) for row in traj],
+        )
+
+        result = qaoa_program.viz.scan_pca(
+            wrap_periodic=True,
+            center=traj[-1],
+            grid_shape=(3, 3),
+            span_x=(-0.5, 0.5),
+            span_y=(-0.5, 0.5),
+        )
+
+        assert np.all(np.abs(result.projected_samples) <= 0.5)
+
 
 class TestScanInterp1D:
     def test_endpoints_match_theta_1_and_theta_2(self, vqe_program):
@@ -671,6 +693,8 @@ _VIZ_ATTRS = (
 _VIZ_METHODS = (
     "_has_run_optimization",
     "_evaluate_cost_param_sets",
+    "_evaluate_gradients",
+    "_evaluate_hessian",
     "_ensure_progress_session",
     "_progress_emitter",
 )

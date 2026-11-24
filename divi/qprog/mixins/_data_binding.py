@@ -553,3 +553,12 @@ class DataBindingMixin(_MixinBase):
             args=(np.arange(n_sets)[:, None], np.arange(n_params)[None, :]),
             initial_step=1e-3,
         ).df
+
+    def _evaluate_hessian(
+        self, center: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The loss Hessian at ``center``, from the gradients when a feature
+        batch is bound."""
+        if self.feature_batch is None:
+            return super()._evaluate_hessian(center)
+        return self._compute_hessian_from_gradients(center)
