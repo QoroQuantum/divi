@@ -131,9 +131,10 @@ Differential Evolution [#storn1997]_ is a method that optimises a problem by ite
 
    optimizer = PymooOptimizer(method=PymooMethod.DE)
 
-DE searches a box centred on the first initial parameter set, one period wide
-in each parameter (:math:`2\pi` where the period is unknown or above
-:math:`4\pi`).
+DE searches a box centred on the midpoint of the initial parameter sets, one
+period wide in each parameter (:math:`2\pi` where the period is unknown or above
+:math:`4\pi`). Initial sets that span more than the box are clipped to it, with a
+warning.
 
 Quantum Natural Gradient
 ------------------------

@@ -52,6 +52,11 @@ class PreprocessStage(BundleStage):
         self._preprocessor = preprocessor
 
     @property
+    def preprocessor(self) -> "CircuitPreprocessor":
+        """The routine whose transform this stage applies."""
+        return self._preprocessor
+
+    @property
     def consumes_dag_bodies(self) -> bool:
         return self._preprocessor.consumes_dag_bodies
 

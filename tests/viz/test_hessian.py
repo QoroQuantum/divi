@@ -194,7 +194,9 @@ class TestComputeHessian:
         gradients = mocker.patch.object(
             vqe_program,
             "_evaluate_gradients",
-            side_effect=lambda param_sets: np.array([gradient(p) for p in param_sets]),
+            side_effect=lambda param_sets, cotangents: np.array(
+                [gradient(p) for p in param_sets]
+            ),
         )
         x0, x1 = 0.4, -0.9
 
@@ -202,6 +204,10 @@ class TestComputeHessian:
 
         np.testing.assert_allclose(result.hessian, expected(x0, x1), atol=1e-10)
         gradients.assert_called_once()
+        shifts, _ = vqe_program._grad_shift_rule
+        np.testing.assert_array_equal(
+            gradients.call_args.args[1], np.ones((len(shifts), 1))
+        )
 
     @pytest.mark.parametrize("program", ["exact_vqe", "supervised_qnn", "pce_program"])
     def test_program_hessian_matches_finite_differences_of_the_loss(
@@ -220,15 +226,32 @@ class TestComputeHessian:
 
         np.testing.assert_allclose(exact.hessian, reference.hessian, atol=1e-5)
 
+    @pytest.mark.parametrize(
+        "make_program, atol",
+        [
+            pytest.param("make_two_qubit_vqe", 0.05, id="linear-vqe"),
+            pytest.param("make_supervised_qnn", 0.05, id="supervised-qnn"),
+            pytest.param("make_pce", 0.45, id="pce"),
+        ],
+    )
     def test_program_hessian_stays_accurate_on_a_sampling_backend(
-        self, make_two_qubit_vqe, default_test_simulator, sampling_test_simulator
+        self,
+        request,
+        default_test_simulator,
+        sampling_test_simulator,
+        make_program,
+        atol,
     ):
-        center = np.random.default_rng(3).uniform(-1.0, 1.0, 8)
+        """Shot noise enters at its own scale, not divided by a small step."""
+        build = request.getfixturevalue(make_program)
+        program = build(default_test_simulator)
+        center = np.random.default_rng(3).uniform(-1.0, 1.0, program.n_params)
 
-        exact = compute_hessian(make_two_qubit_vqe(default_test_simulator), center)
-        sampled = compute_hessian(make_two_qubit_vqe(sampling_test_simulator), center)
+        exact = compute_hessian(program, center)
+        sampling_test_simulator.set_seed(1997)
+        sampled = compute_hessian(build(sampling_test_simulator), center)
 
-        np.testing.assert_allclose(sampled.hessian, exact.hessian, atol=0.2)
+        np.testing.assert_allclose(sampled.hessian, exact.hessian, atol=atol)
 
     def test_fluent_api(self, vqe_program):
         center = np.zeros(2)

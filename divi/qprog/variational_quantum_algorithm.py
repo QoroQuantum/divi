@@ -6,8 +6,8 @@ import copy
 import hashlib
 import logging
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
-from functools import cached_property, wraps
+from collections.abc import Callable, Mapping, Sequence
+from functools import cache, cached_property, wraps
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Self, TypeAlias
 from warnings import warn
@@ -15,6 +15,7 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
+from scipy.differentiate import derivative, hessian, jacobian
 from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
@@ -22,11 +23,13 @@ from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.hamiltonians._term_ops import ObservableLike, to_spo
 from divi.pipeline import (
+    CircuitPipeline,
     CircuitPreprocessor,
     GroupingStrategy,
     PipelineCadence,
     PipelineEnv,
     ShotDistStrategy,
+    extract_param_set_idx,
 )
 from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
 from divi.qprog._early_stopping import EarlyStopping, StopReason
@@ -84,6 +87,22 @@ _CHECKPOINTABLE_OPTIMIZERS: dict[str, type[Optimizer]] = {
 }
 
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
+
+#: Absolute tolerance of numerical loss derivatives; without it an entry that is
+#: exactly zero never converges.
+_DERIVATIVE_ATOL = 1e-10
+
+
+def _warn_unconverged(result, quantity: str) -> None:
+    """Warn when entries of a :mod:`scipy.differentiate` result did not
+    converge, as where a loss is not smooth."""
+    failed = int(np.count_nonzero(~np.asarray(result.success)))
+    if failed:
+        warn(
+            f"{failed} of {np.size(result.success)} entries of the loss's "
+            f"{quantity} did not converge; the loss may not be smooth there.",
+            RuntimeWarning,
+        )
 
 
 def _with_optimisation_progress(run_method):
@@ -168,16 +187,27 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if (
-            cls._evaluate_cost_param_sets
-            is not VariationalQuantumAlgorithm._evaluate_cost_param_sets
-            and cls._loss_gradients_by_observable
-            is VariationalQuantumAlgorithm._loss_gradients_by_observable
+        base = VariationalQuantumAlgorithm
+
+        def overrides(name: str) -> bool:
+            return getattr(cls, name) is not getattr(base, name)
+
+        if overrides("_evaluate_cost_param_sets") and not overrides(
+            "_loss_gradients_by_observable"
         ):
             raise TypeError(
                 f"{cls.__name__} overrides _evaluate_cost_param_sets, so it must "
                 "also override _loss_gradients_by_observable with its loss's slope "
                 "in each cost observable."
+            )
+        if (
+            overrides("_loss_gradients_by_observable")
+            or overrides("_compute_loss_slopes")
+        ) and not overrides("_compute_loss_curvature"):
+            raise TypeError(
+                f"{cls.__name__} overrides its loss's slopes, so it must also "
+                "override _compute_loss_curvature (zeros for a loss linear in the "
+                "expectation values)."
             )
 
     def _make_checkpoint(
@@ -1035,7 +1065,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         Subclasses should prefer overriding the initial-spec hook over
         replacing the full evaluator. One that replaces it must also override
-        :meth:`_loss_gradients_by_observable` with its loss's slopes.
+        :meth:`_loss_gradients_by_observable` and :meth:`_compute_loss_curvature`
+        with its loss's derivatives.
         """
         if collect_variance:
             result, _ = self.evaluate(
@@ -1114,65 +1145,237 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
         return self.parameter_space.compute_shift_rule()
 
-    def _evaluate_gradients(self, param_sets: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    def _evaluate_gradients(
+        self,
+        param_sets: npt.ArrayLike,
+        cotangents: npt.NDArray[np.float64] | None = None,
+    ) -> npt.NDArray[np.float64]:
         """The loss gradient at each parameter set, one row per set.
 
-        :meth:`_loss_gradients_by_observable` times the Jacobian of the cost
-        expectation values, by adjoint differentiation when the backend offers
-        it for the cost pipeline and by the parameter-shift rule otherwise, in
-        one batch for all sets.
+        The loss's slopes in the expectation values (or ``cotangents``, one row
+        per set, in their place) times the expectations' Jacobian, by adjoint
+        differentiation when the backend offers it and by the parameter-shift
+        rule otherwise, in one batch for all sets.
         """
         param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
-        cotangents = self._loss_gradients_by_observable(param_sets)
-
-        if self.backend.supports_vjp:
-            pipeline = self._build_preprocessor_pipeline(self.cost_preprocessor())
-            env = self._build_pipeline_env(param_sets=param_sets)
-            try:
-                _, vjps = pipeline.run_vjp(self._initial_spec(), env, cotangents)
-            except VJPUnavailableError:
-                pass
-            else:
-                self._record_execution(env)
-                return np.array([vjps[index] for index in range(len(param_sets))])
-
+        if cotangents is None:
+            cotangents = self._compute_loss_slopes(
+                param_sets, cache(lambda: self._measure_expectations(param_sets))
+            )
+        rows = self._build_expectation_rows(param_sets)
+        row_gradients = self._compute_row_vjps(rows, cotangents.reshape(len(rows), -1))
+        if row_gradients is not None:
+            return row_gradients.reshape(len(param_sets), -1, param_sets.shape[1]).sum(
+                axis=1
+            )
         shifts, weights = self._grad_shift_rule
-        result = self.evaluate(
-            (param_sets[:, None, :] + shifts).reshape(-1, param_sets.shape[1]),
-            self.cost_preprocessor(),
-        )
-        expectations = np.array(
-            [np.atleast_1d(result[index]) for index in range(len(result))],
-            dtype=np.float64,
+        expectations = self._measure_expectations(
+            (param_sets[:, None, :] + shifts).reshape(-1, param_sets.shape[1])
         ).reshape(len(param_sets), len(shifts), -1)
         return np.einsum("ps,msj,mj->mp", weights, expectations, cotangents)
 
     def _evaluate_hessian(
         self, center: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
-        """The loss Hessian at ``center``.
+        """The loss Hessian at ``center``, by the chain rule.
 
-        The parameter-shift rule applied to the loss gradients, in one batch.
+        The parameter-shift rule applied to the gradients with the loss's slopes
+        held at ``center``, plus the loss's curvature in the expectation values
+        carried through their Jacobian.
         """
         shifts, weights = self._grad_shift_rule
-        hessian = weights @ self._evaluate_gradients(center + shifts)
-        return (hessian + hessian.T) / 2
+        expectations = cache(lambda: self._measure_expectations(center[None])[0])
+        slopes = self._compute_loss_slopes(center[None], lambda: expectations()[None])
+        result = weights @ self._evaluate_gradients(
+            center + shifts, np.repeat(slopes, len(shifts), axis=0)
+        )
+        result = result + self._compute_loss_curvature(
+            center,
+            expectations,
+            cache(lambda: self._compute_expectation_jacobian(center)),
+        )
+        return (result + result.T) / 2
 
-    def _compute_hessian_from_gradients(
+    def _build_expectation_rows(
+        self, param_sets: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The rows the expectation pipeline binds, set by set, with each set's
+        parameters as the trailing columns; by default one row per set."""
+        return param_sets
+
+    def _build_expectation_preprocessor(self) -> CircuitPreprocessor:
+        """The routine measuring the expectation values the loss is a function
+        of, one result per row: the cost routine."""
+        return self.cost_preprocessor()
+
+    def _measure_expectations(
+        self, param_sets: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The expectation values the loss is a function of, one row per
+        parameter set, in one batch."""
+        param_sets = np.atleast_2d(param_sets)
+        result = self.evaluate(
+            self._build_expectation_rows(param_sets),
+            self._build_expectation_preprocessor(),
+        )
+        return np.array(
+            [np.atleast_1d(value) for value in result.values()], dtype=np.float64
+        ).reshape(len(param_sets), -1)
+
+    def _measure_rows(
+        self,
+        rows: npt.NDArray[np.float64],
+        spec: Any,
+        pipeline: CircuitPipeline,
+        **env_overrides,
+    ) -> npt.NDArray[np.float64]:
+        """Each row's expectation values from one run of ``pipeline``."""
+        result = self._execute(pipeline, spec, param_sets=rows, **env_overrides)
+        by_row = sorted(
+            result.items(), key=lambda item: extract_param_set_idx(item[0], default=0)
+        )
+        return np.array([np.atleast_1d(value) for _, value in by_row], dtype=np.float64)
+
+    @staticmethod
+    def _compute_numeric_loss_slopes(
+        loss: Callable[[npt.NDArray[np.float64]], float],
+        expectations: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        """``loss``'s slopes, one row per set of expectation values, by numerical
+        differentiation."""
+
+        def compute_losses(x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+            return np.apply_along_axis(loss, 0, x)
+
+        slopes = []
+        for values in expectations:
+            result = jacobian(
+                compute_losses, values, tolerances={"atol": _DERIVATIVE_ATOL}
+            )
+            _warn_unconverged(result, "slope")
+            slopes.append(result.df)
+        return np.array(slopes)
+
+    @staticmethod
+    def _compute_numeric_loss_curvature(
+        loss: Callable[[npt.NDArray[np.float64]], float],
+        expectations: npt.NDArray[np.float64],
+        jacobian_rows: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        """``loss``'s curvature at ``expectations`` carried through the Jacobian
+        rows, by numerical differentiation."""
+
+        def compute_loss_along(u: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+            moved = np.tensordot(jacobian_rows.T, u, axes=1)
+            moved += expectations.reshape(expectations.shape + (1,) * (u.ndim - 1))
+            return np.apply_along_axis(loss, 0, moved)
+
+        result = hessian(
+            compute_loss_along,
+            np.zeros(len(jacobian_rows)),
+            tolerances={"atol": _DERIVATIVE_ATOL},
+        )
+        _warn_unconverged(result, "curvature")
+        return result.ddf
+
+    @staticmethod
+    def _compute_elementwise_slopes(
+        fn: Callable[..., npt.NDArray[np.float64]],
+        points: npt.NDArray[np.float64],
+        args: tuple[npt.NDArray[np.float64], ...],
+    ) -> npt.NDArray[np.float64]:
+        """The derivative of an elementwise ``fn(x, *args)`` in ``x`` at
+        ``points``, numerically."""
+        result = derivative(
+            fn, points, args=args, tolerances={"atol": _DERIVATIVE_ATOL}
+        )
+        _warn_unconverged(result, "slope")
+        return result.df
+
+    @staticmethod
+    def _compute_elementwise_curvatures(
+        fn: Callable[..., npt.NDArray[np.float64]],
+        points: npt.NDArray[np.float64],
+        args: tuple[npt.NDArray[np.float64], ...],
+    ) -> npt.NDArray[np.float64]:
+        """The second derivative of an elementwise ``fn(x, *args)`` in ``x`` at
+        ``points``, numerically."""
+
+        def compute_slopes(
+            x: npt.NDArray[np.float64], *slope_args
+        ) -> npt.NDArray[np.float64]:
+            return derivative(
+                fn, x, args=slope_args, tolerances={"atol": _DERIVATIVE_ATOL}
+            ).df
+
+        result = derivative(
+            compute_slopes, points, args=args, tolerances={"atol": _DERIVATIVE_ATOL}
+        )
+        _warn_unconverged(result, "curvature")
+        return result.df
+
+    def _compute_loss_slopes(
+        self,
+        param_sets: npt.NDArray[np.float64],
+        expectations: Callable[[], npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """The loss's slope in each expectation value, one row per parameter set.
+
+        ``expectations()`` gives :meth:`_measure_expectations` at ``param_sets``,
+        measuring them on its first call. By default these are the cost
+        observables' slopes, :meth:`_loss_gradients_by_observable`.
+        """
+        return self._loss_gradients_by_observable(param_sets)
+
+    def _compute_loss_curvature(
+        self,
+        center: npt.NDArray[np.float64],
+        expectations: Callable[[], npt.NDArray[np.float64]],
+        jacobian: Callable[[], npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """``J @ d2L/de2 @ J.T`` at ``center``, where ``jacobian()`` gives the
+        expectations' Jacobian ``J``, one row per parameter.
+
+        Zero for a loss linear in the expectation values, as by default, which
+        measures nothing.
+        """
+        return np.zeros((len(center), len(center)))
+
+    def _compute_row_vjps(
+        self, rows: npt.NDArray[np.float64], cotangents: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64] | None:
+        """``cotangents[i] @ d<O>/dθ`` for each expectation row by adjoint
+        differentiation, over the trailing parameters, or ``None`` when the
+        backend cannot provide it."""
+        if not self.backend.supports_vjp:
+            return None
+        pipeline = self._build_preprocessor_pipeline(
+            self._build_expectation_preprocessor()
+        )
+        env = self._build_pipeline_env(param_sets=rows)
+        try:
+            _, vjps = pipeline.run_vjp(self._initial_spec(), env, cotangents)
+        except VJPUnavailableError:
+            return None
+        self._record_execution(env)
+        return np.array([vjps[index][-self.n_params :] for index in range(len(rows))])
+
+    def _compute_expectation_jacobian(
         self, center: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
-        """The loss Hessian at ``center`` for a loss non-linear in the
-        expectation values.
-
-        Centred differences of the gradients a step of ``1e-3`` away, in one
-        batch.
-        """
-        steps = 1e-3 * np.eye(len(center))
-        gradients = self._evaluate_gradients(
-            np.vstack([center + steps, center - steps])
+        """The Jacobian of the expectation values at ``center``, one row per
+        parameter: one adjoint product per expectation value, or the
+        parameter-shift rule."""
+        rows = self._build_expectation_rows(center[None])
+        n_observables = len(self.cost_circuit.observable or ())
+        jacobian_rows = self._compute_row_vjps(
+            np.repeat(rows, n_observables, axis=0),
+            np.tile(np.eye(n_observables), (len(rows), 1)),
         )
-        hessian = (gradients[: len(center)] - gradients[len(center) :]).T / 2e-3
-        return (hessian + hessian.T) / 2
+        if jacobian_rows is not None:
+            return jacobian_rows.T
+        shifts, weights = self._grad_shift_rule
+        return weights @ self._measure_expectations(center + shifts)
 
     def _resolve_sample_params(
         self, params: npt.NDArray[np.float64] | None

@@ -35,7 +35,10 @@ from divi.qprog.optimizers import (
 )
 from divi.qprog.problems import BinaryOptimizationProblem
 from tests._helpers import exact_match
-from tests.qprog._helpers import central_difference_of_loss
+from tests.qprog._helpers import (
+    central_difference_hessian_of_loss,
+    central_difference_of_loss,
+)
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
@@ -1491,13 +1494,14 @@ def test_multi_basis_solution_is_the_sign_of_each_expectation(
 @pytest.mark.parametrize(
     "encoding", [DenseEncoding(), MultiBasisEncoding()], ids=["dense", "multi-basis"]
 )
-def test_pce_gradient_matches_central_differences(
-    make_maestro_simulator, default_optimizer, encoding
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_pce_derivatives_match_central_differences(
+    differentiating_simulator, default_optimizer, encoding
 ):
-    """The Jacobian chained through the objective is the exact gradient of the
-    non-linear loss."""
+    """The Jacobian chained through the objective gives the exact gradient and
+    Hessian of the non-linear loss."""
     pce = _entangling_pce(
-        make_maestro_simulator(),
+        differentiating_simulator,
         default_optimizer,
         problem=BinaryOptimizationProblem(
             np.array(
@@ -1519,6 +1523,12 @@ def test_pce_gradient_matches_central_differences(
         central_difference_of_loss(pce, params, step=1e-5),
         atol=1e-6,
     )
+    np.testing.assert_allclose(
+        pce._evaluate_hessian(params),
+        central_difference_hessian_of_loss(pce, params),
+        rtol=0,
+        atol=1e-4,
+    )
 
 
 def test_pce_slopes_reuse_the_latest_cost_evaluation(
@@ -1531,11 +1541,28 @@ def test_pce_slopes_reuse_the_latest_cost_evaluation(
     cold = pce._loss_gradients_by_observable(theta[None])
 
     pce._evaluate_cost_param_sets(np.atleast_2d(theta))
-    evaluate = mocker.spy(pce, "evaluate")
+    evaluate = mocker.spy(pce, "_execute")
     warm = pce._loss_gradients_by_observable(theta[None])
 
     assert evaluate.call_count == 0
     np.testing.assert_allclose(warm, cold)
+
+
+def test_pce_hessian_reuses_the_latest_cost_evaluation(
+    make_maestro_simulator, default_optimizer, mocker
+):
+    """At a point the cost was just evaluated, the Hessian measures only by
+    adjoint products, never the expectations at the centre again."""
+    pce = _entangling_pce(make_maestro_simulator(), default_optimizer)
+    theta = np.random.default_rng(4).uniform(0, 2 * np.pi, pce.n_params)
+    pce._evaluate_cost_param_sets(np.atleast_2d(theta))
+    measure = mocker.spy(pce, "_measure_expectations")
+    variables = mocker.spy(pce, "_variable_expectations")
+
+    pce._evaluate_hessian(theta)
+
+    measure.assert_not_called()
+    variables.assert_not_called()
 
 
 def test_pce_slopes_measure_every_other_parameter_set_in_one_batch(
@@ -1551,7 +1578,7 @@ def test_pce_slopes_measure_every_other_parameter_set_in_one_batch(
     )
 
     pce._evaluate_cost_param_sets(np.atleast_2d(evaluated))
-    evaluate = mocker.spy(pce, "evaluate")
+    evaluate = mocker.spy(pce, "_execute")
     slopes = pce._loss_gradients_by_observable(np.array([evaluated, *others]))
 
     assert evaluate.call_count == 1
@@ -1571,7 +1598,7 @@ def test_pce_slopes_reuse_every_parameter_set_of_a_batched_evaluation(
     negative_zero[0] = -0.0
 
     pce._evaluate_cost_param_sets(batch)
-    evaluate = mocker.spy(pce, "evaluate")
+    evaluate = mocker.spy(pce, "_execute")
     pce._loss_gradients_by_observable(np.array([batch[0], negative_zero]))
 
     assert evaluate.call_count == 0

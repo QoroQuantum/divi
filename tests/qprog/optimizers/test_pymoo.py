@@ -417,7 +417,7 @@ def test_de_forwards_algorithm_kwargs():
     assert optimizer._curr_algorithm_obj.mating.CR.value == 0.9
 
 
-def test_de_offspring_stay_within_one_period_of_the_first_set():
+def test_de_offspring_stay_within_one_period_of_the_initial_midpoint():
     initial = np.full((6, 2), 6.2) + np.arange(6)[:, None] * 0.01
     _, populations = _run(
         PymooOptimizer(method=PymooMethod.DE, population_size=6),
@@ -427,7 +427,8 @@ def test_de_offspring_stay_within_one_period_of_the_first_set():
     )
 
     evaluated = np.vstack(populations)
-    assert np.all(np.abs(evaluated - initial[0]) <= np.pi)
+    midpoint = (initial.min(axis=0) + initial.max(axis=0)) / 2
+    assert np.all(np.abs(evaluated - midpoint) <= np.pi + 1e-12)
     assert evaluated.max() > 2 * np.pi
 
 
@@ -444,6 +445,7 @@ def test_de_box_spans_each_parameter_period():
     assert np.pi < np.vstack(populations)[:, 0].max() <= 2 * np.pi
 
 
+@pytest.mark.filterwarnings("error")
 def test_de_wraps_the_initial_population_into_the_box():
     initial = np.array([[0.1], [2 * np.pi + 0.2], [-2 * np.pi + 0.3], [0.4]])
     _, populations = _run(
@@ -455,18 +457,57 @@ def test_de_wraps_the_initial_population_into_the_box():
     np.testing.assert_allclose(populations[0], [[0.1], [0.2], [0.3], [0.4]])
 
 
-def test_de_clips_rows_it_cannot_wrap_into_the_box():
-    """An unknown period cannot be wrapped, so its column is clipped instead."""
-    initial = np.array([[0.0, 0.0], [0.5, 15.0], [-0.5, -15.0], [0.2, 2.0]])
+def test_de_centres_its_box_on_the_sets_it_uses():
+    """Rows past the population size neither move the box nor get clipped."""
+    space = ParameterSpace((None,))
+    initial = np.array([[0.1], [0.2], [0.3], [0.4], [50.0]])
     _, populations = _run(
         PymooOptimizer(method=PymooMethod.DE, population_size=4),
         initial=initial,
-        max_iterations=6,
-        parameter_space=lambda: ParameterSpace(((1.0, 1), None)),
+        max_iterations=1,
+        parameter_space=lambda: space,
     )
+
+    np.testing.assert_array_equal(populations[0], initial[:4])
+
+
+def test_de_clips_rows_it_cannot_wrap_into_the_box():
+    """An unknown period cannot be wrapped, so a column wider than the box is
+    clipped instead, with a warning."""
+    initial = np.array([[0.0, 0.0], [0.5, 15.0], [-0.5, -15.0], [0.2, 2.0]])
+    with pytest.warns(
+        UserWarning,
+        match=exact_match(
+            "The initial parameter sets span more than the DE search box in "
+            "parameters [1], so they were clipped to its edges."
+        ),
+    ):
+        _, populations = _run(
+            PymooOptimizer(method=PymooMethod.DE, population_size=4),
+            initial=initial,
+            max_iterations=6,
+            parameter_space=lambda: ParameterSpace(((1.0, 1), None)),
+        )
 
     np.testing.assert_allclose(populations[0][:, 1], [0.0, np.pi, -np.pi, 2.0])
     assert np.all(np.abs(np.vstack(populations)[:, 1]) <= np.pi)
+
+
+@pytest.mark.parametrize(
+    "space",
+    [ParameterSpace((None, None)), ParameterSpace(((0.25, 1), (0.25, 1)))],
+    ids=["unknown-period", "8pi-period"],
+)
+def test_de_keeps_a_random_start_inside_its_box(space):
+    initial = np.random.default_rng(0).uniform(0.0, space.search_widths, (8, 2))
+    _, populations = _run(
+        PymooOptimizer(method=PymooMethod.DE, population_size=8),
+        initial=initial,
+        max_iterations=1,
+        parameter_space=lambda: space,
+    )
+
+    np.testing.assert_allclose(populations[0], initial, rtol=0, atol=1e-12)
 
 
 def test_de_never_loses_its_best_set():

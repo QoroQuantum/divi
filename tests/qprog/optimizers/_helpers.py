@@ -164,7 +164,7 @@ def inject_term_expectations(monkeypatch, term_values) -> list[np.ndarray]:
     return calls
 
 
-def data_bound_custom_vqa(backend, optimizer, labels=None) -> CustomVQA:
+def data_bound_custom_vqa(backend, optimizer, labels=None, **kwargs) -> CustomVQA:
     """One-qubit CustomVQA with a data angle and a weight angle; supervised when
     ``labels`` are given."""
     x = Parameter("x")
@@ -180,4 +180,5 @@ def data_bound_custom_vqa(backend, optimizer, labels=None) -> CustomVQA:
         labels=labels,
         backend=backend,
         optimizer=optimizer,
+        **kwargs,
     )

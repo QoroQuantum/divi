@@ -996,8 +996,7 @@ def compute_hessian(
     """Compute the Hessian matrix at *center*.
 
     Eigenvalues reveal local curvature; eigenvectors can be used as scan
-    directions via :meth:`HessianResult.top_eigenvectors`. All evaluations go
-    out in one batch.
+    directions via :meth:`HessianResult.top_eigenvectors`.
 
     Args:
         program: Variational program whose Hessian is computed.
@@ -1007,9 +1006,9 @@ def compute_hessian(
             ``best_params`` if omitted.
         gradient_method: Strategy for computing second derivatives.
             :attr:`GradientMethod.PROGRAM` (default) takes the program's own
-            Hessian: the parameter-shift rule applied to its gradients, or
-            centred differences of them when the loss is non-linear in the
-            expectation values.
+            Hessian by the chain rule: the parameter-shift rule applied to its
+            gradients, plus a non-linear loss's curvature in the expectation
+            values.
             :attr:`GradientMethod.FINITE_DIFFERENCE` applies centred finite
             differences to the loss twice: off-diagonal entries shift each
             parameter by ``+-eps`` and diagonal entries by ``+-2 * eps``.

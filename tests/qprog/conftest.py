@@ -6,6 +6,7 @@
 
 import pytest
 
+from divi.backends import MaestroConfig
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     PymooMethod,
@@ -80,3 +81,15 @@ def gradient_free_optimizer(request):
 def checkpointing_optimizer(request):
     """Parametrize over optimizers that support save/load checkpointing."""
     return request.param()
+
+
+@pytest.fixture(params=["adjoint", "shift-rule"])
+def differentiating_simulator(request, make_maestro_simulator):
+    """An exact Maestro that differentiates by adjoint products, or one whose
+    matrix-product-state simulation refuses them so the parameter-shift rule
+    runs."""
+    if request.param == "adjoint":
+        return make_maestro_simulator()
+    return make_maestro_simulator(
+        maestro_config=MaestroConfig(simulation_type="MatrixProductState")
+    )

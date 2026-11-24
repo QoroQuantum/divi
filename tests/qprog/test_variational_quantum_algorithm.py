@@ -3192,8 +3192,14 @@ def _incommensurate_qaoa(backend):
     return _gradient_qaoa(backend, weights=(1.0, np.sqrt(2), 1.0, 1.0))
 
 
-def _loss_without_its_slope(self, param_sets, **kwargs):
-    return {}
+def _return_nothing(self, *args, **kwargs):
+    return None
+
+
+_CURVATURE_REQUIRED = (
+    "overrides its loss's slopes, so it must also override _compute_loss_curvature "
+    "(zeros for a loss linear in the expectation values)."
+)
 
 
 class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
@@ -3230,15 +3236,12 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
 
         grad_call_count = [0]
 
-        def mock_evaluate(param_sets, preprocessor, **kwargs):
-            n_sets = np.atleast_2d(param_sets).shape[0]
-            if n_sets == 1:
-                return {0: [-0.5]}
-            else:
-                grad_call_count[0] += 1
-                return {i: [mock_values[i]] for i in range(n_sets)}
+        def mock_measure(param_sets):
+            grad_call_count[0] += 1
+            return np.array([[mock_values[i]] for i in range(len(param_sets))])
 
-        mocker.patch.object(program, "evaluate", side_effect=mock_evaluate)
+        mocker.patch.object(program, "evaluate", return_value={0: [-0.5]})
+        mocker.patch.object(program, "_measure_expectations", side_effect=mock_measure)
         program.run(perform_final_computation=False)
 
         assert grad_call_count[0] >= 1, "grad_fn was never called"
@@ -3254,14 +3257,12 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         captured = []
         initial_params = np.full((1, n_params), 0.25)
 
-        def mock_evaluate(param_sets, preprocessor, **kwargs):
-            param_sets = np.atleast_2d(param_sets)
-            n_sets = param_sets.shape[0]
-            if n_sets > 1:
-                captured.append(param_sets.copy())
-            return {i: [float(i) * 0.1] for i in range(n_sets)}
+        def mock_measure(param_sets):
+            captured.append(param_sets.copy())
+            return np.arange(len(param_sets), dtype=np.float64)[:, None] * 0.1
 
-        mocker.patch.object(program, "evaluate", side_effect=mock_evaluate)
+        mocker.patch.object(program, "evaluate", return_value={0: [0.0]})
+        mocker.patch.object(program, "_measure_expectations", side_effect=mock_measure)
 
         program.run(
             initial_params=initial_params,
@@ -3363,19 +3364,35 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         ):
             qaoa._evaluate_gradients(np.zeros(qaoa.n_params))
 
-    def test_overriding_the_loss_requires_its_slope(self):
-        with pytest.raises(
-            TypeError,
-            match=exact_match(
-                "_LossOnly overrides _evaluate_cost_param_sets, so it must also "
-                "override _loss_gradients_by_observable with its loss's slope in "
-                "each cost observable."
+    @pytest.mark.parametrize(
+        "overrides, message",
+        [
+            pytest.param(
+                ("_evaluate_cost_param_sets",),
+                "overrides _evaluate_cost_param_sets, so it must also override "
+                "_loss_gradients_by_observable with its loss's slope in each cost "
+                "observable.",
+                id="loss-evaluation",
             ),
-        ):
+            pytest.param(
+                ("_evaluate_cost_param_sets", "_loss_gradients_by_observable"),
+                _CURVATURE_REQUIRED,
+                id="loss-evaluation-and-slope",
+            ),
+            pytest.param(
+                ("_loss_gradients_by_observable",), _CURVATURE_REQUIRED, id="slope"
+            ),
+            pytest.param(
+                ("_compute_loss_slopes",), _CURVATURE_REQUIRED, id="sample-slopes"
+            ),
+        ],
+    )
+    def test_overriding_the_loss_requires_its_derivatives(self, overrides, message):
+        with pytest.raises(TypeError, match=exact_match(f"_Overriding {message}")):
             type(
-                "_LossOnly",
+                "_Overriding",
                 (SampleVQAProgram,),
-                {"_evaluate_cost_param_sets": _loss_without_its_slope},
+                {name: _return_nothing for name in overrides},
             )
 
 

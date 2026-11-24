@@ -16,7 +16,10 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.mixins import DataBindingMixin
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from tests._helpers import exact_match
-from tests.qprog._helpers import central_difference_of_loss
+from tests.qprog._helpers import (
+    central_difference_hessian_of_loss,
+    central_difference_of_loss,
+)
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
@@ -365,8 +368,8 @@ class TestInitialization:
         assert 2 * np.pi < starts[:, 0].max() < 4 * np.pi
         assert starts[:, 1].max() < 2 * np.pi
 
-    def test_supervised_gradient_matches_central_differences(
-        self, make_custom_vqa, default_test_simulator
+    def test_supervised_derivatives_match_central_differences(
+        self, make_custom_vqa, differentiating_simulator
     ):
         """A data parameter between two weights keeps the weights' columns."""
         first, data, second = Parameter("a"), Parameter("b"), Parameter("c")
@@ -381,7 +384,7 @@ class TestInitialization:
             data_param_indices=[1],
             feature_batch=np.array([[0.2], [0.9], [-0.4]]),
             labels=np.array([0.3, -0.5, 1.1]),
-            backend=default_test_simulator,
+            backend=differentiating_simulator,
         )
         params = np.array([0.4, -0.7])
 
@@ -389,6 +392,12 @@ class TestInitialization:
 
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            program._evaluate_hessian(params),
+            central_difference_hessian_of_loss(program, params),
+            rtol=1e-5,
+            atol=1e-5,
         )
 
     def test_parameter_space_covers_the_weights_only(self, make_custom_vqa):

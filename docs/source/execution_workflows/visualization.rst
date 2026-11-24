@@ -235,10 +235,11 @@ Hessian Analysis
 :func:`~divi.viz.compute_hessian` computes the matrix of second partial
 derivatives at a parameter point.
 
-By default (``GradientMethod.PROGRAM``) the program computes its own Hessian:
-the **parameter-shift rule** applied to its gradients, or centred differences of
-them where the loss is non-linear in the expectation values, as for
-:class:`~divi.qprog.algorithms.PCE` and supervised losses. Pass
+By default (``GradientMethod.PROGRAM``) the program computes its own Hessian by
+the chain rule: the **parameter-shift rule** applied to its gradients, plus,
+for a loss non-linear in the expectation values (as for
+:class:`~divi.qprog.algorithms.PCE` and supervised losses), the loss's
+curvature carried through the expectations' Jacobian. Pass
 ``gradient_method=GradientMethod.FINITE_DIFFERENCE`` for centred finite
 differences of the loss with step ``eps``, which also cover QAOA with stochastic
 or approximate trotterisation:
@@ -271,8 +272,8 @@ Via ``program.viz``, the center defaults to ``best_params``:
 
 With *n* parameters, the default evaluates the program's gradient at :math:`2n`
 points (more for parameters with several frequencies, such as a QAOA cost
-angle) and finite differences evaluate the loss at :math:`4n^2` points, each in
-one batch.
+angle), and a non-linear loss also measures the expectations' Jacobian; finite
+differences evaluate the loss at :math:`4n^2` points in one batch.
 
 Fourier Analysis
 ----------------

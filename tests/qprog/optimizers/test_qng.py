@@ -829,6 +829,32 @@ def test_supervised_custom_vqa_rejects_pullback_metric(
         QNGOptimizer().validate_program(program)
 
 
+def test_custom_reduction_rejects_pullback_metric(dummy_simulator, default_optimizer):
+    program = data_bound_custom_vqa(
+        dummy_simulator,
+        default_optimizer,
+        loss_reduction=lambda values: float(np.sum(values**2)),
+    )
+    message = (
+        "The pullback metric needs a data-binding loss_reduction of 'mean' or "
+        "'sum'; a custom reduction is a non-linear function of the expectation "
+        "values. Use a non-metric optimizer such as SPSAOptimizer."
+    )
+    with pytest.raises(ContractViolation, match=exact_match(message)):
+        QNGOptimizer().validate_program(program)
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+def test_linear_reduction_accepts_pullback_metric(
+    dummy_simulator, default_optimizer, reduction
+):
+    program = data_bound_custom_vqa(
+        dummy_simulator, default_optimizer, loss_reduction=reduction
+    )
+
+    QNGOptimizer().validate_program(program)
+
+
 def test_fubini_study_rejects_composite_angle(dummy_simulator, default_optimizer):
     """FS needs a bare-parameter Pauli rotation; a composite angle is rejected."""
     x = Parameter("x")

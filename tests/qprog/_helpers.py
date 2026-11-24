@@ -25,6 +25,19 @@ def central_difference_of_loss(program, params, step=1e-4):
     return (losses[: len(params)] - losses[len(params) :]) / (2 * step)
 
 
+def central_difference_hessian_of_loss(program, params, step=1e-3):
+    """Central differences of :func:`central_difference_of_loss` at ``params``,
+    symmetrised."""
+    hessian = np.array(
+        [
+            central_difference_of_loss(program, params + step * unit, step)
+            - central_difference_of_loss(program, params - step * unit, step)
+            for unit in np.eye(len(params))
+        ]
+    ) / (2 * step)
+    return (hessian + hessian.T) / 2
+
+
 class ReplicaBundleStage(BundleStage):
     """Fans every circuit body out into two replicas and averages the results."""
 

@@ -105,6 +105,9 @@ class CircuitPreprocessor:
             as recurring, which overstates it, whereas the reverse would drop
             recurring work entirely. Set ``ONCE`` for routines that run one time
             (final-state sampling, a single time evolution).
+        binds_sample_rows: Whether each parameter set already carries its data
+            sample's values, so a data-bound program binds it directly instead
+            of fanning a feature batch out. Defaults to ``False``.
     """
 
     name: str
@@ -114,6 +117,7 @@ class CircuitPreprocessor:
     terminal_stage: Stage | None = None
     consumes_dag_bodies: bool = False
     cache_key: Hashable | None = None
+    binds_sample_rows: bool = False
 
 
 def cost_preprocessor() -> CircuitPreprocessor:

@@ -13,12 +13,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPipeline, CircuitPreprocessor, ContractViolation
-from divi.pipeline.stages import (
-    DataBindingStage,
-    MeasurementStage,
-    PreprocessStage,
-    QEMStage,
-)
+from divi.pipeline.stages import DataBindingStage, MeasurementStage, QEMStage
 from divi.qprog import ParameterSpace
 from divi.qprog.algorithms import (
     QNN,
@@ -39,6 +34,7 @@ from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests._helpers import exact_match
 from tests.qprog._helpers import (
     ReplicaBundleStage,
+    central_difference_hessian_of_loss,
     central_difference_of_loss,
     restore_iteration_checkpoint,
 )
@@ -46,6 +42,48 @@ from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
 )
+
+
+def _cube_error(prediction, label):
+    return abs(prediction - label) ** 3
+
+
+_SUPERVISIONS = pytest.mark.parametrize(
+    "supervision",
+    [
+        pytest.param({**loss, "loss_reduction": reduction}, id=f"{name}-{reduction}")
+        for reduction in ("mean", "sum")
+        for name, loss in (
+            ("squared-error", {}),
+            ("fit-bias", {"fit_bias": True}),
+            ("custom-loss", {"loss_fn": _cube_error}),
+            ("unsupervised", {"labels": None}),
+        )
+    ]
+    + [
+        pytest.param(
+            {"labels": None, "loss_reduction": lambda values: np.sum(values**2)},
+            id="unsupervised-custom-reduction",
+        )
+    ],
+)
+
+
+def _build_supervised_qnn(make_qnn, backend, supervision=None):
+    """A QNN on four labelled samples, with ``supervision`` overriding its loss."""
+    return make_qnn(
+        **{
+            "labels": np.array([0.5, -0.3, 0.8, -0.6]),
+            "backend": backend,
+            **(supervision or {}),
+        }
+    )
+
+
+def _draw_params(program, n_sets=None):
+    """Seeded parameters in ``[-1, 1)``: one set, or ``n_sets`` rows."""
+    shape = program.n_params if n_sets is None else (n_sets, program.n_params)
+    return np.random.default_rng(7).uniform(-1.0, 1.0, shape)
 
 
 class _DoubleFrequencyAnsatz(GenericLayerAnsatz):
@@ -563,64 +601,82 @@ class TestQNNPipelines:
             types = [type(s).__name__ for s in pipeline.stages]
             assert "DataBindingStage" in types
 
-    def test_single_sample_gradient_stays_on_the_shift_rule(
-        self, mocker, make_qnn, feature_batch_2x2, default_test_simulator
+    def test_gradient_is_one_adjoint_product_over_every_sample(
+        self, mocker, make_qnn, default_test_simulator
     ):
-        program = make_qnn(
-            feature_batch=feature_batch_2x2[:1], backend=default_test_simulator
-        )
+        """The predictions are measured once for the loss's slopes, then one
+        adjoint job differentiates every sample; both count in the totals."""
+        program = _build_supervised_qnn(make_qnn, default_test_simulator)
         submit_vjp = mocker.spy(default_test_simulator, "submit_vjp")
-        params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
+        params = _draw_params(program)
 
         (gradient,) = program._evaluate_gradients(params)
 
-        submit_vjp.assert_not_called()
+        submit_vjp.assert_called_once()
+        assert program.total_backend_jobs == 2
+        assert program.total_circuit_count == 2 * len(program.feature_batch)
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
         )
 
-    @pytest.mark.parametrize(
-        "supervision",
-        [
-            {},
-            {"fit_bias": True},
-            {"loss_fn": lambda prediction, label: abs(prediction - label) ** 3},
-            {"loss_reduction": "sum"},
-            {"labels": None, "loss_reduction": lambda values: np.sum(values**2)},
-        ],
-        ids=[
-            "squared-error",
-            "fit-bias",
-            "custom-loss",
-            "sum-reduction",
-            "unsupervised-custom-reduction",
-        ],
-    )
-    def test_non_linear_loss_gradient_matches_central_differences(
-        self, make_qnn, feature_batch_2x2, default_test_simulator, supervision
+    @_SUPERVISIONS
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_loss_gradient_matches_central_differences(
+        self, make_qnn, differentiating_simulator, supervision
     ):
-        program = make_qnn(
-            **{
-                "labels": np.array([0.5, -0.3, 0.8, -0.6]),
-                "backend": default_test_simulator,
-                **supervision,
-            }
+        program = _build_supervised_qnn(
+            make_qnn, differentiating_simulator, supervision
         )
-        params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
+        params = _draw_params(program)
 
         (gradient,) = program._evaluate_gradients(params)
 
         np.testing.assert_allclose(
             gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
         )
+
+    @_SUPERVISIONS
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_loss_hessian_matches_central_differences(
+        self, make_qnn, differentiating_simulator, supervision
+    ):
+        program = _build_supervised_qnn(
+            make_qnn, differentiating_simulator, supervision
+        )
+        params = _draw_params(program)
+
+        hessian = program._evaluate_hessian(params)
+
+        np.testing.assert_allclose(
+            hessian,
+            central_difference_hessian_of_loss(program, params),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+    def test_a_loss_kink_at_a_prediction_warns(self, make_qnn, default_test_simulator):
+        program = make_qnn(
+            labels=np.zeros(4),
+            loss_fn=lambda prediction, label: abs(prediction - label),
+            backend=default_test_simulator,
+        )
+        params = _draw_params(program)
+        program.labels = program._measure_expectations(params[None])[0]
+
+        with pytest.warns(
+            RuntimeWarning,
+            match=exact_match(
+                "4 of 4 entries of the loss's curvature did not converge; the loss "
+                "may not be smooth there."
+            ),
+        ):
+            program._evaluate_hessian(params)
 
     def test_gradients_of_several_sets_match_each_set_alone(
         self, make_qnn, default_test_simulator
     ):
-        program = make_qnn(
-            labels=np.array([0.5, -0.3, 0.8, -0.6]), backend=default_test_simulator
-        )
-        param_sets = np.random.default_rng(7).uniform(-1.0, 1.0, (2, program.n_params))
+        program = _build_supervised_qnn(make_qnn, default_test_simulator)
+        param_sets = _draw_params(program, n_sets=2)
 
         gradients = program._evaluate_gradients(param_sets)
 
@@ -1050,7 +1106,7 @@ class TestPredict:
         assert [type(stage) for stage in predict.stages] == [
             type(stage)
             for stage in cost.stages
-            if not isinstance(stage, (DataBindingStage, PreprocessStage))
+            if not isinstance(stage, DataBindingStage)
         ]
 
 
@@ -1214,9 +1270,7 @@ def test_predict_measures_with_the_program_strategies(
     assert stage._measure_all is True
 
 
-def test_predict_accumulates_circuit_and_runtime_totals(
-    make_qnn, feature_batch_2x2, mocker
-):
+def test_predict_accumulates_execution_totals(make_qnn, feature_batch_2x2, mocker):
     program = make_qnn()
     mocker.patch(
         "divi.pipeline.CircuitPipeline.run",
@@ -1228,12 +1282,15 @@ def test_predict_accumulates_circuit_and_runtime_totals(
     program.predict(feature_batch_2x2, params=_WEIGHTS)
 
     assert program.total_circuit_count == 2 * 7
+    assert program.total_device_shots == 2 * 700
+    assert program.total_backend_jobs == 2
     assert program.total_run_time == pytest.approx(2 * 0.5)
 
 
 def _fake_predict_run(env, n_rows):
-    env.artifacts["circuit_count"] = 7
-    env.artifacts["run_time"] = 0.5
+    env.artifacts.update(
+        circuit_count=7, device_shots=700, backend_jobs=1, run_time=0.5
+    )
     return {(("param_set", i),): [0.0] for i in range(n_rows)}
 
 

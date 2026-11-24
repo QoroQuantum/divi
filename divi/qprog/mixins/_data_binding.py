@@ -20,20 +20,25 @@ a defaulted lookup.
 
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 from qiskit.converters import circuit_to_dag
-from scipy.differentiate import derivative
 
 from divi.circuits import MetaCircuit
-from divi.pipeline import CircuitPipeline, ResultFormat, extract_param_set_idx
+from divi.pipeline import (
+    CircuitPipeline,
+    CircuitPreprocessor,
+    ResultFormat,
+    extract_param_set_idx,
+)
 from divi.pipeline.abc import Stage
 from divi.pipeline.stages import (
-    CircuitSpecStage,
     DataBindingStage,
     LossReductionFn,
+    PreprocessStage,
     SampleLossFn,
     resolve_loss_reduction,
     resolve_sample_loss,
@@ -215,11 +220,15 @@ class DataBindingMixin(_MixinBase):
         """Insert :class:`~divi.pipeline.stages.DataBindingStage` ahead of
         mitigation when a data axis is active, so the data axis fans out before
         any stage that walks ``circuit_bodies`` (QEM/twirling/measurement) sees
-        the bodies. With no feature batch (a plain ``CustomVQA``) this is a
-        no-op delegating to the base assembler. Applies to every pipeline
-        assembled — cost and metric alike.
+        the bodies. With no feature batch (a plain ``CustomVQA``), or for a
+        routine whose parameter sets already carry each sample's data, this is
+        a no-op delegating to the base assembler.
         """
-        if self.feature_batch is not None:
+        binds_sample_rows = any(
+            isinstance(stage, PreprocessStage) and stage.preprocessor.binds_sample_rows
+            for stage in extra_stages
+        )
+        if self.feature_batch is not None and not binds_sample_rows:
             extra_stages = (self._build_data_binding_stage(), *extra_stages)
         return super().assemble_pipeline(
             spec_stage,
@@ -481,84 +490,134 @@ class DataBindingMixin(_MixinBase):
     ) -> np.ndarray:
         """Run the cost pipeline for the given rows and return per-row ``⟨H⟩``.
 
-        Builds the same pipeline training uses (QEM, twirling, measurement,
-        binding, and any stages a subclass adds in :meth:`assemble_pipeline`)
-        minus the data-binding fan-out and sample-axis reduction, so the
+        The prediction routine's pipeline is the training one (QEM, twirling,
+        measurement, binding, and any stages a subclass adds in
+        :meth:`assemble_pipeline`) without the data-binding fan-out, so the
         measurement model matches training exactly: each joined
         ``(data, weights)`` row is bound directly, and that row's result is the
-        sample's prediction. Does not mutate optimizer/solution state.
+        sample's prediction. Adds to the execution totals, without progress
+        output or any change to optimizer or solution state.
         """
-        spec = self._cost_meta_circuit(self._data_symbols + self._weight_symbols)
-        assembled = self.assemble_pipeline(
-            CircuitSpecStage(),
-            self._make_measurement_stage(),
-            result_format=ResultFormat.EXPVALS,
-        )
-        pipeline = CircuitPipeline(
-            stages=[
-                stage
-                for stage in assembled.stages
-                if not isinstance(stage, DataBindingStage)
-            ],
-            suppress_performance_warnings=self._suppress_performance_warnings,
-        )
-        # Base env (not the mixin override): the predict pipeline has no
-        # DataBindingStage, so feature_batch/labels must not enter the env.
-        # The discard emitter keeps inference silent — no progress view.
-        env = super()._build_pipeline_env(
+        result = self._execute(
+            self._build_preprocessor_pipeline(self._build_prediction_preprocessor()),
+            self._initial_spec(),
             param_sets=np.atleast_2d(param_sets),
             progress_emitter=None,
         )
-        result = pipeline.run(initial_spec=spec, env=env)
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-
         indexed = {
             extract_param_set_idx(key): float(value[0]) for key, value in result.items()
         }
         return np.asarray([indexed[i] for i in range(len(indexed))], dtype=np.float64)
 
-    def _evaluate_gradients(self, param_sets: npt.ArrayLike) -> npt.NDArray[np.float64]:
-        """The loss gradient at each parameter set, one row per set."""
+    def _build_prediction_preprocessor(self) -> CircuitPreprocessor:
+        """The routine measuring each ``(data, weights)`` row's prediction."""
+        parameters = self._data_symbols + self._weight_symbols
+        return CircuitPreprocessor(
+            "predict",
+            preprocess=lambda meta: replace(meta, parameters=parameters),
+            cache_key="predict",
+            binds_sample_rows=True,
+        )
+
+    def _build_expectation_rows(
+        self, param_sets: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """One ``(data, weights)`` row per sample of each parameter set, set by
+        set, when a feature batch is bound."""
         feature_batch = self.feature_batch
         if feature_batch is None:
-            return super()._evaluate_gradients(param_sets)
-        param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
-        n_sets, n_params = param_sets.shape
+            return super()._build_expectation_rows(param_sets)
         features = self._validate_feature_batch(feature_batch, len(self._data_symbols))
-        shifts, weights = self._grad_shift_rule
-        weight_rows = (
-            param_sets[:, None, :] + np.vstack([np.zeros(n_params), shifts])
-        ).reshape(-1, n_params)
-        values = self._measure_observable_for(
-            np.hstack(
-                [
-                    np.repeat(features, len(weight_rows), axis=0),
-                    np.tile(weight_rows, (len(features), 1)),
-                ]
-            )
-        ).reshape(len(features), n_sets, -1)
-        predictions = values[:, :, 0]
-        prediction_gradients = values[:, :, 1:] @ weights.T
-        stage = self._build_data_binding_stage()
-        return derivative(
-            np.vectorize(
-                lambda step, index, column: stage.compute_loss(
-                    predictions[:, int(index)]
-                    + step * prediction_gradients[:, int(index), int(column)],
-                    self.labels,
-                )
-            ),
-            np.zeros((n_sets, n_params)),
-            args=(np.arange(n_sets)[:, None], np.arange(n_params)[None, :]),
-            initial_step=1e-3,
-        ).df
+        return np.hstack(
+            [
+                np.tile(features, (len(param_sets), 1)),
+                np.repeat(param_sets, len(features), axis=0),
+            ]
+        )
 
-    def _evaluate_hessian(
-        self, center: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
-        """The loss Hessian at ``center``, from the gradients when a feature
-        batch is bound."""
+    def _build_expectation_preprocessor(self) -> CircuitPreprocessor:
+        """The prediction routine when a feature batch is bound."""
         if self.feature_batch is None:
-            return super()._evaluate_hessian(center)
-        return self._compute_hessian_from_gradients(center)
+            return super()._build_expectation_preprocessor()
+        return self._build_prediction_preprocessor()
+
+    def _build_loss_of_predictions(
+        self,
+    ) -> Callable[[npt.NDArray[np.float64]], float]:
+        """The data-binding loss as a function of each sample's prediction."""
+        stage, labels = self._build_data_binding_stage(), self.labels
+        return lambda predictions: stage.compute_loss(predictions, labels)
+
+    def _compute_sample_weight(self, n_samples: int) -> float | None:
+        """Each sample's weight in a mean or sum reduction, or ``None`` for a
+        custom reduction."""
+        if self.loss_reduction == "mean":
+            return 1.0 / n_samples
+        if self.loss_reduction == "sum":
+            return 1.0
+        return None
+
+    def _compute_loss_slopes(
+        self,
+        param_sets: npt.NDArray[np.float64],
+        expectations: Callable[[], npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """The loss's slope in each sample's prediction, one row per parameter
+        set, when a feature batch is bound.
+
+        A mean or sum reduction weighs each sample's own slope; a custom
+        reduction is differentiated numerically as a whole.
+        """
+        feature_batch, labels = self.feature_batch, self.labels
+        sample_loss = self._sample_loss_fn
+        if feature_batch is None:
+            return super()._compute_loss_slopes(param_sets, expectations)
+        predictions = expectations()
+        weight = self._compute_sample_weight(len(feature_batch))
+        if weight is None:
+            return self._compute_numeric_loss_slopes(
+                self._build_loss_of_predictions(), predictions
+            )
+        if labels is None or sample_loss is None:
+            return np.full_like(predictions, weight)
+        if sample_loss is resolve_sample_loss("squared_error"):
+            residuals = predictions - labels
+            if self._fit_bias:
+                residuals = residuals - residuals.mean(axis=1, keepdims=True)
+            return 2 * weight * residuals
+        return weight * self._compute_elementwise_slopes(
+            np.vectorize(sample_loss), predictions, (labels,)
+        )
+
+    def _compute_loss_curvature(
+        self,
+        center: npt.NDArray[np.float64],
+        expectations: Callable[[], npt.NDArray[np.float64]],
+        jacobian: Callable[[], npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """The loss's curvature in the predictions, carried through their
+        Jacobian, when a supervised loss or custom reduction is bound.
+
+        A mean or sum reduction curves only along each sample; a custom
+        reduction is differentiated numerically as a whole.
+        """
+        feature_batch, labels = self.feature_batch, self.labels
+        sample_loss = self._sample_loss_fn
+        if feature_batch is None:
+            return super()._compute_loss_curvature(center, expectations, jacobian)
+        weight = self._compute_sample_weight(len(feature_batch))
+        if weight is None:
+            return self._compute_numeric_loss_curvature(
+                self._build_loss_of_predictions(), expectations(), jacobian()
+            )
+        if labels is None or sample_loss is None:
+            return super()._compute_loss_curvature(center, expectations, jacobian)
+        directions = jacobian()
+        if sample_loss is resolve_sample_loss("squared_error"):
+            if self._fit_bias:
+                directions = directions - directions.mean(axis=1, keepdims=True)
+            return 2 * weight * directions @ directions.T
+        curvatures = self._compute_elementwise_curvatures(
+            np.vectorize(sample_loss), expectations(), (labels,)
+        )
+        return (directions * (weight * curvatures)) @ directions.T

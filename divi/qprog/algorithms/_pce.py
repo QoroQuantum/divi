@@ -6,7 +6,7 @@ import hashlib
 import itertools
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, is_dataclass, replace
 from functools import cached_property, lru_cache
 from typing import Any, Literal
@@ -689,34 +689,51 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         """The objective's slope in each variable's expectation, one row per
         parameter set.
 
-        Reuses the expectations of the latest cost evaluation where it covers a
-        set, which QNG runs just before asking for the gradient, and measures
-        the remaining sets in one batch.
-
         Raises:
             ValueError: If the objective scores samples, which have no gradient.
         """
         objective = self._differentiable_objective()
-        param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
-        keys = [_params_key(params) for params in param_sets]
-        expectations = {
-            key: self._cost_expectations[key]
-            for key in keys
-            if key in self._cost_expectations
-        }
-        missing = [index for index, key in enumerate(keys) if key not in expectations]
-        if missing:
-            measured = self._variable_expectations(param_sets[missing])
-            expectations.update(zip((keys[index] for index in missing), measured))
         return np.array(
-            [objective.gradient(expectations[key], self.problem) for key in keys]
+            [
+                objective.gradient(z, self.problem)
+                for z in self._gather_expectations(param_sets)
+            ]
         )
 
-    def _evaluate_hessian(
-        self, center: npt.NDArray[np.float64]
+    def _gather_expectations(
+        self, param_sets: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
-        """The objective's Hessian at ``center``, from its gradients."""
-        return self._compute_hessian_from_gradients(center)
+        """Each set's variable expectations.
+
+        Reuses the latest cost evaluation's where it covers a set, which QNG
+        runs just before asking for the gradient, and measures the remaining
+        sets in one batch, keeping them for the next request.
+        """
+        param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
+        keys = [_params_key(params) for params in param_sets]
+        missing = [
+            i for i, key in enumerate(keys) if key not in self._cost_expectations
+        ]
+        if missing:
+            measured = self._measure_expectations(param_sets[missing])
+            self._cost_expectations.update(
+                zip((keys[index] for index in missing), measured)
+            )
+        return np.array([self._cost_expectations[key] for key in keys])
+
+    def _compute_loss_curvature(
+        self,
+        center: npt.NDArray[np.float64],
+        expectations: Callable[[], npt.NDArray[np.float64]],
+        jacobian: Callable[[], npt.NDArray[np.float64]],
+    ) -> npt.NDArray[np.float64]:
+        """The objective's curvature in the variables' expectations, carried
+        through their Jacobian."""
+        objective = self._differentiable_objective()
+        (z,) = self._gather_expectations(center)
+        return self._compute_numeric_loss_curvature(
+            lambda values: objective.score(values, self.problem), z, jacobian()
+        )
 
     def _differentiable_objective(self) -> ExpectationObjective:
         """The objective, which must have a gradient.

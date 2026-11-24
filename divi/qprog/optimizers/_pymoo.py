@@ -9,6 +9,7 @@ from enum import Enum
 from numbers import Integral
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
+from warnings import warn
 
 import cma
 import dill
@@ -163,7 +164,8 @@ class PymooOptimizer(Optimizer):
         rng: np.random.Generator,
         space: ParameterSpace,
     ) -> Any:
-        """Initialise Pymoo strategy (DE) in a box centred on the first set."""
+        """Initialise Pymoo strategy (DE) in a box centred on the initial sets'
+        midpoint."""
         optimizer_obj = globals()[self.method.value](
             pop_size=self.population_size,
             parallelize=False,
@@ -174,7 +176,8 @@ class PymooOptimizer(Optimizer):
         # at runtime it's always the concrete SeedSequence.
         seed_seq = cast(np.random.SeedSequence, rng.bit_generator.seed_seq)
         seed = seed_seq.spawn(1)[0].generate_state(1)[0]
-        center = initial_params[0]
+        initial = initial_params[: self.n_param_sets]
+        center = (initial.min(axis=0) + initial.max(axis=0)) / 2
         xl = center - space.search_widths / 2
         xu = center + space.search_widths / 2
         problem = Problem(n_var=initial_params.shape[-1], n_obj=1, xl=xl, xu=xu)
@@ -188,7 +191,15 @@ class PymooOptimizer(Optimizer):
         optimizer_obj.start_time = time.time()
 
         # Wrap known periods into the box, then clip what wrapping cannot reach.
-        rows = np.clip(space.wrap(initial_params[: self.n_param_sets], center), xl, xu)
+        wrapped = space.wrap(initial, center)
+        rows = np.clip(wrapped, xl, xu)
+        clipped = np.flatnonzero(np.any(rows != wrapped, axis=0))
+        if clipped.size:
+            warn(
+                f"The initial parameter sets span more than the DE search box in "
+                f"parameters {clipped.tolist()}, so they were clipped to its edges.",
+                UserWarning,
+            )
         optimizer_obj.pop = Population.create(*[Individual(X=row) for row in rows])
 
         return optimizer_obj
@@ -286,7 +297,8 @@ class PymooOptimizer(Optimizer):
                 - rng (np.random.Generator): Random number generator.
                 - parameter_space (Callable[[], ParameterSpace], optional):
                   Returns the space whose search widths size the DE box, centred
-                  on the first initial set. Defaults to ``2 * pi`` widths.
+                  on the midpoint of the initial sets. Defaults to ``2 * pi``
+                  widths.
 
         Returns:
             OptimizeResult: Optimisation result with final parameters and cost value.

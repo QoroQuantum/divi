@@ -300,14 +300,26 @@ class PullbackMetricEstimator(MetricEstimator):
                 "values, but this program's cost reads raw counts. Use the "
                 "Fubini–Study estimator (FubiniStudyMetricEstimator) instead."
             )
-        if isinstance(program, DataBindingMixin) and program.sample_loss is not None:
-            raise ContractViolation(
-                "The pullback metric is invalid for a supervised data-binding "
-                "loss: the per-sample loss is a non-linear function of the "
-                "expectation values. No metric estimator supports this case — the "
-                "Fubini–Study estimators reject data-bound programs outright — so "
-                "use a non-metric optimizer such as SPSAOptimizer."
-            )
+        if isinstance(program, DataBindingMixin):
+            if program.sample_loss is not None:
+                raise ContractViolation(
+                    "The pullback metric is invalid for a supervised data-binding "
+                    "loss: the per-sample loss is a non-linear function of the "
+                    "expectation values. No metric estimator supports this case — "
+                    "the Fubini–Study estimators reject data-bound programs "
+                    "outright — so use a non-metric optimizer such as "
+                    "SPSAOptimizer."
+                )
+            if program.feature_batch is not None and program.loss_reduction not in (
+                "mean",
+                "sum",
+            ):
+                raise ContractViolation(
+                    "The pullback metric needs a data-binding loss_reduction of "
+                    "'mean' or 'sum'; a custom reduction is a non-linear function "
+                    "of the expectation values. Use a non-metric optimizer such as "
+                    "SPSAOptimizer."
+                )
         # Structural, so it belongs here rather than in bind(): a dry run only
         # catches ContractViolation from check_compatible.
         if not program.cost_circuit.observable:
