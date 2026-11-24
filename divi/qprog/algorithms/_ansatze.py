@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from functools import cache
 from itertools import combinations, pairwise, product
 from numbers import Integral
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from warnings import warn
 
 import numpy as np
@@ -73,25 +73,6 @@ class ElectronCounts:
     n_electrons: int
     n_alpha: int | None = None
     n_beta: int | None = None
-
-
-def _require_reference(
-    reference: ElectronCounts | None, ansatz_name: str
-) -> ElectronCounts:
-    """Reject a missing reference by name.
-
-    A chemistry ansatz cannot prepare its reference state or enumerate
-    excitations without electron counts, so reject the missing setting at the
-    boundary that can name the ansatz which needs it.
-    """
-    if reference is None:
-        raise ValueError(
-            f"{ansatz_name} requires n_electrons: it builds excitations from a "
-            "reference state, which needs the electron count. Set n_electrons "
-            "on the program's HamiltonianProblem (MolecularProblem "
-            "supplies it automatically)."
-        )
-    return reference
 
 
 def _require_balanced_spin(reference: ElectronCounts, ansatz_name: str) -> None:
@@ -178,11 +159,55 @@ class Ansatz(ABC):
         raise NotImplementedError
 
 
+class ReferenceStateAnsatz(Ansatz):
+    """An ansatz whose circuit first prepares the reference determinant of the
+    electron counts it is given, then acts on it."""
+
+    #: Whether all-zero parameters leave the reference state unchanged and it is
+    #: not a stationary point, so optimisation can start there.
+    starts_at_reference_state: ClassVar[bool] = False
+
+    def _require_reference(self, reference: ElectronCounts | None) -> ElectronCounts:
+        """``reference``, or a ``ValueError`` naming this ansatz when it is missing.
+
+        The ansatz cannot prepare its reference state or enumerate excitations
+        without electron counts.
+        """
+        if reference is None:
+            raise ValueError(
+                f"{self.name} requires n_electrons: it builds excitations from a "
+                "reference state, which needs the electron count. Set n_electrons "
+                "on the program's HamiltonianProblem (MolecularProblem "
+                "supplies it automatically)."
+            )
+        return reference
+
+    def _build_reference_state(
+        self, n_qubits: int, reference: ElectronCounts
+    ) -> QuantumCircuit:
+        """The circuit preparing the reference determinant: alpha electrons on
+        even qubits, beta on odd."""
+        _validate_reference_counts(
+            reference.n_electrons, n_qubits, require_virtual=False
+        )
+        _, (n_alpha, n_beta) = _resolve_spin_counts(
+            n_qubits,
+            reference.n_electrons,
+            reference.n_alpha,
+            reference.n_beta,
+            self.name,
+        )
+        qc = QuantumCircuit(n_qubits)
+        for qubit in [*range(0, 2 * n_alpha, 2), *range(1, 2 * n_beta, 2)]:
+            qc.x(qubit)
+        return qc
+
+
 class AmplitudeSeedError(ValueError):
     """The coupled-cluster amplitudes cannot be mapped onto the ansatz's parameters."""
 
 
-class AmplitudeSeededAnsatz(Ansatz):
+class AmplitudeSeededAnsatz(ReferenceStateAnsatz):
     """An ansatz whose parameters correspond to coupled-cluster amplitudes, so a
     CCSD solution can seed them."""
 
@@ -646,15 +671,14 @@ def _resolve_spin_counts(
 @cache
 def _uccsd_template(
     n_spatial: int, n_particles: tuple[int, int]
-) -> tuple[QuantumCircuit, QuantumCircuit, tuple[tuple[tuple[int, ...], ...], ...]]:
-    """``(reference_state, ansatz, excitations)`` from qiskit-nature, in
-    interleaved spin order.
+) -> tuple[QuantumCircuit, tuple[tuple[tuple[int, ...], ...], ...]]:
+    """``(ansatz, excitations)`` from qiskit-nature, in interleaved spin order.
 
-    Both circuits are built eagerly and copied into plain ``QuantumCircuit``\\ s:
+    The circuit is built eagerly and copied into a plain ``QuantumCircuit``:
     qiskit-nature's ``BlueprintCircuit`` marks itself built before it finishes
     appending gates, so one left unbuilt can be read half-constructed from
-    another worker thread. The results are cached and shared, so callers must
-    compose or bind without mutating them.
+    another worker thread. The result is cached and shared, so callers must
+    compose or bind without mutating it.
     """
     mappers = import_optional(
         "qiskit_nature.second_q.mappers", extra="chem", capability="UCCSDAnsatz"
@@ -674,10 +698,7 @@ def _uccsd_template(
 
     ansatz = QuantumCircuit(2 * n_spatial)
     ansatz.compose(blueprint, inplace=True)
-
-    reference = QuantumCircuit(2 * n_spatial)
-    reference.compose(library.HartreeFock(n_spatial, n_particles, mapper), inplace=True)
-    return reference, ansatz, excitations
+    return ansatz, excitations
 
 
 def uccsd_excitations(
@@ -687,7 +708,7 @@ def uccsd_excitations(
 
     Positionally aligned with the ansatz's parameter vector.
     """
-    return _uccsd_template(n_spatial, n_particles)[2]
+    return _uccsd_template(n_spatial, n_particles)[1]
 
 
 class UCCSDAnsatz(AmplitudeSeededAnsatz):
@@ -705,6 +726,8 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
     ``n_alpha = n_beta = n_electrons // 2`` is used.
     """
 
+    starts_at_reference_state = True
+
     def n_params_per_layer(
         self, n_qubits: int, reference: ElectronCounts | None = None
     ) -> int:
@@ -712,7 +735,7 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
 
         Requires ``reference``.
         """
-        counts = _require_reference(reference, "UCCSDAnsatz")
+        counts = self._require_reference(reference)
         n_spatial, n_particles = _resolve_spin_counts(
             n_qubits,
             counts.n_electrons,
@@ -720,7 +743,7 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
             counts.n_beta,
             "UCCSDAnsatz",
         )
-        _, template, _ = _uccsd_template(n_spatial, n_particles)
+        template, _ = _uccsd_template(n_spatial, n_particles)
         return _require_trainable_params(template.num_parameters, UCCSDAnsatz.__name__)
 
     def parameter_frequencies(
@@ -737,7 +760,7 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
         n_layers: int,
         reference: ElectronCounts | None = None,
     ) -> QuantumCircuit:
-        counts = _require_reference(reference, "UCCSDAnsatz")
+        counts = self._require_reference(reference)
         n_spatial, n_particles = _resolve_spin_counts(
             n_qubits,
             counts.n_electrons,
@@ -745,11 +768,10 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
             counts.n_beta,
             "UCCSDAnsatz",
         )
-        hartree_fock, template, _ = _uccsd_template(n_spatial, n_particles)
+        template, _ = _uccsd_template(n_spatial, n_particles)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
-        qc = QuantumCircuit(n_qubits)
-        qc.compose(hartree_fock, inplace=True)
+        qc = self._build_reference_state(n_qubits, counts)
         for layer in params:
             qc.compose(
                 template.assign_parameters(list(layer), inplace=False), inplace=True
@@ -770,7 +792,7 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
         orbitals before virtual ones, which are read back through the blocked
         register (alpha orbitals first, then beta).
         """
-        counts = _require_reference(reference, "UCCSDAnsatz")
+        counts = self._require_reference(reference)
         n_spatial, n_particles = _resolve_spin_counts(
             n_qubits,
             counts.n_electrons,
@@ -806,7 +828,7 @@ class UCCSDAnsatz(AmplitudeSeededAnsatz):
         return np.array(amplitudes)
 
 
-class HartreeFockAnsatz(Ansatz):
+class HartreeFockAnsatz(ReferenceStateAnsatz):
     """
     Hartree-Fock-based ansatz for quantum chemistry.
 
@@ -817,12 +839,14 @@ class HartreeFockAnsatz(Ansatz):
     ``n_alpha`` and ``n_beta`` raise ``ValueError``.
     """
 
+    starts_at_reference_state = True
+
     def n_params_per_layer(
         self, n_qubits: int, reference: ElectronCounts | None = None
     ) -> int:
         """``len(singles) + len(doubles)`` spin-conserving excitations out of the
         reference set by ``reference`` (required)."""
-        counts = _require_reference(reference, "HartreeFockAnsatz")
+        counts = self._require_reference(reference)
         singles, doubles = _spin_conserving_excitations(counts.n_electrons, n_qubits)
         _require_balanced_spin(counts, "HartreeFockAnsatz")
         n_params = len(singles) + len(doubles)
@@ -842,15 +866,12 @@ class HartreeFockAnsatz(Ansatz):
         n_layers: int,
         reference: ElectronCounts | None = None,
     ) -> QuantumCircuit:
-        counts = _require_reference(reference, "HartreeFockAnsatz")
+        counts = self._require_reference(reference)
         singles, doubles = _spin_conserving_excitations(counts.n_electrons, n_qubits)
         _require_balanced_spin(counts, "HartreeFockAnsatz")
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
-        qc = QuantumCircuit(n_qubits)
-        for qubit, occupied in enumerate(_hf_occupation(counts.n_electrons, n_qubits)):
-            if occupied:
-                qc.x(qubit)
+        qc = self._build_reference_state(n_qubits, counts)
 
         # Amplitudes are ordered singles-then-doubles, but the doubles are
         # applied first.
@@ -862,7 +883,72 @@ class HartreeFockAnsatz(Ansatz):
         return qc
 
 
-class QCCAnsatz(Ansatz):
+class UpCCDAnsatz(AmplitudeSeededAnsatz):
+    """Unitary pair coupled-cluster doubles (UpCCD) ansatz.
+
+    Prepares the Hartree-Fock reference, then moves electron pairs: for every
+    occupied spatial orbital ``i`` and virtual ``a``, a double excitation takes
+    both spins of ``i`` to ``a``. Every orbital stays doubly occupied or empty,
+    so the state spans the seniority-zero sector. The reference is closed-shell:
+    an odd ``n_electrons`` or unequal ``n_alpha`` and ``n_beta`` raise
+    ``ValueError``.
+    """
+
+    starts_at_reference_state = True
+
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
+        """One parameter per occupied-virtual pair of spatial orbitals."""
+        n_params = len(_paired_doubles(n_qubits, self._require_reference(reference)))
+        return _require_trainable_params(n_params, UpCCDAnsatz.__name__)
+
+    def parameter_frequencies(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> Sequence[tuple[float, int]]:
+        """``{1/2, 1}`` per pair: a ``DoubleExcitation`` has generator
+        eigenvalues ``{0, 0, +-1/2}``."""
+        return [(0.5, 2)] * self.n_params_per_layer(n_qubits, reference)
+
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
+        counts = self._require_reference(reference)
+        pairs = _paired_doubles(n_qubits, counts)
+        params = np.asarray(params, dtype=object).reshape(n_layers, -1)
+
+        qc = self._build_reference_state(n_qubits, counts)
+        for layer_params in params:
+            for theta, (i, a) in zip(layer_params, pairs):
+                _emit_double_excitation(qc, theta, 2 * i, 2 * i + 1, 2 * a, 2 * a + 1)
+        return qc
+
+    def params_from_amplitudes(
+        self,
+        t1: tuple[np.ndarray, np.ndarray],
+        t2: tuple[np.ndarray, np.ndarray, np.ndarray],
+        n_qubits: int,
+        reference: ElectronCounts,
+    ) -> np.ndarray:
+        """Each pair takes ``-2 arctan`` of its opposite-spin ``t2`` amplitude,
+        which reproduces the coupled-cluster pair state of a lone pair."""
+        counts = self._require_reference(reference)
+        pairs = _paired_doubles(n_qubits, counts)
+        n_occupied = counts.n_electrons // 2
+        t2_mixed = t2[1]
+        return np.array(
+            [
+                -2 * np.arctan(t2_mixed[i, i, a - n_occupied, a - n_occupied])
+                for i, a in pairs
+            ]
+        )
+
+
+class QCCAnsatz(ReferenceStateAnsatz):
     """Qubit Coupled Cluster ansatz.
 
     Hartree-Fock ``X`` flips on occupied orbitals, then per-layer single-qubit
@@ -885,14 +971,8 @@ class QCCAnsatz(Ansatz):
         n_layers: int,
         reference: ElectronCounts | None = None,
     ) -> QuantumCircuit:
-        counts = _require_reference(reference, "QCCAnsatz")
-        occupation = _hf_occupation(counts.n_electrons, n_qubits)
+        qc = self._build_reference_state(n_qubits, self._require_reference(reference))
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
-
-        qc = QuantumCircuit(n_qubits)
-        for qubit, occupied in enumerate(occupation):
-            if occupied:
-                qc.x(qubit)
 
         n_singles = n_qubits
         for layer_params in params:
@@ -1318,7 +1398,7 @@ class LUCJAnsatz(AmplitudeSeededAnsatz):
                 ``n_alpha``/``n_beta``, or if ``params`` is shorter than
                 ``n_layers * n_params_per_layer(n_qubits)``.
         """
-        counts = _require_reference(reference, "LUCJAnsatz")
+        counts = self._require_reference(reference)
         if counts.n_electrons > n_qubits:
             raise ValueError(
                 f"n_electrons ({counts.n_electrons}) cannot exceed n_qubits "
@@ -1341,11 +1421,7 @@ class LUCJAnsatz(AmplitudeSeededAnsatz):
                 f"({n_layers} layers x {per_layer} per layer); got {flat.size}."
             )
 
-        circuit = QuantumCircuit(n_qubits)
-        for p in range(n_alpha):
-            circuit.x(2 * p)
-        for p in range(n_beta):
-            circuit.x(2 * p + 1)
+        circuit = self._build_reference_state(n_qubits, counts)
 
         n_sectors, same_pairs, opposite_pairs, depth = self._layout(n_orb)
         sandwiched_size = n_rotation_params(n_orb, orbital_phases=False, depth=depth)
@@ -1543,12 +1619,6 @@ def _validate_reference_counts(
         )
 
 
-def _hf_occupation(n_electrons: int, n_qubits: int) -> tuple[int, ...]:
-    """Occupation-number vector of the Hartree-Fock determinant."""
-    _validate_reference_counts(n_electrons, n_qubits, require_virtual=False)
-    return tuple(1 if i < n_electrons else 0 for i in range(n_qubits))
-
-
 def _spin_conserving_excitations(
     n_electrons: int, n_qubits: int
 ) -> tuple[list[tuple[int, int]], list[tuple[int, int, int, int]]]:
@@ -1571,6 +1641,15 @@ def _spin_conserving_excitations(
         if spin_up[p] + spin_up[q] == spin_up[r] + spin_up[s]
     ]
     return singles, doubles
+
+
+def _paired_doubles(n_qubits: int, reference: ElectronCounts) -> list[tuple[int, int]]:
+    """Occupied-to-virtual spatial-orbital pairs of a closed-shell reference,
+    occupied orbital first."""
+    _validate_reference_counts(reference.n_electrons, n_qubits, require_virtual=True)
+    _require_balanced_spin(reference, "UpCCDAnsatz")
+    n_occupied = reference.n_electrons // 2
+    return [(i, a) for i in range(n_occupied) for a in range(n_occupied, n_qubits // 2)]
 
 
 def _emit_single_excitation(qc: QuantumCircuit, theta, w0: int, w1: int) -> None:

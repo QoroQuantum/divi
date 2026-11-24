@@ -23,6 +23,7 @@ from divi.qprog.algorithms import (
     QAOAAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
+    UpCCDAnsatz,
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import SuperpositionState, ZerosState
@@ -144,10 +145,11 @@ def test_vqe_basic_initialization(
     [
         (HartreeFockAnsatz(), True),
         pytest.param(UCCSDAnsatz(), True, marks=needs_qiskit_nature),
+        (UpCCDAnsatz(), True),
         (QCCAnsatz(), False),
         (GenericLayerAnsatz([RYGate, RZGate]), False),
     ],
-    ids=["HartreeFock", "UCCSD", "QCC", "Generic-RYRZ"],
+    ids=["HartreeFock", "UCCSD", "UpCCD", "QCC", "Generic-RYRZ"],
 )
 def test_excitation_ansatze_start_at_the_hartree_fock_point(
     dummy_simulator,

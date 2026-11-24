@@ -95,7 +95,7 @@ def test_fragment_vqe_samples_its_own_problem_in_its_own_basis(
     np.testing.assert_array_equal(program.orbital_rotation, np.eye(2))
 
 
-_FALLBACK = "Falling back to the optimiser's own initialisation."
+_FALLBACK = "Falling back to VQE's default start."
 
 
 @pytest.mark.parametrize(

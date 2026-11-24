@@ -44,8 +44,7 @@ _SEED_CHECK_MAX_QUBITS = 20
 class _FragmentVQE(VQE):
     """A fragment VQE whose fresh parameters can be supplied by the workflow.
 
-    An explicit ``seed_params`` vector replaces the optimiser's own random
-    initialisation.
+    An explicit ``seed_params`` vector replaces VQE's default start.
 
     Raises:
         ValueError: If ``seed_params`` is given and its length does not match
@@ -118,7 +117,7 @@ def _coupled_cluster(
     except _CC_FAILURES as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimiser's own initialisation.",
+            "Falling back to VQE's default start.",
             UserWarning,
             stacklevel=stacklevel,
         )
@@ -203,8 +202,7 @@ def _compute_ccsd_seed_params(
 
     The ansatz maps the amplitudes onto its own parameters
     (:meth:`~divi.qprog.algorithms.AmplitudeSeededAnsatz.params_from_amplitudes`).
-    Any ansatz without that capability warns and uses the optimiser's own
-    initialisation.
+    Any ansatz without that capability warns and uses VQE's default start.
 
     CCSD runs in the fragment's own orbitals on the ansatz's reference
     determinant, not on SCF canonical orbitals, which would permute the
@@ -234,7 +232,7 @@ def _compute_ccsd_seed_params(
         warn(
             f"CCSD seeding skipped for fragment {spec.orbitals}: no CCSD "
             f"correspondence is defined for {type(ansatz).__name__}. Falling "
-            "back to the optimiser's own initialisation.",
+            "back to VQE's default start.",
             UserWarning,
             stacklevel=2,
         )
@@ -269,7 +267,7 @@ def _compute_ccsd_seed_params(
     except AmplitudeSeedError as error:
         warn(
             f"CCSD seeding skipped for fragment {spec.orbitals}: {error} "
-            "Falling back to the optimiser's own initialisation.",
+            "Falling back to VQE's default start.",
             UserWarning,
             stacklevel=2,
         )
@@ -347,7 +345,7 @@ def build_fragment_vqe(
                     f"{fragment.spec.orbitals}: the seed gains {gain:.3e} "
                     "Hartree over the reference determinant, below the "
                     f"{_SEED_ACCEPTANCE_MARGIN:g} required. Falling back to "
-                    "the optimiser's own initialisation.",
+                    "VQE's default start.",
                     UserWarning,
                     stacklevel=2,
                 )

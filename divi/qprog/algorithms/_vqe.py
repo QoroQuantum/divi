@@ -30,9 +30,7 @@ from ._ansatze import (
     Ansatz,
     ElectronCounts,
     HartreeFockAnsatz,
-    LUCJAnsatz,
-    QCCAnsatz,
-    UCCSDAnsatz,
+    ReferenceStateAnsatz,
 )
 
 
@@ -116,7 +114,7 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         self.initial_state = initial_state
 
         if not isinstance(self.initial_state, ZerosState) and isinstance(
-            self.ansatz, (HartreeFockAnsatz, LUCJAnsatz, QCCAnsatz, UCCSDAnsatz)
+            self.ansatz, ReferenceStateAnsatz
         ):
             warn(
                 f"initial_state={self.initial_state!r} supplied with a chemistry "
@@ -142,15 +140,16 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         )
 
     def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
-        """Start excitation ansätze at the Hartree–Fock reference.
+        """Start at the reference state when the ansatz can, else at random.
 
-        All-zero amplitudes make every excitation gate the identity, so
-        :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
-        :class:`~divi.qprog.algorithms.UCCSDAnsatz` start from exactly the
-        Hartree–Fock state; further sets of a population start near it.
-        Other ansätze start at random.
+        For an ansatz whose ``starts_at_reference_state`` is set, all-zero
+        parameters prepare exactly its reference state; further sets of a
+        population start near it.
         """
-        if isinstance(self.ansatz, (HartreeFockAnsatz, UCCSDAnsatz)):
+        if (
+            isinstance(self.ansatz, ReferenceStateAnsatz)
+            and self.ansatz.starts_at_reference_state
+        ):
             return self.parameter_space.build_population(
                 np.zeros(self.n_params), self.optimizer.n_param_sets, self._rng
             )

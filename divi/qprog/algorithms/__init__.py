@@ -15,7 +15,9 @@ from ._ansatze import (
     LUCJAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
+    ReferenceStateAnsatz,
     UCCSDAnsatz,
+    UpCCDAnsatz,
 )
 from ._custom_vqa import CustomVQA
 from ._feature_maps import AngleEmbedding, FeatureMap, ZZFeatureMap
@@ -68,10 +70,12 @@ __all__ = [
     "QAOAAnsatz",
     "QCCAnsatz",
     "QNN",
+    "ReferenceStateAnsatz",
     "SampleObjective",
     "SoftObjective",
     "TimeEvolution",
     "UCCSDAnsatz",
+    "UpCCDAnsatz",
     "VQE",
     "VQEFCISolver",
     "ZZFeatureMap",

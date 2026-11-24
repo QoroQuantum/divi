@@ -38,7 +38,9 @@ from divi.qprog.algorithms import (
     LUCJAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
+    ReferenceStateAnsatz,
     UCCSDAnsatz,
+    UpCCDAnsatz,
 )
 from divi.qprog.algorithms._ansatze import (
     _emit_double_excitation,
@@ -46,7 +48,6 @@ from divi.qprog.algorithms._ansatze import (
     _emit_rotation_block,
     _emit_single_excitation,
     _emit_two_qubit_pauli_rot,
-    _hf_occupation,
     _layered,
     _resolve_spin_counts,
     _rotation_one_particle,
@@ -57,8 +58,8 @@ from divi.qprog.algorithms._ansatze import (
     n_rotation_params,
     uccsd_excitations,
 )
-from divi.qprog.problems import HamiltonianProblem
-from tests._helpers import exact_match, same_unitary, unitary
+from divi.qprog.problems import HamiltonianProblem, MolecularProblem
+from tests._helpers import exact_match, run_mean_field, same_unitary, unitary
 from tests.qprog.algorithms._helpers import (
     gate_names,
     gate_qubits,
@@ -95,9 +96,11 @@ def _missing_electrons_message(ansatz_name: str) -> str:
     )
 
 
-def _closed_shell_message(n_electrons, n_alpha, n_beta) -> str:
+def _closed_shell_message(
+    n_electrons, n_alpha, n_beta, ansatz="HartreeFockAnsatz"
+) -> str:
     return exact_match(
-        "HartreeFockAnsatz prepares a closed-shell reference, so it cannot "
+        f"{ansatz} prepares a closed-shell reference, so it cannot "
         f"honour n_electrons={n_electrons}, n_alpha={n_alpha}, n_beta={n_beta}. "
         "Use UCCSDAnsatz or LUCJAnsatz for a spin-polarised reference."
     )
@@ -519,6 +522,108 @@ class _SeededWithoutHook(AmplitudeSeededAnsatz):
         return QuantumCircuit(n_qubits)
 
 
+_REFERENCE_STATE_ANSATZE = [
+    pytest.param(HartreeFockAnsatz(), True, id="hartree-fock"),
+    pytest.param(UCCSDAnsatz(), True, id="uccsd", marks=needs_qiskit_nature),
+    pytest.param(UpCCDAnsatz(), True, id="upccd"),
+    pytest.param(LUCJAnsatz(), False, id="lucj"),
+    pytest.param(QCCAnsatz(), False, id="qcc"),
+]
+
+
+class TestReferenceStateAnsatz:
+    """Ansätze that prepare their own reference state, and those of them that
+    can start optimising there."""
+
+    @pytest.mark.parametrize(
+        "ansatz",
+        [
+            GenericLayerAnsatz([RYGate, RZGate]),
+            BrickworkAnsatz(),
+            QAOAAnsatz(),
+        ],
+        ids=["generic", "brickwork", "qaoa"],
+    )
+    def test_ansatze_without_a_reference_are_not_reference_state_ansatze(self, ansatz):
+        assert not isinstance(ansatz, ReferenceStateAnsatz)
+
+    @pytest.mark.parametrize("ansatz, starts_at_reference", _REFERENCE_STATE_ANSATZE)
+    def test_zero_parameters_prepare_the_reference_state(
+        self, default_test_simulator, ansatz, starts_at_reference
+    ):
+        n_qubits, reference = 8, ElectronCounts(4)
+        n_params = ansatz.n_params_per_layer(n_qubits, reference)
+
+        state = default_test_simulator.statevector(
+            ansatz.build(np.zeros(n_params), n_qubits, 1, reference)
+        )
+
+        assert abs(state[0b00001111]) ** 2 == pytest.approx(1.0, abs=1e-12)
+
+    @pytest.mark.parametrize(
+        "ansatz",
+        [
+            pytest.param(UCCSDAnsatz(), id="uccsd", marks=needs_qiskit_nature),
+            pytest.param(LUCJAnsatz(), id="lucj"),
+            pytest.param(QCCAnsatz(), id="qcc"),
+        ],
+    )
+    def test_zero_parameters_prepare_a_spin_imbalanced_reference_state(
+        self, default_test_simulator, ansatz
+    ):
+        """Alpha electrons sit on even qubits and beta on odd: one alpha and two
+        beta electrons fill qubits 0, 1 and 3."""
+        n_qubits, reference = 6, ElectronCounts(3, 1, 2)
+        n_params = ansatz.n_params_per_layer(n_qubits, reference)
+
+        state = default_test_simulator.statevector(
+            ansatz.build(np.zeros(n_params), n_qubits, 1, reference)
+        )
+
+        assert abs(state[0b001011]) ** 2 == pytest.approx(1.0, abs=1e-12)
+
+    @pytest.mark.parametrize("ansatz, starts_at_reference", _REFERENCE_STATE_ANSATZE)
+    def test_missing_electron_count_is_named(self, ansatz, starts_at_reference):
+        message = exact_match(_missing_electrons_message(ansatz.name))
+
+        with pytest.raises(ValueError, match=message):
+            ansatz.build(np.zeros(13), 4, 1)
+
+    @pytest.mark.parametrize(
+        "ansatz",
+        [
+            pytest.param(UCCSDAnsatz(), id="uccsd", marks=needs_qiskit_nature),
+            pytest.param(HartreeFockAnsatz(), id="hartree-fock"),
+            pytest.param(UpCCDAnsatz(), id="upccd"),
+        ],
+    )
+    def test_parameter_count_needs_the_electron_count(self, ansatz):
+        with pytest.raises(
+            ValueError, match=exact_match(_missing_electrons_message(ansatz.name))
+        ):
+            ansatz.n_params_per_layer(n_qubits=4)
+
+    @pytest.mark.parametrize("ansatz, starts_at_reference", _REFERENCE_STATE_ANSATZE)
+    def test_only_ansatze_that_move_off_the_reference_start_there(
+        self, default_test_simulator, default_optimizer, ansatz, starts_at_reference
+    ):
+        """An ansatz whose energy gradient vanishes at the reference state would
+        never leave it, so only the others start there."""
+        vqe = VQE(
+            MolecularProblem.from_casci(
+                run_mean_field("H 0 0 0; H 0 0 0.9; H 0 0 1.8; H 0 0 2.7"), 4, 4
+            ),
+            ansatz=ansatz,
+            backend=default_test_simulator,
+            optimizer=default_optimizer,
+        )
+
+        (gradient,) = vqe._evaluate_gradients(np.zeros(vqe.n_params))
+
+        assert ansatz.starts_at_reference_state is starts_at_reference
+        assert bool(np.linalg.norm(gradient) > 1e-3) is starts_at_reference
+
+
 class TestAmplitudeSeededAnsatz:
     """The capability of mapping coupled-cluster amplitudes onto parameters."""
 
@@ -527,6 +632,7 @@ class TestAmplitudeSeededAnsatz:
         [
             pytest.param(UCCSDAnsatz(), True, id="uccsd"),
             pytest.param(LUCJAnsatz(), True, id="lucj"),
+            pytest.param(UpCCDAnsatz(), True, id="upccd"),
             pytest.param(HartreeFockAnsatz(), False, id="hartree-fock"),
             pytest.param(QCCAnsatz(), False, id="qcc"),
             pytest.param(QAOAAnsatz(), False, id="qaoa"),
@@ -580,41 +686,14 @@ class TestAnsatz:
 
 # --- Test Chemistry Ansaetze ---
 @pytest.mark.parametrize(
-    "call",
-    [
-        pytest.param(
-            lambda a: a.n_params_per_layer(n_qubits=4), id="n_params_per_layer"
-        ),
-        pytest.param(lambda a: a.build([0.1, 0.2, 0.3], 4, 1), id="build"),
-    ],
-)
-@pytest.mark.parametrize("ansatz", [UCCSDAnsatz(), HartreeFockAnsatz()], ids=type)
-def test_chemistry_ansatz_names_a_missing_electron_count(ansatz, call):
-    """A chemistry ansatz builds excitations from a reference state, so it cannot do
-    anything without ``n_electrons``. The boundary names both the missing setting
-    and the ansatz that needs it."""
-    message = _missing_electrons_message(ansatz.name)
-    with pytest.raises(ValueError, match=exact_match(message)):
-        call(ansatz)
-
-
-@pytest.mark.parametrize("ansatz", [QCCAnsatz(), LUCJAnsatz()], ids=type)
-def test_build_only_ansatz_names_a_missing_electron_count(ansatz):
-    """These derive their parameter count from the register alone, so only
-    ``build`` needs the electron count."""
-    message = _missing_electrons_message(ansatz.name)
-    with pytest.raises(ValueError, match=exact_match(message)):
-        ansatz.build([0.1] * 13, 4, 1)
-
-
-@pytest.mark.parametrize(
     "ansatz, call",
     [
         (UCCSDAnsatz(), lambda a: a.n_params_per_layer(4, ElectronCounts(3))),
         (UCCSDAnsatz(), lambda a: a.build([0.1] * 3, 4, 1, ElectronCounts(3))),
         (LUCJAnsatz(), lambda a: a.build([0.1] * 8, 4, 1, ElectronCounts(3))),
+        (QCCAnsatz(), lambda a: a.build([0.1] * 13, 4, 1, ElectronCounts(3))),
     ],
-    ids=["uccsd-n_params_per_layer", "uccsd-build", "lucj-build"],
+    ids=["uccsd-n_params_per_layer", "uccsd-build", "lucj-build", "qcc-build"],
 )
 def test_spin_resolution_errors_name_the_ansatz(ansatz, call):
     message = (
@@ -917,8 +996,7 @@ class TestHartreeFockAnsatz:
                 )
 
         reference = np.zeros(2**n_qubits)
-        occupation = _hf_occupation(n_electrons, n_qubits)
-        reference[int("".join(map(str, occupation)), 2)] = 1.0
+        reference[int("1" * n_electrons + "0" * (n_qubits - n_electrons), 2)] = 1.0
 
         qc = HartreeFockAnsatz().build(
             params, n_qubits, n_layers, ElectronCounts(n_electrons)
@@ -928,11 +1006,6 @@ class TestHartreeFockAnsatz:
         )
 
         assert np.allclose(actual, expected @ reference)
-
-    def test_hf_occupation_fills_the_lowest_spin_orbitals(self):
-        assert _hf_occupation(1, 4) == (1, 0, 0, 0)
-        assert _hf_occupation(2, 6) == (1, 1, 0, 0, 0, 0)
-        assert _hf_occupation(4, 6) == (1, 1, 1, 1, 0, 0)
 
     @pytest.mark.parametrize(
         "n_electrons, n_qubits, expected_singles, expected_doubles",
@@ -996,6 +1069,108 @@ class TestHartreeFockAnsatz:
         names = gate_names(qc)
         assert set(names) <= {"h", "ry", "cx"}
         assert names.count("cx") == expected_cx
+
+
+class TestUpCCDAnsatz:
+    """Tests for the UpCCDAnsatz class."""
+
+    @pytest.mark.parametrize(
+        "n_qubits, n_electrons, expected", [(4, 2, 1), (8, 4, 4), (8, 2, 3)]
+    )
+    def test_one_parameter_per_occupied_virtual_orbital_pair(
+        self, n_qubits, n_electrons, expected
+    ):
+        reference = ElectronCounts(n_electrons)
+        assert UpCCDAnsatz().n_params_per_layer(n_qubits, reference) == expected
+
+    @_needs_openfermion
+    @pytest.mark.parametrize("n_layers", [1, 2])
+    def test_paired_doubles_match_the_fermionic_generator(
+        self, default_test_simulator, n_layers
+    ):
+        """Each pair, occupied orbital first, applies ``exp(-theta/2 (G - G†))``
+        with ``G = a†_{aα} a†_{aβ} a_{iβ} a_{iα}``."""
+        openfermion = pytest.importorskip("openfermion")
+        n_qubits, reference = 8, ElectronCounts(4)
+        ansatz = UpCCDAnsatz()
+        params = np.random.default_rng(3).uniform(
+            -1.0, 1.0, n_layers * ansatz.n_params_per_layer(n_qubits, reference)
+        )
+        expected = np.zeros(2**n_qubits)
+        expected[int("11110000", 2)] = 1.0
+        for layer in params.reshape(n_layers, -1):
+            for theta, (i, a) in zip(layer, [(0, 2), (0, 3), (1, 2), (1, 3)]):
+                pair = openfermion.FermionOperator(
+                    ((2 * a, 1), (2 * a + 1, 1), (2 * i + 1, 0), (2 * i, 0))
+                )
+                generator = openfermion.get_sparse_operator(
+                    pair - openfermion.hermitian_conjugated(pair), n_qubits=n_qubits
+                ).toarray()
+                expected = expm(-theta / 2 * generator) @ expected
+
+        circuit = ansatz.build(params, n_qubits, n_layers, reference)
+        actual = np.asarray(default_test_simulator.statevector(circuit))[
+            _bit_reversal(n_qubits)
+        ]
+
+        assert abs(np.vdot(expected, actual)) ** 2 == pytest.approx(1.0, abs=1e-12)
+
+    def test_every_orbital_stays_doubly_occupied_or_empty(self, default_test_simulator):
+        n_qubits, reference = 8, ElectronCounts(4)
+        ansatz = UpCCDAnsatz()
+        params = np.random.default_rng(5).uniform(
+            -1.0, 1.0, ansatz.n_params_per_layer(n_qubits, reference)
+        )
+        probabilities = (
+            np.abs(
+                default_test_simulator.statevector(
+                    ansatz.build(params, n_qubits, 1, reference)
+                )
+            )
+            ** 2
+        )
+
+        broken_pairs = [
+            probability
+            for index, probability in enumerate(probabilities)
+            if any(
+                (index >> 2 * orbital & 1) != (index >> 2 * orbital + 1 & 1)
+                for orbital in range(n_qubits // 2)
+            )
+        ]
+        assert sum(broken_pairs) == pytest.approx(0.0, abs=1e-12)
+
+    def test_ccsd_seed_reproduces_fci_for_two_electrons(
+        self, default_test_simulator, default_optimizer
+    ):
+        cc = pytest.importorskip("pyscf.cc")
+        mcscf = pytest.importorskip("pyscf.mcscf")
+        mean_field = run_mean_field("H 0 0 0; H 0 0 0.74")
+        coupled_cluster = cc.CCSD(mean_field).run(verbose=0)
+        same_spin = np.zeros_like(coupled_cluster.t2)
+        vqe = VQE(
+            MolecularProblem.from_casci(mean_field, 2, 2),
+            ansatz=UpCCDAnsatz(),
+            backend=default_test_simulator,
+            optimizer=default_optimizer,
+        )
+
+        seed = vqe.ansatz.params_from_amplitudes(
+            (coupled_cluster.t1, coupled_cluster.t1),
+            (same_spin, coupled_cluster.t2, same_spin),
+            4,
+            ElectronCounts(2),
+        )
+
+        (energy,) = vqe._evaluate_cost_param_sets(seed[None]).values()
+        fci = mcscf.CASCI(mean_field, 2, 2).run(verbose=0).e_tot
+        assert energy == pytest.approx(fci, abs=1e-8)
+
+    def test_rejects_a_spin_polarised_reference(self):
+        with pytest.raises(
+            ValueError, match=_closed_shell_message(2, 2, 0, "UpCCDAnsatz")
+        ):
+            UpCCDAnsatz().n_params_per_layer(4, ElectronCounts(2, 2, 0))
 
 
 # --- Test QCCAnsatz ---
@@ -1067,12 +1242,12 @@ class TestQCCAnsatz:
         assert gate_names(qc)[:4] == ["x"] * 4
 
     def test_build_matches_a_hand_built_reference(self, default_test_simulator):
-        """Three qubits, so the second pair is distinguishable from a reversed
-        or wrapped one, and distinct angles pin each entangler's parameter."""
-        n_qubits = 3
+        """Four qubits, so each pair is distinguishable from a reversed or
+        wrapped one, and distinct angles pin each entangler's parameter."""
+        n_qubits = 4
         params = np.linspace(0.1, 0.9, QCCAnsatz().n_params_per_layer(n_qubits))
         reference = QuantumCircuit(n_qubits)
-        reference.x(0)
+        reference.x([0, 1])
         for q in range(n_qubits):
             reference.ry(params[q], q)
         entangler_params = iter(params[n_qubits:])
@@ -1080,7 +1255,7 @@ class TestQCCAnsatz:
             for gate_cls in (RXXGate, RYYGate, RZZGate):
                 reference.append(gate_cls(next(entangler_params)), [q, q + 1])
 
-        qc = QCCAnsatz().build(params, n_qubits, 1, ElectronCounts(1))
+        qc = QCCAnsatz().build(params, n_qubits, 1, ElectronCounts(2))
         assert same_unitary(default_test_simulator, qc, reference)
 
     def test_build_multi_layer(self):
@@ -1188,6 +1363,8 @@ def _finite_difference_gradient(vqe, params, step=1e-4):
         (HartreeFockAnsatz, 4, 2, 2, None),
         (UCCSDAnsatz, 4, 2, 1, None),
         (UCCSDAnsatz, 4, 2, 2, None),
+        (UpCCDAnsatz, 8, 4, 1, None),
+        (UpCCDAnsatz, 6, 2, 2, None),
         # Both LUCJ orbital regimes, since two orbitals take a reduced family.
         (LUCJAnsatz, 4, 2, 1, None),
         (LUCJAnsatz, 4, 2, 2, None),
@@ -1256,6 +1433,7 @@ _LUCJ_SANDWICHED_TWO_ORBITALS = [(0.5, 4), (1.0, 4)] * 2 + [(1.0, 1)] * 4
     [
         pytest.param(UCCSDAnsatz(), [(1.0, 2)] * 3, marks=needs_qiskit_nature),
         (HartreeFockAnsatz(), [(0.5, 2)] * 3),
+        (UpCCDAnsatz(), [(0.5, 2)]),
         (LUCJAnsatz(), _LUCJ_SANDWICHED_TWO_ORBITALS),
         (
             LUCJAnsatz(trailing_rotation=True),
@@ -1267,7 +1445,14 @@ _LUCJ_SANDWICHED_TWO_ORBITALS = [(0.5, 4), (1.0, 4)] * 2 + [(1.0, 1)] * 4
             + [(0.5, 4), (1.0, 4), (1.0, 2), (1.0, 2)],
         ),
     ],
-    ids=["uccsd", "hartree-fock", "lucj", "lucj-trailing", "lucj-shared-trailing"],
+    ids=[
+        "uccsd",
+        "hartree-fock",
+        "upccd",
+        "lucj",
+        "lucj-trailing",
+        "lucj-shared-trailing",
+    ],
 )
 def test_layer_frequencies_are_exact(ansatz, expected):
     """Declared or derived from one layer's gates, each parameter's frequencies
