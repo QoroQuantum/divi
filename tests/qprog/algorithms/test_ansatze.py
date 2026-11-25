@@ -16,7 +16,6 @@ from qiskit.circuit.library import (
     RXGate,
     RXXGate,
     RYGate,
-    RYYGate,
     RZGate,
     RZZGate,
     SwapGate,
@@ -45,9 +44,9 @@ from divi.qprog.algorithms import (
 from divi.qprog.algorithms._ansatze import (
     _emit_double_excitation,
     _emit_givens_rotation,
+    _emit_pauli_rotation,
     _emit_rotation_block,
     _emit_single_excitation,
-    _emit_two_qubit_pauli_rot,
     _layered,
     _resolve_spin_counts,
     _rotation_one_particle,
@@ -58,8 +57,9 @@ from divi.qprog.algorithms._ansatze import (
     n_rotation_params,
     uccsd_excitations,
 )
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
-from tests._helpers import exact_match, run_mean_field, same_unitary, unitary
+from tests._helpers import exact_match, run_mean_field, unitary
 from tests.qprog.algorithms._helpers import (
     gate_names,
     gate_qubits,
@@ -433,7 +433,7 @@ class TestBrickworkAnsatz:
     [
         (GenericLayerAnsatz(gate_sequence=[HGate]), 2),
         (QAOAAnsatz(), 0),
-        (QCCAnsatz(), 0),
+        (QCCAnsatz(entanglers=[]), 2),
         (LUCJAnsatz(opposite_spin_pairs=[]), 2),
     ],
     ids=["generic-layer", "qaoa", "qcc", "lucj"],
@@ -527,7 +527,7 @@ _REFERENCE_STATE_ANSATZE = [
     pytest.param(UCCSDAnsatz(), True, id="uccsd", marks=needs_qiskit_nature),
     pytest.param(UpCCDAnsatz(), True, id="upccd"),
     pytest.param(LUCJAnsatz(), False, id="lucj"),
-    pytest.param(QCCAnsatz(), False, id="qcc"),
+    pytest.param(QCCAnsatz(), True, id="qcc"),
 ]
 
 
@@ -595,6 +595,7 @@ class TestReferenceStateAnsatz:
             pytest.param(UCCSDAnsatz(), id="uccsd", marks=needs_qiskit_nature),
             pytest.param(HartreeFockAnsatz(), id="hartree-fock"),
             pytest.param(UpCCDAnsatz(), id="upccd"),
+            pytest.param(QCCAnsatz(), id="qcc"),
         ],
     )
     def test_parameter_count_needs_the_electron_count(self, ansatz):
@@ -895,10 +896,27 @@ def _embed(
     return _big_endian_operator(simulator, gate_qc)
 
 
-def test_two_qubit_pauli_rotation_rejects_other_words():
-    message = "Unsupported two-qubit Pauli 'XY'; expected XX/YY/ZZ."
-    with pytest.raises(ValueError, match=exact_match(message)):
-        _emit_two_qubit_pauli_rot(QuantumCircuit(2), "XY", 0.37, 0, 1)
+def _pauli_exponential_state(words, thetas, occupied, n_qubits) -> np.ndarray:
+    """``prod_k exp(-i theta_k/2 P_k)`` applied in order to the determinant with
+    ``occupied`` qubits set; words in Qiskit label order."""
+    state = np.zeros(2**n_qubits, dtype=complex)
+    state[sum(1 << qubit for qubit in occupied)] = 1.0
+    for word, theta in zip(words, thetas):
+        state = expm(-0.5j * theta * SparsePauliOp(word).to_matrix()) @ state
+    return state
+
+
+def test_pauli_rotation_matches_the_exponential(default_test_simulator):
+    """Every letter's basis change, a gap in the support and an unsorted qubit
+    order all have to give ``exp(-i theta/2 P)``."""
+    qc = QuantumCircuit(4)
+    qc.x([0, 1])
+    _emit_pauli_rotation(qc, 0.83, {3: "Y", 0: "X", 1: "Z"})
+
+    state = default_test_simulator.statevector(qc)
+
+    expected = _pauli_exponential_state(["YIZX"], [0.83], (0, 1), 4)
+    assert abs(np.vdot(expected, state)) ** 2 == pytest.approx(1.0, abs=1e-12)
 
 
 class TestHartreeFockAnsatz:
@@ -1177,37 +1195,87 @@ class TestUpCCDAnsatz:
 class TestQCCAnsatz:
     """Tests for the QCCAnsatz class."""
 
-    def test_n_params_per_layer(self):
-        # n_qubits RY + 3*(n_qubits-1) entanglers.
-        assert QCCAnsatz().n_params_per_layer(n_qubits=4) == 13
-        assert QCCAnsatz().n_params_per_layer(n_qubits=2) == 5
-
-    def test_build_structure(self):
-        n_electrons, n_qubits, n_layers = 2, 4, 1
-        ansatz = QCCAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
-        params = ParameterVector("p", n_params)
-
-        qc = _build_circuit(
-            ansatz, list(params), n_qubits, n_layers, ElectronCounts(n_electrons)
+    def test_default_entanglers_are_the_reference_excitations(self):
+        """One entangler per spin-conserving single and double, as many as the
+        Hartree-Fock ansatz's excitations."""
+        assert QCCAnsatz().n_params_per_layer(8, ElectronCounts(4)) == (
+            HartreeFockAnsatz().n_params_per_layer(8, ElectronCounts(4))
         )
 
-        names = gate_names(qc)
-        # Hartree-Fock prep: 2 X gates (n_electrons=2 bits set in hf_state).
-        # Then 4 RY rotations, then 9 two-qubit Pauli rotations
-        # (XX/YY/ZZ for each adjacent pair) each emitted as basis gates.
-        assert names[:2] == ["x", "x"]
-        assert names[2:6] == ["ry", "ry", "ry", "ry"]
-        # Each XX block: 2 H + cx + rz + cx + 2 H = 7 gates.
-        # Each YY block: 2 RX + cx + rz + cx + 2 RX = 7 gates.
-        # Each ZZ block: cx + rz + cx = 3 gates.
-        # 3 adjacent pairs × (7 + 7 + 3) = 51 entangler gates.
-        # Total: 2 + 4 + 51 = 57.
-        assert len(names) == 57
-        assert names.count("cx") == 6 * 3  # CX appears in all three rotations
-        assert names.count("rz") == 9  # one RZ per two-qubit Pauli rotation
-        assert names.count("h") == 12  # XX needs 4 H per pair × 3 pairs
-        assert names.count("rx") == 12  # YY needs 4 RX per pair × 3 pairs
+    def test_default_entanglers_follow_a_spin_imbalanced_reference(self):
+        """One alpha and two beta electrons occupy qubits 0, 1 and 3: four
+        singles keep the spin, and four doubles keep both spin counts."""
+        assert QCCAnsatz().n_params_per_layer(6, ElectronCounts(3, 1, 2)) == 8
+
+    def test_default_entanglers_are_odd_y_words_on_the_excited_qubits(
+        self, default_test_simulator
+    ):
+        """Two electrons on four qubits: the singles 0->2 and 1->3 and the
+        double, with Y on each excitation's last virtual qubit."""
+        thetas = [0.4, -0.9, 1.3]
+
+        state = default_test_simulator.statevector(
+            QCCAnsatz().build(thetas, 4, 1, ElectronCounts(2))
+        )
+
+        expected = _pauli_exponential_state(["IYIX", "YIXI", "YXXX"], thetas, (0, 1), 4)
+        assert abs(np.vdot(expected, state)) ** 2 == pytest.approx(1.0, abs=1e-12)
+
+    def test_custom_entanglers_apply_in_order_each_layer(self, default_test_simulator):
+        words = ["IXXY", "YXIX"]
+        thetas = [0.31, -0.77, 1.2, 0.05]
+
+        state = default_test_simulator.statevector(
+            QCCAnsatz(words).build(thetas, 4, 2, ElectronCounts(2))
+        )
+
+        expected = _pauli_exponential_state(words * 2, thetas, (0, 1), 4)
+        assert abs(np.vdot(expected, state)) ** 2 == pytest.approx(1.0, abs=1e-12)
+
+    def test_custom_entanglers_set_the_parameter_count(self):
+        assert QCCAnsatz(["IXXY", "YXIX", "XYZZ"]).n_params_per_layer(4) == 3
+
+    @pytest.mark.parametrize(
+        "word, message",
+        [
+            pytest.param(
+                "XXYY",
+                "QCCAnsatz entangler 'XXYY' has an even number of Y letters, so "
+                "its energy gradient vanishes at the reference. Use a word with "
+                "an odd number.",
+                id="even-y",
+            ),
+            pytest.param(
+                "XXAY",
+                "QCCAnsatz entangler 'XXAY' has a letter other than I, X, Y or Z.",
+                id="unknown-letter",
+            ),
+        ],
+    )
+    def test_rejects_an_invalid_entangler(self, word, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            QCCAnsatz([word])
+
+    def test_rejects_an_entangler_of_the_wrong_width(self):
+        message = "QCCAnsatz entangler 'XY' has 2 letters for 4 qubits."
+        with pytest.raises(ValueError, match=exact_match(message)):
+            QCCAnsatz(["XY"]).n_params_per_layer(4)
+
+    def test_reaches_fci_for_h2(self, default_test_simulator):
+        mcscf = pytest.importorskip("pyscf.mcscf")
+        mean_field = run_mean_field("H 0 0 0; H 0 0 0.74")
+        fci_energy = mcscf.CASCI(mean_field, 2, 2).kernel()[0]
+        vqe = VQE(
+            MolecularProblem.from_casci(mean_field, 2, 2),
+            ansatz=QCCAnsatz(),
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.L_BFGS_B),
+            max_iterations=50,
+        )
+
+        vqe.run(perform_final_computation=False)
+
+        assert vqe.best_loss == pytest.approx(fci_energy, abs=1e-8)
 
     @pytest.mark.parametrize(
         "n_electrons, match",
@@ -1217,13 +1285,14 @@ class TestQCCAnsatz:
             (-1, "positive integer"),
             (1.5, "positive integer"),
             (5, "cannot exceed"),
+            (4, "at least one virtual spin-orbital"),
         ],
     )
     def test_build_rejects_invalid_electron_count(self, n_electrons, match):
         """Invalid references must fail instead of saturating the occupation."""
         with pytest.raises(ValueError, match=match):
             QCCAnsatz().build(
-                [0.0] * 13,
+                [0.0] * 3,
                 n_qubits=4,
                 n_layers=1,
                 reference=ElectronCounts(n_electrons),
@@ -1234,44 +1303,6 @@ class TestQCCAnsatz:
             QCCAnsatz().build(
                 [0.0], n_qubits=4, n_layers=2, reference=ElectronCounts(0)
             )
-
-    def test_build_accepts_a_fully_occupied_reference(self):
-        qc = QCCAnsatz().build(
-            [0.0] * 13, n_qubits=4, n_layers=1, reference=ElectronCounts(4)
-        )
-        assert gate_names(qc)[:4] == ["x"] * 4
-
-    def test_build_matches_a_hand_built_reference(self, default_test_simulator):
-        """Four qubits, so each pair is distinguishable from a reversed or
-        wrapped one, and distinct angles pin each entangler's parameter."""
-        n_qubits = 4
-        params = np.linspace(0.1, 0.9, QCCAnsatz().n_params_per_layer(n_qubits))
-        reference = QuantumCircuit(n_qubits)
-        reference.x([0, 1])
-        for q in range(n_qubits):
-            reference.ry(params[q], q)
-        entangler_params = iter(params[n_qubits:])
-        for q in range(n_qubits - 1):
-            for gate_cls in (RXXGate, RYYGate, RZZGate):
-                reference.append(gate_cls(next(entangler_params)), [q, q + 1])
-
-        qc = QCCAnsatz().build(params, n_qubits, 1, ElectronCounts(2))
-        assert same_unitary(default_test_simulator, qc, reference)
-
-    def test_build_multi_layer(self):
-        n_electrons, n_qubits, n_layers = 2, 4, 2
-        ansatz = QCCAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
-        params = ParameterVector("p", n_params)
-
-        qc = _build_circuit(
-            ansatz, list(params), n_qubits, n_layers, ElectronCounts(n_electrons)
-        )
-
-        names = gate_names(qc)
-        # 2 X (HF prep, once total) + 2 layers × (4 RY + 51 entangler basis gates).
-        assert len(names) == 2 + 2 * (4 + 51)
-        assert names.count("ry") == 8
 
 
 def _make_uccsd_vqe(n_qubits, n_electrons, backend, optimizer, **spin_counts):

@@ -24,10 +24,10 @@ import numpy as np
 from qiskit.circuit import QuantumCircuit
 
 from ._ansatze import (
+    _emit_pauli_rotation,
     _emit_rx,
     _emit_ry,
     _emit_rz,
-    _emit_two_qubit_pauli_rot,
 )
 
 _RotationEmitter = Callable[[QuantumCircuit, object, int], None]
@@ -174,5 +174,5 @@ class ZZFeatureMap(FeatureMap):
             qc.rz(2.0 * feature_arr[q], q)
         for a, b in pairs:
             angle = 2.0 * (np.pi - feature_arr[a]) * (np.pi - feature_arr[b])
-            _emit_two_qubit_pauli_rot(qc, "ZZ", angle, a, b)
+            _emit_pauli_rotation(qc, angle, {a: "Z", b: "Z"})
         return qc

@@ -350,6 +350,7 @@ rtype
 runnable
 runopts
 RustworkX
+Ryabinkin
 scalable
 Sciorilli
 scipy

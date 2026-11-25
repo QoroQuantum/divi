@@ -257,32 +257,22 @@ the rotated orbitals. The solver finds one state (``nroots = 1``), needs
 restricted integrals, and cannot serve methods that read the CI vector
 directly, such as NEVPT2. The solver requires the ``chem`` extra.
 
-Available Ansätze
------------------
-
-The built-in ansätze are :class:`~divi.qprog.algorithms.HartreeFockAnsatz`,
-:class:`~divi.qprog.algorithms.UCCSDAnsatz`,
-:class:`~divi.qprog.algorithms.QCCAnsatz` and
-:class:`~divi.qprog.algorithms.GenericLayerAnsatz`. See
-:doc:`/api_reference/qprog/algorithms` for constructor details.
-
 Custom Ansätze
-^^^^^^^^^^^^^^
+--------------
 
 A custom :class:`~divi.qprog.algorithms.Ansatz` implements
-``n_params_per_layer`` and ``build``; ``build`` returns the PennyLane operations
-for all requested layers. Use :doc:`/api_reference/qprog/algorithms` for the
-full abstract contract and the built-in implementations as concrete examples.
+``n_params_per_layer`` and ``build``, which returns a Qiskit ``QuantumCircuit``
+holding every layer. The built-in ansätze in
+:doc:`/api_reference/qprog/algorithms` serve as examples.
 
 .. important::
 
    Unless adjoint differentiation applies (see
-   :doc:`/execution_workflows/optimizers`), gradient-based optimizers
-   differentiate the ansatz with a parameter-shift rule built from each
-   parameter's frequencies, which Divi derives from one layer's gates. Override
-   :meth:`~divi.qprog.algorithms.Ansatz.parameter_frequencies` to declare
-   tighter ones where the gates overstate them, as decomposed excitation gates
-   do. Too many frequencies cost extra evaluations; too few give a wrong
+   :doc:`/execution_workflows/optimizers`), gradient-based optimizers use a
+   parameter-shift rule built from each parameter's frequencies, which Divi
+   derives from one layer's gates. Override
+   :meth:`~divi.qprog.algorithms.Ansatz.parameter_frequencies` where the gates
+   overstate them: too many cost extra evaluations, too few give a wrong
    gradient.
 
 VQE Hyperparameter Sweep

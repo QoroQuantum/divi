@@ -146,7 +146,7 @@ def test_vqe_basic_initialization(
         (HartreeFockAnsatz(), True),
         pytest.param(UCCSDAnsatz(), True, marks=needs_qiskit_nature),
         (UpCCDAnsatz(), True),
-        (QCCAnsatz(), False),
+        (QCCAnsatz(), True),
         (GenericLayerAnsatz([RYGate, RZGate]), False),
     ],
     ids=["HartreeFock", "UCCSD", "UpCCD", "QCC", "Generic-RYRZ"],

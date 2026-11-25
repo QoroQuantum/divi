@@ -182,11 +182,9 @@ class ReferenceStateAnsatz(Ansatz):
             )
         return reference
 
-    def _build_reference_state(
-        self, n_qubits: int, reference: ElectronCounts
-    ) -> QuantumCircuit:
-        """The circuit preparing the reference determinant: alpha electrons on
-        even qubits, beta on odd."""
+    def _occupied_qubits(self, n_qubits: int, reference: ElectronCounts) -> list[int]:
+        """The reference determinant's occupied qubits, ascending: alpha
+        electrons on even qubits, beta on odd."""
         _validate_reference_counts(
             reference.n_electrons, n_qubits, require_virtual=False
         )
@@ -197,8 +195,14 @@ class ReferenceStateAnsatz(Ansatz):
             reference.n_beta,
             self.name,
         )
+        return sorted([*range(0, 2 * n_alpha, 2), *range(1, 2 * n_beta, 2)])
+
+    def _build_reference_state(
+        self, n_qubits: int, reference: ElectronCounts
+    ) -> QuantumCircuit:
+        """The circuit preparing the reference determinant."""
         qc = QuantumCircuit(n_qubits)
-        for qubit in [*range(0, 2 * n_alpha, 2), *range(1, 2 * n_beta, 2)]:
+        for qubit in self._occupied_qubits(n_qubits, reference):
             qc.x(qubit)
         return qc
 
@@ -598,13 +602,13 @@ class QAOAAnsatz(Ansatz):
             if n_qubits == 1:
                 self._emit_local_field(qc, weights[0], 0)
             elif n_qubits == 2:
-                _emit_two_qubit_pauli_rot(qc, "ZZ", weights[0], 0, 1)
+                _emit_pauli_rotation(qc, weights[0], {0: "Z", 1: "Z"})
                 self._emit_local_field(qc, weights[1], 0)
                 self._emit_local_field(qc, weights[2], 1)
             else:
                 for q in range(n_qubits):
-                    _emit_two_qubit_pauli_rot(
-                        qc, "ZZ", weights[q], q, (q + 1) % n_qubits
+                    _emit_pauli_rotation(
+                        qc, weights[q], {q: "Z", (q + 1) % n_qubits: "Z"}
                     )
                 for q in range(n_qubits):
                     self._emit_local_field(qc, weights[n_qubits + q], q)
@@ -949,20 +953,70 @@ class UpCCDAnsatz(AmplitudeSeededAnsatz):
 
 
 class QCCAnsatz(ReferenceStateAnsatz):
-    """Qubit Coupled Cluster ansatz.
+    """Qubit coupled-cluster ansatz (Ryabinkin et al., arXiv:1809.03827): the
+    reference determinant, then ``exp(-i theta/2 P)`` per entangler ``P``.
 
-    Hartree-Fock ``X`` flips on occupied orbitals, then per-layer single-qubit
-    ``RY`` rotations followed by Pauli-word exponentials (``XX``, ``YY``,
-    ``ZZ``) on adjacent qubit pairs.
+    Unlike the paper, the reference is the Hartree-Fock determinant rather than
+    an optimised qubit mean-field state, and the default entanglers come from
+    the excitations rather than a gradient ranking: ``XY`` per spin-conserving
+    single, ``XXXY`` per double, on the qubits each moves. Not invariant to
+    rotations among degenerate orbitals.
+
+    Args:
+        entanglers: Pauli words to use instead, in Qiskit label order. Each
+            needs an odd number of ``Y``.
+
+    Raises:
+        ValueError: If an entangler has a letter outside ``IXYZ`` or an even
+            number of ``Y``.
     """
+
+    starts_at_reference_state = True
+
+    def __init__(self, entanglers: Sequence[str] | None = None):
+        if entanglers is not None:
+            for word in entanglers:
+                if set(word) - set("IXYZ"):
+                    raise ValueError(
+                        f"QCCAnsatz entangler {word!r} has a letter other than "
+                        "I, X, Y or Z."
+                    )
+                if word.count("Y") % 2 == 0:
+                    raise ValueError(
+                        f"QCCAnsatz entangler {word!r} has an even number of Y "
+                        "letters, so its energy gradient vanishes at the "
+                        "reference. Use a word with an odd number."
+                    )
+            entanglers = tuple(entanglers)
+        self.entanglers = entanglers
+
+    def _entangler_words(
+        self, n_qubits: int, reference: ElectronCounts | None
+    ) -> list[dict[int, str]]:
+        """Each entangler as qubit -> non-identity letter."""
+        if self.entanglers is None:
+            occupied = self._occupied_qubits(
+                n_qubits, self._require_reference(reference)
+            )
+            return _qcc_excitation_words(occupied, n_qubits)
+        for word in self.entanglers:
+            if len(word) != n_qubits:
+                raise ValueError(
+                    f"QCCAnsatz entangler {word!r} has {len(word)} letters for "
+                    f"{n_qubits} qubits."
+                )
+        return [
+            {n_qubits - 1 - k: letter for k, letter in enumerate(word) if letter != "I"}
+            for word in self.entanglers
+        ]
 
     def n_params_per_layer(
         self, n_qubits: int, reference: ElectronCounts | None = None
     ) -> int:
-        """``n_qubits`` single-qubit ``RY`` rotations plus ``3 * (n_qubits - 1)``
-        entangler parameters (one ``XX``, ``YY``, ``ZZ`` per adjacent pair)."""
-        n_params = n_qubits + 3 * (n_qubits - 1)
-        return _require_trainable_params(n_params, QCCAnsatz.__name__)
+        """One parameter per entangler."""
+        return _require_trainable_params(
+            len(self._entangler_words(n_qubits, reference)), QCCAnsatz.__name__
+        )
 
     def build(
         self,
@@ -972,21 +1026,11 @@ class QCCAnsatz(ReferenceStateAnsatz):
         reference: ElectronCounts | None = None,
     ) -> QuantumCircuit:
         qc = self._build_reference_state(n_qubits, self._require_reference(reference))
+        words = self._entangler_words(n_qubits, reference)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
-
-        n_singles = n_qubits
         for layer_params in params:
-            for q in range(n_qubits):
-                qc.ry(layer_params[q], q)
-            ent_params = layer_params[n_singles:]
-            ent_idx = 0
-            for q in range(n_qubits - 1):
-                # exp(-i theta/2 * P) on qubits (q, q+1) for P in {XX, YY, ZZ}.
-                for pauli in ("XX", "YY", "ZZ"):
-                    theta = ent_params[ent_idx]
-                    _emit_two_qubit_pauli_rot(qc, pauli, theta, q, q + 1)
-                    ent_idx += 1
-
+            for theta, word in zip(layer_params, words, strict=True):
+                _emit_pauli_rotation(qc, theta, word)
         return qc
 
 
@@ -1643,6 +1687,24 @@ def _spin_conserving_excitations(
     return singles, doubles
 
 
+def _qcc_excitation_words(
+    occupied: Sequence[int], n_qubits: int
+) -> list[dict[int, str]]:
+    """``XY`` per spin-conserving single and ``XXXY`` per double out of
+    ``occupied``, singles first, ``Y`` on the last virtual."""
+    _validate_reference_counts(len(occupied), n_qubits, require_virtual=True)
+    filled = set(occupied)
+    virtual = [qubit for qubit in range(n_qubits) if qubit not in filled]
+    singles = [{i: "X", a: "Y"} for i in occupied for a in virtual if i % 2 == a % 2]
+    doubles = [
+        {i: "X", j: "X", a: "X", b: "Y"}
+        for i, j in combinations(occupied, 2)
+        for a, b in combinations(virtual, 2)
+        if i % 2 + j % 2 == a % 2 + b % 2
+    ]
+    return singles + doubles
+
+
 def _paired_doubles(n_qubits: int, reference: ElectronCounts) -> list[tuple[int, int]]:
     """Occupied-to-virtual spatial-orbital pairs of a closed-shell reference,
     occupied orbital first."""
@@ -1706,31 +1768,22 @@ def _emit_double_excitation(
     qc.cx(w2, w3)
 
 
-def _emit_two_qubit_pauli_rot(
-    qc: QuantumCircuit, pauli: str, theta, q1: int, q2: int
-) -> None:
-    """Emit ``exp(-i theta/2 * P)`` for ``P ∈ {XX, YY, ZZ}`` onto ``qc`` as a
-    ``H``/``RX(±π/2)`` basis change plus a CX-RZ-CX ladder.
-    """
-    if pauli == "XX":
-        qc.h(q1)
-        qc.h(q2)
-        qc.cx(q1, q2)
-        qc.rz(theta, q2)
-        qc.cx(q1, q2)
-        qc.h(q1)
-        qc.h(q2)
-    elif pauli == "YY":
-        qc.rx(_HALF_PI, q1)
-        qc.rx(_HALF_PI, q2)
-        qc.cx(q1, q2)
-        qc.rz(theta, q2)
-        qc.cx(q1, q2)
-        qc.rx(-_HALF_PI, q1)
-        qc.rx(-_HALF_PI, q2)
-    elif pauli == "ZZ":
-        qc.cx(q1, q2)
-        qc.rz(theta, q2)
-        qc.cx(q1, q2)
-    else:
-        raise ValueError(f"Unsupported two-qubit Pauli {pauli!r}; expected XX/YY/ZZ.")
+def _emit_pauli_rotation(qc: QuantumCircuit, theta, word: Mapping[int, str]) -> None:
+    """Emit ``exp(-i theta/2 * P)`` for the Pauli word ``word`` (qubit to letter)
+    as an ``H``/``RX(±π/2)`` basis change around a CX ladder onto ``RZ``."""
+    qubits = list(word)
+    for qubit in qubits:
+        if word[qubit] == "X":
+            qc.h(qubit)
+        elif word[qubit] == "Y":
+            qc.rx(_HALF_PI, qubit)
+    for control, target in pairwise(qubits):
+        qc.cx(control, target)
+    qc.rz(theta, qubits[-1])
+    for control, target in reversed(list(pairwise(qubits))):
+        qc.cx(control, target)
+    for qubit in qubits:
+        if word[qubit] == "X":
+            qc.h(qubit)
+        elif word[qubit] == "Y":
+            qc.rx(-_HALF_PI, qubit)
