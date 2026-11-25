@@ -446,8 +446,9 @@ class ConfigurationSubspace:
         for the exact sum.
 
         Returns:
-            ``(dets, contributions)``: limb rows and their contributions, leaving
-            out determinants within ``1e-10`` of the subspace energy.
+            ``(dets, contributions)``: limb rows and their contributions. A
+            determinant within ``1e-10`` of the subspace energy gets ``-inf``:
+            second order cannot bound it, so it belongs in the subspace first.
 
         Raises:
             ValueError: If the eigensystem has not been solved.
@@ -519,5 +520,7 @@ class ConfigurationSubspace:
             return dets, np.empty(0)
 
         gap = self.energy - self.diagonal_of(dets)
-        good = np.abs(gap) > 1e-10
-        return dets[good], np.abs(amplitudes[good]) ** 2 / gap[good]
+        contributions = np.full(gap.shape, -np.inf)
+        open_gap = np.abs(gap) > 1e-10
+        contributions[open_gap] = np.abs(amplitudes[open_gap]) ** 2 / gap[open_gap]
+        return dets, contributions

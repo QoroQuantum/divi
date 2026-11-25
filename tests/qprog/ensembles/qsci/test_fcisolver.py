@@ -13,7 +13,7 @@ from qiskit.circuit.library import CXGate, RYGate
 from divi.backends import MaestroConfig
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz, UCCSDAnsatz
 from divi.qprog.ensembles import ReportingLevel
-from divi.qprog.ensembles.qsci import QSCI, QSCISolver, QSCIState
+from divi.qprog.ensembles.qsci import QSCI, QSCISolver, QSCIState, _fcisolver
 from divi.qprog.ensembles.qsci._subspace import ConfigurationSubspace
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
@@ -24,6 +24,13 @@ from tests._helpers import (
     exact_match,
     run_mcscf,
     run_mean_field,
+)
+from tests.qprog._active_space_solver_contracts import (
+    ELECTRON_COUNT_SPLITS,
+    verify_kernel_rejects_several_roots,
+    verify_kernel_rejects_unrestricted_integrals,
+    verify_total_electron_count_splits_like_pyscf,
+    verify_unconverged_vqe_leaves_casci_unconverged,
 )
 from tests.qprog.algorithms._helpers import needs_qiskit_nature
 
@@ -303,3 +310,45 @@ def test_rdms_reject_active_spaces_wider_than_pyscf_addresses(dummy_simulator):
         ),
     ):
         _build_solver(dummy_simulator).make_rdm1s(state, 64, (64, 0))
+
+
+def test_rdms_reject_a_selected_ci_vector_past_the_size_limit(mocker, dummy_simulator):
+    mocker.patch.object(_fcisolver, "_MAX_SCI_VECTOR_ENTRIES", 3)
+    state = QSCIState(-1.0, ("1001", "0110"), np.array([0.6, 0.8]))
+
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "The state's 2 alpha and 2 beta strings span 4 pairs, more than the 3 "
+            "PySCF's dense selected-CI vector is built for here; lower "
+            "max_subspace_size."
+        ),
+    ):
+        _build_solver(dummy_simulator).make_rdm1s(state, 2, (1, 1))
+
+
+def test_unconverged_vqe_leaves_casci_unconverged(
+    h2_mean_field, default_test_simulator
+):
+    verify_unconverged_vqe_leaves_casci_unconverged(
+        _build_solver(default_test_simulator, max_iterations=1), h2_mean_field
+    )
+
+
+@ELECTRON_COUNT_SPLITS
+def test_total_electron_count_splits_like_pyscf(
+    total, pair, h2_active_space, default_test_simulator
+):
+    verify_total_electron_count_splits_like_pyscf(
+        lambda: _build_solver(default_test_simulator), h2_active_space, total, pair
+    )
+
+
+def test_kernel_rejects_several_roots(h2_active_space, dummy_simulator):
+    verify_kernel_rejects_several_roots(_build_solver(dummy_simulator), h2_active_space)
+
+
+def test_kernel_rejects_unrestricted_integrals(h2_active_space, dummy_simulator):
+    verify_kernel_rejects_unrestricted_integrals(
+        _build_solver(dummy_simulator), h2_active_space
+    )

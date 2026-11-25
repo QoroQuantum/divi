@@ -5,11 +5,12 @@
 """Quantum-selected configuration interaction as a program ensemble."""
 
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from itertools import islice
 from numbers import Integral
-from typing import NamedTuple
+from pathlib import Path
+from typing import Any, NamedTuple
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
@@ -30,7 +31,8 @@ class ExpansionRecord(NamedTuple):
         energy: ``<H>`` of the subspace's eigenvector, a variational upper
             bound; with no penalty, the lowest eigenvalue of the Hamiltonian
             projected onto it.
-        pt2_correction: Epstein-Nesbet second-order correction to ``energy``.
+        pt2_correction: Epstein-Nesbet second-order correction to ``energy``,
+            over the determinants not degenerate with it.
     """
 
     subspace_size: int
@@ -133,7 +135,8 @@ class QSCI(ProgramEnsemble):
         backend: Backend the sampling programs run on.
         config_filter: Keeps a sampled bitstring in the seed when it returns
             true. ``None`` keeps all.
-        max_seed_configs: Most-probable sampled bitstrings admitted to the seed.
+        max_seed_configs: Most-probable sampled bitstrings admitted to the seed,
+            which ``max_subspace_size`` also caps.
         n_expansions: Expansion steps after the seed. ``0`` is plain QSCI.
         expansion_width: Configurations added per step.
         max_subspace_size: Stops expansion once the subspace reaches this size.
@@ -228,7 +231,7 @@ class QSCI(ProgramEnsemble):
             for config, _ in sampled.most_common()
             if self.config_filter is None or self.config_filter(config)
         )
-        seed = list(islice(ranked, self.max_seed_configs))
+        seed = list(islice(ranked, min(self.max_seed_configs, self.max_subspace_size)))
         if not seed:
             raise ValueError("No sampled configuration passed config_filter.")
         return seed
@@ -244,9 +247,10 @@ class QSCI(ProgramEnsemble):
         records: list[ExpansionRecord] = []
         while True:
             dets, contributions = subspace.external_contributions()
+            bounded = contributions[np.isfinite(contributions)]
             records.append(
                 ExpansionRecord(
-                    len(subspace.configs), subspace.energy, float(contributions.sum())
+                    len(subspace.configs), subspace.energy, float(bounded.sum())
                 )
             )
             if (
@@ -282,3 +286,33 @@ class QSCI(ProgramEnsemble):
     def aggregate_results(self) -> QSCIState:
         super().aggregate_results()
         return self.workflow_state
+
+    def _save_workflow_checkpoint_state(
+        self, state: QSCIState, round_dir: Path, stem: str
+    ) -> dict[str, Any]:
+        """Write ``state`` as an NPZ in the round's checkpoint directory."""
+        artifact = f"{stem}.npz"
+        eigenvector = state.eigenvector
+        np.savez(
+            round_dir / artifact,
+            energy=state.energy,
+            configs=np.array(state.configs, dtype=str),
+            eigenvector=np.empty(0) if eigenvector is None else eigenvector,
+            records=np.array(state.records, dtype=float).reshape(-1, 3),
+        )
+        return {"artifact": artifact, "solved": eigenvector is not None}
+
+    def _load_workflow_checkpoint_state(
+        self, payload: Mapping[str, Any], round_dir: Path, stem: str
+    ) -> QSCIState:
+        """Read the state :meth:`_save_workflow_checkpoint_state` wrote."""
+        with np.load(round_dir / payload["artifact"]) as data:
+            return QSCIState(
+                float(data["energy"]),
+                tuple(data["configs"].tolist()),
+                data["eigenvector"] if payload["solved"] else None,
+                tuple(
+                    ExpansionRecord(int(size), float(energy), float(pt2))
+                    for size, energy, pt2 in data["records"]
+                ),
+            )

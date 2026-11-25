@@ -16,6 +16,13 @@ from tests._helpers import (
     run_mcscf,
     run_mean_field,
 )
+from tests.qprog._active_space_solver_contracts import (
+    ELECTRON_COUNT_SPLITS,
+    verify_kernel_rejects_several_roots,
+    verify_kernel_rejects_unrestricted_integrals,
+    verify_total_electron_count_splits_like_pyscf,
+    verify_unconverged_vqe_leaves_casci_unconverged,
+)
 from tests.qprog.algorithms._helpers import needs_qiskit_nature
 
 mcscf = pytest.importorskip("pyscf.mcscf")
@@ -204,3 +211,30 @@ def test_vqe_keyword_arguments_reach_every_vqe(h2_active_space, default_test_sim
     )
 
     assert vqe.n_layers == 2
+
+
+def test_unconverged_vqe_leaves_casci_unconverged(
+    h2_mean_field, default_test_simulator
+):
+    verify_unconverged_vqe_leaves_casci_unconverged(
+        _build_solver(default_test_simulator, max_iterations=1), h2_mean_field
+    )
+
+
+@ELECTRON_COUNT_SPLITS
+def test_total_electron_count_splits_like_pyscf(
+    total, pair, h2_active_space, default_test_simulator
+):
+    verify_total_electron_count_splits_like_pyscf(
+        lambda: _build_solver(default_test_simulator), h2_active_space, total, pair
+    )
+
+
+def test_kernel_rejects_several_roots(h2_active_space, dummy_simulator):
+    verify_kernel_rejects_several_roots(_build_solver(dummy_simulator), h2_active_space)
+
+
+def test_kernel_rejects_unrestricted_integrals(h2_active_space, dummy_simulator):
+    verify_kernel_rejects_unrestricted_integrals(
+        _build_solver(dummy_simulator), h2_active_space
+    )

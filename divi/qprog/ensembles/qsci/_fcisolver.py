@@ -27,6 +27,10 @@ from ._workflow import QSCI, QSCIState
 #: words.
 _MAX_PYSCF_ORBITALS = 63
 
+#: Most entries of the dense alpha-by-beta vector PySCF's selected CI takes
+#: (512 MiB of float64).
+_MAX_SCI_VECTOR_ENTRIES = 1 << 26
+
 
 class QSCISolver:
     """PySCF CASCI/CASSCF active-space solver backed by :class:`QSCI`.
@@ -249,7 +253,9 @@ def _build_selected_ci(
     puts every alpha before every beta.
 
     Raises:
-        ValueError: If ``norb`` exceeds what PySCF's selected CI addresses.
+        ValueError: If ``norb`` exceeds what PySCF's selected CI addresses, or
+            the state's strings span more than ``_MAX_SCI_VECTOR_ENTRIES``
+            alpha-beta pairs.
     """
     if norb > _MAX_PYSCF_ORBITALS:
         raise ValueError(
@@ -266,6 +272,14 @@ def _build_selected_ci(
     weights = np.int64(1) << np.arange(norb, dtype=np.int64)
     strings_alpha, rows = np.unique(alpha_bits @ weights, return_inverse=True)
     strings_beta, columns = np.unique(beta_bits @ weights, return_inverse=True)
+    n_pairs = strings_alpha.size * strings_beta.size
+    if n_pairs > _MAX_SCI_VECTOR_ENTRIES:
+        raise ValueError(
+            f"The state's {strings_alpha.size} alpha and {strings_beta.size} beta "
+            f"strings span {n_pairs} pairs, more than the "
+            f"{_MAX_SCI_VECTOR_ENTRIES} PySCF's dense selected-CI vector is "
+            "built for here; lower max_subspace_size."
+        )
     transpositions = (alpha_bits * (np.cumsum(beta_bits, axis=1) - beta_bits)).sum(
         axis=1
     )
