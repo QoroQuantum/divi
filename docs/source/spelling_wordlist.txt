@@ -74,6 +74,7 @@ composable
 computable
 config
 ConfigDict
+configs
 correlator
 CSR
 Ctrl
@@ -245,6 +246,7 @@ NDArray
 neb
 nelec
 Nelder
+Nesbet
 NetworkX
 Nocedal
 NoMitigation

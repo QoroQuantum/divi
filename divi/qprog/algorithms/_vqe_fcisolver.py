@@ -108,18 +108,7 @@ class VQEFCISolver:
                 "VQEFCISolver needs restricted integrals; got separate alpha and "
                 "beta ones."
             )
-        ao2mo = import_optional(
-            "pyscf.ao2mo", extra="chem", capability="VQEFCISolver.kernel"
-        )
-        if isinstance(nelec, (int, np.integer)):
-            nelec = (nelec - nelec // 2, nelec // 2)
-        problem = MolecularProblem(
-            np.asarray(h1e),
-            ao2mo.restore(1, np.asarray(eri), norb),
-            n_alpha=int(nelec[0]),
-            n_beta=int(nelec[1]),
-            constant=ecore,
-        )
+        problem = MolecularProblem.from_active_space(h1e, eri, norb, nelec, ecore)
         vqe = VQE(
             problem,
             ansatz=self.ansatz,

@@ -299,6 +299,28 @@ def test_from_casci_builds_the_active_space_of_given_orbitals():
     assert abs(_fci_energy(default) - expected) > 1e-4
 
 
+@pytest.mark.parametrize(
+    "nelec, counts",
+    [((2, 2), (2, 2)), (4, (2, 2)), (np.int64(3), (2, 1))],
+    ids=["pair", "even-total", "odd-numpy-total"],
+)
+def test_from_active_space_unpacks_what_pyscf_passes_a_solver(nelec, counts):
+    mcscf = pytest.importorskip("pyscf.mcscf")
+    mean_field = _water_mean_field()
+    casci = mcscf.CASCI(mean_field, 4, 4)
+    one_body, ecore = casci.get_h1eff()
+
+    problem = MolecularProblem.from_active_space(
+        one_body, casci.get_h2eff(), 4, nelec, ecore
+    )
+
+    reference = MolecularProblem.from_casci(mean_field, 4, 4)
+    assert (problem.n_alpha, problem.n_beta) == counts
+    assert problem.constant == pytest.approx(reference.constant, abs=1e-12)
+    np.testing.assert_allclose(problem.one_body, reference.one_body, atol=1e-12)
+    np.testing.assert_allclose(problem.two_body, reference.two_body, atol=1e-12)
+
+
 def _with_electrons(problem, n_alpha, n_beta, **kwargs):
     return MolecularProblem(
         problem.one_body,

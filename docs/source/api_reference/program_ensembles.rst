@@ -19,9 +19,12 @@ Concrete Ensembles
 runs over a grid of inputs; :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`
 decomposes a large graph, QUBO or portfolio problem into solvable sub-problems;
 :class:`~divi.qprog.ensembles.TimeEvolutionTrajectory` runs a sequence of time-evolution
-steps to build a trajectory; :class:`~divi.qprog.ensembles.lassqd.LASSQD` computes
-molecular energies and excited states fragment by fragment, with its
-configuration and result types on the :doc:`lassqd` page.
+steps to build a trajectory; :class:`~divi.qprog.ensembles.qsci.QSCI` seeds a
+configuration subspace from sampled bitstrings, grows it and diagonalises the
+Hamiltonian in it, with its types on the :doc:`qsci` page;
+:class:`~divi.qprog.ensembles.lassqd.LASSQD` computes molecular energies and
+excited states fragment by fragment, with its configuration and result types on
+the :doc:`lassqd` page.
 
 Aggregation Strategies
 ----------------------

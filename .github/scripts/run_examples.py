@@ -71,6 +71,7 @@ NO_PATCHES = [
     "chemistry/vqe_upccd_lih.py",
     "chemistry/vqe_qcc_entanglers_h2.py",
     "chemistry/lassqd_ethylene_uvvis.py",
+    "chemistry/qsci_lih.py",
 ]
 
 TUTORIALS: dict[str, dict] = {
@@ -212,6 +213,13 @@ TUTORIALS: dict[str, dict] = {
                 "BOND_LENGTHS = (1.0, 1.1, 1.2, 1.5, 2.0, 2.5)",
                 "BOND_LENGTHS = (1.1, 2.0, 2.5)",
             ),
+        ],
+    },
+    "chemistry/qsci_fcisolver_n2.py": {
+        "timeout_seconds": 300,
+        "patches": [
+            ("BOND_LENGTHS = (1.1, 1.6, 2.2, 2.7)", "BOND_LENGTHS = (2.7,)"),
+            ("max_iterations=30", "max_iterations=5"),
         ],
     },
     "chemistry/vqe_fcisolver_casscf_h2o.py": {
