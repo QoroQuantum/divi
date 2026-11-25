@@ -126,6 +126,8 @@ def assemble_spin_rdms(expectations: Sequence[float], n_orbitals: int) -> SpinRD
 
 
 def sum_spin_rdms(rdms: SpinRDMs) -> tuple[np.ndarray, np.ndarray]:
-    """Spin-summed ``(dm1, dm2)``, PySCF's ``make_rdm12`` layout."""
+    """Spin-summed ``(dm1, dm2)`` from spin-resolved RDMs, such as those
+    :meth:`~divi.qprog.algorithms.VQE.measure_rdms` returns, in PySCF's
+    ``make_rdm12`` layout."""
     (dm1a, dm1b), (dm2aa, dm2ab, dm2bb) = rdms
     return dm1a + dm1b, dm2aa + dm2bb + dm2ab + dm2ab.transpose(2, 3, 0, 1)

@@ -32,6 +32,7 @@ from ._polynomial import (
     qubo_to_binary_polynomial,
     qubo_to_matrix,
 )
+from ._rdm import sum_spin_rdms
 from ._term_ops import to_spo
 from ._types import (
     BinaryPolynomialProblem,
@@ -66,6 +67,7 @@ __all__ = [
     "qubo_to_ising",
     "qubo_to_matrix",
     "qubo_to_spo",
+    "sum_spin_rdms",
     "x_mixer",
     "xy_mixer",
 ]

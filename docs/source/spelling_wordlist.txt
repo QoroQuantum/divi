@@ -337,6 +337,7 @@ realizations
 regressor
 regularization
 renderer
+rdms
 Rentero
 reproducibility
 rescale

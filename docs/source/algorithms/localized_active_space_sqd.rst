@@ -667,5 +667,8 @@ Next Steps
 - The full tutorial in
   `tutorials/chemistry/lassqd_h4.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/chemistry/lassqd_h4.py>`_
   runs the two-fragment H4 example to convergence and compares against CASCI.
+- `tutorials/chemistry/lassqd_ethylene_uvvis.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/chemistry/lassqd_ethylene_uvvis.py>`_
+  computes ethylene's π→π* excitation, oscillator strength and NEVPT2 correction
+  on one fragment.
 - :doc:`ground_state_energy_estimation_vqe` for single-fragment-sized active
   spaces that don't need fragmentation at all.

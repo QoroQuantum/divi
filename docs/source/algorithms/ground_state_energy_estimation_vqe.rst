@@ -217,8 +217,9 @@ example above:
    print(f"Electrons: {dm1a.trace() + dm1b.trace():.6f}")
 
 The result uses PySCF's ``make_rdm12s`` layout, so it can be passed to PySCF
-routines that consume spin RDMs. Only real parts are measured, so the RDMs are
-exact for real wave functions. Measuring them requires the ``chem`` extra.
+routines that consume spin RDMs; :func:`~divi.hamiltonians.sum_spin_rdms` gives
+the spin-summed ``make_rdm12`` pair. Only real parts are measured, so the RDMs
+are exact for real wave functions. Measuring them requires the ``chem`` extra.
 
 PySCF Active-Space Solver
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -255,7 +256,8 @@ converged.
 Natural orbitals (``natorb = True``) are supported: PySCF reruns the solver in
 the rotated orbitals. The solver finds one state (``nroots = 1``), needs
 restricted integrals, and cannot serve methods that read the CI vector
-directly, such as NEVPT2. The solver requires the ``chem`` extra.
+directly, such as NEVPT2; single-fragment :doc:`localized_active_space_sqd`
+provides NEVPT2. The solver requires the ``chem`` extra.
 
 Custom Ansätze
 --------------
@@ -434,7 +436,11 @@ guide for the full list of strategies and the ``force_sampling`` recipe.
 Next Steps
 ----------
 
-- Runnable tutorials are in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
+- Runnable tutorials are in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory;
+  `tutorials/chemistry/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/chemistry>`_
+  runs ``VQEFCISolver`` inside PySCF (``vqe_fcisolver_n2.py``,
+  ``vqe_fcisolver_casscf_h2o.py``) and compares ansätze (``vqe_upccd_lih.py``,
+  ``vqe_qcc_entanglers_h2.py``)
 - Learn about :doc:`../execution_workflows/optimizers` for optimisation strategies
 - Explore :doc:`improving_results_qem` for error mitigation
 - Save and resume long runs with :doc:`../execution_workflows/resuming_long_runs`

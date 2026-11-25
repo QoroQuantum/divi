@@ -68,6 +68,9 @@ NO_PATCHES = [
     "advanced/standalone_pipeline.py",
     "visualization/viz_qaoa_pce_comparison.py",
     "chemistry/vqe_h2_molecule.py",
+    "chemistry/vqe_upccd_lih.py",
+    "chemistry/vqe_qcc_entanglers_h2.py",
+    "chemistry/lassqd_ethylene_uvvis.py",
 ]
 
 TUTORIALS: dict[str, dict] = {
@@ -200,6 +203,22 @@ TUTORIALS: dict[str, dict] = {
         "invocations": [
             ["export", "--n-qubits", "6", "--n-points", "4"],
             ["run", "--n-qubits", "6", "--n-points", "4", "--shots", "500"],
+        ],
+    },
+    "chemistry/vqe_fcisolver_n2.py": {
+        "timeout_seconds": 300,
+        "patches": [
+            (
+                "BOND_LENGTHS = (1.0, 1.1, 1.2, 1.5, 2.0, 2.5)",
+                "BOND_LENGTHS = (1.1, 2.0, 2.5)",
+            ),
+        ],
+    },
+    "chemistry/vqe_fcisolver_casscf_h2o.py": {
+        "timeout_seconds": 300,
+        "patches": [
+            ("N_REPEATS = 5", "N_REPEATS = 2"),
+            ('basis="6-31g"', 'basis="sto-3g"'),
         ],
     },
     "chemistry/lassqd_h4.py": {

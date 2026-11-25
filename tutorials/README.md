@@ -33,7 +33,7 @@ python tutorials/optimization/qaoa_graph_problems.py --local-qiskit --force-samp
 tutorials/
 ├── optimization/         QAOA / PCE / partitioning on QUBO and graph problems
 ├── routing/              Constraint-Enhanced QAOA on TSP and CVRP
-├── chemistry/            VQE on molecular Hamiltonians
+├── chemistry/            VQE, PySCF active-space solvers and LASSQD on molecules
 ├── dynamics/             Hamiltonian time evolution and trajectories
 ├── error_mitigation/     ZNE / QuEPP wrapped around a VQA loop
 ├── visualization/        Loss-landscape and parameter-space analysis tools
@@ -60,8 +60,13 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 ### `chemistry/`
 
 - **`vqe_h2_molecule.py`** — VQE on H2: basic run plus grouping-strategy and shot-allocation comparisons
+- **`vqe_fcisolver_n2.py`** — `VQEFCISolver` as PySCF's active-space solver: the N2 dissociation curve in CAS(6,6) against exact CASCI, natural occupations through PySCF's `make_rdm1`, and a second UCCSD layer at the stretched bond
+- **`vqe_fcisolver_casscf_h2o.py`** — `VQEFCISolver` in PySCF's CASSCF for water: CASCI against CASSCF, the dipole moment and natural occupations through PySCF, and how sampling shots set the error of measured density matrices
+- **`vqe_upccd_lih.py`** — `UpCCDAnsatz` against `UCCSDAnsatz` on LiH: parameter counts, energy and fidelity against the seniority-zero floor, and a start from CCSD pair amplitudes
+- **`vqe_qcc_entanglers_h2.py`** — Choosing `QCCAnsatz` entanglers on H2: the default excitation entanglers, a pool of Pauli words ranked by energy gradient, and a single chosen entangler
 - **`vqe_hyperparameter_sweep.py`** — Hyperparameter sweeps across multiple molecules
 - **`lassqd_h4.py`** — `LASSQD` on a stretched H4 chain: compares an automatic fragmentation against an occupancy-based one to show how much the choice of split costs in correlation energy
+- **`lassqd_ethylene_uvvis.py`** — Ethylene's π→π* excitation with single-fragment `LASSQD`: active orbitals by symmetry, state-averaged excitation energy and oscillator strength against PySCF, and NEVPT2
 
 ### `dynamics/`
 
@@ -99,6 +104,12 @@ All examples require Divi to be installed:
 pip install qoro-divi
 ```
 
+The `chemistry/` tutorials also need the `chem` extra:
+
+```bash
+pip install "qoro-divi[chem]"
+```
+
 ## Demos
 
 Longer multi-file programs with notebooks and data live in [`demos/`](../demos).
@@ -117,9 +128,8 @@ When adding new examples:
 1. Drop the file into the folder that matches its primary topic (or open a new folder if it introduces a genuinely new documentation category).
 2. Keep examples focused and self-contained.
 3. Add clear docstrings explaining the example's purpose.
-4. Include expected output in comments.
-5. Update this README with a brief description under the right folder section.
-6. **Register in `.github/scripts/run_examples.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
+4. Update this README with a brief description under the right folder section.
+5. **Register in `.github/scripts/run_examples.py`**: All tutorials are executed in CI to catch regressions — if a code change breaks a tutorial, the pipeline fails. To keep CI fast, tutorials run with reduced parameters (fewer iterations, smaller problems, lower shots). The runner copies tutorials to a temp directory, applies string patches, and runs them in parallel with per-tutorial timeouts.
 
    Every non-underscore `.py` file must appear in exactly one of these three lists (validated at startup), keyed by its **path relative to `tutorials/`** (e.g. `"optimization/qaoa_hubo.py"`):
    - `SKIP` — tutorials that cannot run in CI (e.g. need API keys)
