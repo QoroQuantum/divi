@@ -34,6 +34,7 @@ workloads efficiently.
 """
 
 import re
+from collections import Counter
 from collections.abc import Collection
 from typing import NamedTuple
 
@@ -669,6 +670,44 @@ class Parser:
 
 
 # ---------- Public API ----------
+# Any stretch of a number's text, as ``str(float)`` writes it.
+_FLOAT_TEXT_RE = re.compile(r"[+-]?\d*\.?\d*(?:e[+-]?\d*)?")
+
+# Characters that can sit next to a parameter value inside a gate argument.
+_EXPRESSION_CHARS = frozenset("()+-*/^, \t\n")
+
+# Stands in for a substituted value; no parameter name may contain it.
+_SUBSTITUTED = chr(0xE000)
+
+
+def _check_text_substitution(
+    src: str, parameters: Collection[str], toks: list[Tok]
+) -> None:
+    """Raise ``SyntaxError`` unless replacing each parameter name's text with
+    its value, longest name first, changes only that name's gate arguments."""
+    for name in parameters:
+        if _FLOAT_TEXT_RE.fullmatch(name) or name in "-inf" or name in "nan":
+            raise SyntaxError(
+                f"Parameter name {name!r} can occur inside a number's text. "
+                "Rename the parameter."
+            )
+        if not _EXPRESSION_CHARS.isdisjoint(name) or _SUBSTITUTED in name:
+            raise SyntaxError(
+                f"Parameter name {name!r} contains whitespace or one of "
+                "( ) + - * / ^ ,. Rename the parameter."
+            )
+
+    slots = Counter(tok.value for tok in toks if tok.type == "PARAM")
+    resolved = src
+    for name in sorted(parameters, key=len, reverse=True):
+        if resolved.count(name) != slots[name]:
+            raise SyntaxError(
+                f"Parameter name {name!r} also occurs outside gate arguments. "
+                "Rename the parameter."
+            )
+        resolved = resolved.replace(name, _SUBSTITUTED)
+
+
 def validate_qasm(src: str, parameters: Collection[str] = ()) -> None:
     """Validate QASM syntax, raising SyntaxError on error.
 
@@ -679,10 +718,14 @@ def validate_qasm(src: str, parameters: Collection[str] = ()) -> None:
             substituted. They are matched verbatim rather than as QASM
             identifiers, so subscripted and non-ASCII names such as
             ``w_0[3]`` or ``β[0]`` are accepted. Any identifier not named
-            here is still rejected as an unknown symbol.
+            here is still rejected as an unknown symbol. Values are
+            substituted as plain text, longest name first, so a name must
+            not occur outside its gate arguments, inside a number, or
+            contain whitespace or an operator.
     """
     toks = _lex(src, parameters)
     Parser(toks, parameters).parse()
+    _check_text_substitution(_strip_comments(src), parameters, toks)
 
 
 def validate_qasm_count_qubits(src: str) -> int:

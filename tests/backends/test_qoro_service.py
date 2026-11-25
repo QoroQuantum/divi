@@ -77,6 +77,7 @@ from tests.backends._helpers import (
     make_mock_status_response,
     make_qasm_payload,
     make_vjp_payload,
+    parametric_payload,
     patch_transport,
 )
 
@@ -1590,6 +1591,22 @@ class TestQoroServiceMock:
         ).decode()
         sent_entry = make_qasm_payload()
         assert decoded == sent_entry.circuit
+
+    def test_parametric_submission_rejects_a_name_text_substitution_would_misplace(
+        self, mocker, qoro_service_factory
+    ):
+        """The cloud substitutes values by name as plain text, so a parameter
+        named like its register is refused before any job is created."""
+        service = qoro_service_factory()
+        mock_make_request = mocker.patch.object(service, "_make_request")
+        payload = parametric_payload(
+            "rx(q) q[0];\n", rows=((0.5,),), parameters=("q",), n_qubits=1
+        )
+
+        with pytest.raises(ValueError, match="Parameter name 'q' also occurs"):
+            service.submit_circuits([payload])
+
+        mock_make_request.assert_not_called()
 
     def test_parametric_submission_multiple_payloads(
         self, mocker, qoro_service_factory

@@ -11,6 +11,7 @@ from divi.qasm import (
     validate_qasm,
     validate_qasm_count_qubits,
 )
+from tests._helpers import exact_match
 
 VALID_QASM = {
     "argvalues": [
@@ -553,28 +554,73 @@ def test_subscripted_placeholders_are_rejected_when_undeclared():
     assert is_valid_qasm(VECTOR_TEMPLATE, ("w_0[1]",)) is False
 
 
-def test_a_placeholder_does_not_match_inside_a_longer_identifier():
-    """A parameter named ``x`` must not be seen inside ``cx`` or ``rx``."""
-    qasm = """OPENQASM 2.0;
-include "qelib1.inc";
-qreg q[2];
-rx(x) q[0];
-cx q[0],q[1];
-"""
+@pytest.mark.parametrize(
+    "body, name, message",
+    [
+        pytest.param(
+            "rx(x) q[0]; cx q[0],q[1];",
+            "x",
+            "Parameter name 'x' also occurs outside gate arguments. "
+            "Rename the parameter.",
+            id="inside-a-gate-name",
+        ),
+        pytest.param(
+            "rx(q) q[0];",
+            "q",
+            "Parameter name 'q' also occurs outside gate arguments. "
+            "Rename the parameter.",
+            id="a-register-name",
+        ),
+        pytest.param(
+            "rx(e) q[0];",
+            "e",
+            "Parameter name 'e' can occur inside a number's text. "
+            "Rename the parameter.",
+            id="inside-a-number",
+        ),
+        pytest.param(
+            "rx(a) q[0];",
+            "a",
+            "Parameter name 'a' can occur inside a number's text. "
+            "Rename the parameter.",
+            id="inside-nan",
+        ),
+        pytest.param(
+            "rx(θ+) q[0];",
+            "θ+",
+            "Parameter name 'θ+' contains whitespace or one of ( ) + - * / ^ ,. "
+            "Rename the parameter.",
+            id="an-operator",
+        ),
+    ],
+)
+def test_names_text_substitution_would_misplace_are_rejected(body, name, message):
+    """Values are substituted as plain text, longest name first, so a name must
+    occur only in its own gate arguments."""
+    qasm = f'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\n{body}\n'
 
-    assert is_valid_qasm(qasm, ("x",)) is True
+    with pytest.raises(SyntaxError, match=exact_match(message)):
+        validate_qasm(qasm, (name,))
+
+
+def test_names_safe_to_substitute_as_text_validate():
+    """A name inside a longer one is fine: the longer one is substituted first."""
+    qasm = (
+        'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\n'
+        "rx(w_1) q[0];\nrx(w_10) q[0];\nrz(fine) q[0];\n"
+    )
+
+    validate_qasm(qasm, ("w_1", "w_10", "fine"))
 
 
 @pytest.mark.parametrize(
     "body, parameters, expected",
     [
         ("qreg q[1]; rz(theta[0]) q[0]; rx(theta) q[0];", ("theta", "theta[0]"), True),
-        ("qreg xA[1]; qreg xb[1]; rx(x) xA[0]; rx(x) xb[0];", ("x",), True),
         ("qreg q[1]; rx(aβ[0]) q[0];", ("β[0]",), False),
     ],
     ids=[
         "prefix-name-longest-first",
-        "no-match-before-identifier",
         "no-match-after-identifier",
     ],
 )
