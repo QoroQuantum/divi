@@ -41,7 +41,7 @@ from divi.qprog.ensembles.lassqd._sqd import (
     spatial_to_spin_occupations,
     to_sci_vector,
 )
-from tests._helpers import exact_match
+from tests._helpers import build_degenerate_orbital_integrals, exact_match
 from tests.qprog.ensembles.lassqd._helpers import (  # noqa: F401
     UNBOUNDED_ADVICE,
     assert_roots_match,
@@ -502,7 +502,7 @@ def test_lowest_roots_iterative_branch_lets_the_penalty_choose_the_root(
     """With the penalty applied as an operator, the iterative branch must still
     move the root: unpenalised the Sz=0 triplet component is lowest, penalised
     the singlet is. Neither solve may fall back to the dense form."""
-    one_body, two_body, n_orb = _degenerate_orbital_integrals(exchange=0.3)
+    one_body, two_body, n_orb = build_degenerate_orbital_integrals(exchange=0.3)
     h_spin, g_spin = spatial_to_spin_integrals(one_body, two_body, n_orb)
     space = [((a,), (b,)) for a in range(n_orb) for b in range(n_orb)]
     dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
@@ -924,26 +924,12 @@ def test_bit_flip_correction_leaves_valid_bitstrings_untouched():
     )
 
 
-def _degenerate_orbital_integrals(exchange, coulomb=1.0):
-    """Two degenerate, non-hopping orbitals with an on-site Coulomb repulsion
-    and an inter-orbital exchange term that, for ``exchange > 0``, puts the
-    Sz=0 triplet component below the singlets -- a Hund's-rule-like case."""
-    n_orb = 2
-    one_body = np.zeros((n_orb, n_orb))
-    two_body = np.zeros((n_orb,) * 4)
-    two_body[0, 0, 0, 0] = coulomb
-    two_body[1, 1, 1, 1] = coulomb
-    two_body[0, 1, 1, 0] = exchange
-    two_body[1, 0, 0, 1] = exchange
-    return one_body, two_body, n_orb
-
-
 @pytest.mark.parametrize("lambda_penalty", [0.0, 0.2, 20.0])
 def test_the_singlet_solve_skips_a_lower_triplet(lambda_penalty):
     """The lowest projected root is the Sz=0 triplet component (S^2 = 2, energy
     -0.3). The singlet solve must return the singlet (energy 0.3) whatever the
     penalty, including one too small to lift the triplet above it."""
-    one_body, two_body, n_orb = _degenerate_orbital_integrals(exchange=0.3)
+    one_body, two_body, n_orb = build_degenerate_orbital_integrals(exchange=0.3)
     solver = _solver(
         n_orb,
         1,

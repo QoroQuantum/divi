@@ -101,24 +101,54 @@ def _reduce_by_determinant(
     return dets[starts], np.add.reduceat(amplitudes, starts)
 
 
+def _validate_operator(operator: SparsePauliOp, name: str) -> SparsePauliOp:
+    """``operator`` with zero terms dropped.
+
+    Raises:
+        ValueError: If no term is left, or a coefficient is complex.
+    """
+    operator = operator.simplify(atol=0)
+    if not operator.coeffs.any():
+        raise ValueError(f"{name} has no non-zero terms.")
+    if np.abs(operator.coeffs.imag).max() > 1e-12:
+        raise ValueError(f"{name} is not Hermitian: it has complex coefficients.")
+    return operator
+
+
 class ConfigurationSubspace:
     """A set of configurations with the Hamiltonian projected onto it.
 
+    With a ``penalty`` operator ``D``, the eigenvector is that of
+    ``H + lambda_penalty * D_P @ D_P``, where ``H`` and ``D_P`` are the
+    projections onto the subspace, and :attr:`energy` is its ``<H>`` without
+    the penalty. ``S^2 - S(S+1)`` keeps the eigenvector near spin ``S``.
+
     Args:
         hamiltonian: Hermitian qubit Hamiltonian, of any width.
+        penalty: Hermitian operator on the same qubits, or ``None``.
+        lambda_penalty: Weight of the penalty.
 
     Raises:
-        ValueError: If the Hamiltonian is empty or not Hermitian.
+        ValueError: If the Hamiltonian or penalty is empty or not Hermitian,
+            the penalty acts on a different number of qubits, or
+            ``lambda_penalty`` is negative or not finite.
     """
 
-    def __init__(self, hamiltonian: SparsePauliOp):
-        hamiltonian = hamiltonian.simplify(atol=0)
-        if hamiltonian.size == 0:
-            raise ValueError("Hamiltonian has no non-zero terms.")
-        if np.abs(hamiltonian.coeffs.imag).max() > 1e-12:
+    def __init__(
+        self,
+        hamiltonian: SparsePauliOp,
+        *,
+        penalty: SparsePauliOp | None = None,
+        lambda_penalty: float = 0.2,
+    ):
+        if not (np.isfinite(lambda_penalty) and lambda_penalty >= 0):
             raise ValueError(
-                "Hamiltonian is not Hermitian: it has complex coefficients."
+                "lambda_penalty must be finite and non-negative; "
+                f"got {lambda_penalty!r}."
             )
+        hamiltonian = _validate_operator(hamiltonian, "Hamiltonian")
+        if penalty is not None:
+            penalty = _validate_operator(penalty, "Penalty")
 
         self.n_qubits = _require_qiskit_num_qubits(hamiltonian.num_qubits)
         self._n_limbs = _n_limbs(self.n_qubits)
@@ -146,10 +176,19 @@ class ConfigurationSubspace:
         self._diagonal_z = self._z_masks[flip_free]
         self._diagonal_factors = self._factors[flip_free].real
 
+        self._penalty = None if penalty is None else ConfigurationSubspace(penalty)
+        if self._penalty is not None and self._penalty.n_qubits != self.n_qubits:
+            raise ValueError(
+                f"The penalty acts on {self._penalty.n_qubits} qubits; the "
+                f"Hamiltonian on {self.n_qubits}."
+            )
+        self.lambda_penalty = lambda_penalty
         self.clear()
 
     def clear(self) -> None:
         """Forget every configuration and the solution built on them."""
+        if self._penalty is not None:
+            self._penalty.clear()
         self.configs: list[str] = []
         self._index: dict[str, int] = {}
         self._dets = np.empty((0, self._n_limbs), dtype=np.uint64)
@@ -160,7 +199,8 @@ class ConfigurationSubspace:
 
     @property
     def energy(self) -> float:
-        """Lowest eigenvalue of the projected Hamiltonian.
+        """``<H>`` of the eigenvector: without a penalty, the lowest eigenvalue
+        of the projected Hamiltonian.
 
         Raises:
             ValueError: If the eigensystem has not been solved.
@@ -174,6 +214,8 @@ class ConfigurationSubspace:
         fresh = [c for c in dict.fromkeys(configs) if c not in self._index]
         if not fresh:
             return 0
+        if self._penalty is not None:
+            self._penalty.add_configurations(fresh)
         limbs = configs_to_limbs(fresh, self.n_qubits)
         for config in fresh:
             self._index[config] = len(self.configs)
@@ -193,11 +235,19 @@ class ConfigurationSubspace:
         keep = np.abs(self.eigenvector) > threshold
         if keep.all() or not keep.any():
             return 0
+        self.eigenvector = self.eigenvector[keep]
+        self._retain(keep)
+        if self._penalty is not None:
+            self._penalty._retain(keep)
+        return int((~keep).sum())
+
+    def _retain(self, keep: np.ndarray) -> None:
+        """Keep only the configurations, and matrix rows and columns, that
+        ``keep`` marks."""
         kept = np.flatnonzero(keep)
         self.configs = [self.configs[i] for i in kept]
         self._index = {config: i for i, config in enumerate(self.configs)}
         self._dets = self._dets[kept]
-        self.eigenvector = self.eigenvector[kept]
         matrix = self.hamiltonian_matrix
         if matrix is not None:
             entries = matrix.tocoo()
@@ -214,7 +264,6 @@ class ConfigurationSubspace:
                 shape=(kept.size, kept.size),
             )
             self._matrix_size = kept.size
-        return int((~keep).sum())
 
     def _lookup(self, flips: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Positions in ``flips`` that some Pauli term flips by, and the term
@@ -281,8 +330,10 @@ class ConfigurationSubspace:
         """Bring the CI matrix up to the current configurations.
 
         Only the columns of configurations added since the last call are
-        computed; the matching rows follow by hermiticity.
+        computed; the matching rows are their conjugate transposes.
         """
+        if self._penalty is not None:
+            self._penalty.extend_hamiltonian_matrix()
         n_configs = len(self.configs)
         matrix = self.hamiltonian_matrix
         n_old = self._matrix_size
@@ -323,7 +374,7 @@ class ConfigurationSubspace:
         )
 
     def solve_eigensystem(self, warm_start: bool = False) -> None:
-        """Lowest eigenpair of the CI matrix.
+        """Lowest eigenpair of the CI matrix, penalised when a penalty is set.
 
         ``warm_start`` seeds the sparse solver with the previous eigenvector,
         zero-padded to the current dimension.
@@ -331,9 +382,15 @@ class ConfigurationSubspace:
         Raises:
             ValueError: If the matrix has not been built.
         """
-        matrix = self.hamiltonian_matrix
-        if matrix is None:
+        hamiltonian = self.hamiltonian_matrix
+        deviation = None if self._penalty is None else self._penalty.hamiltonian_matrix
+        if hamiltonian is None or (self._penalty is not None and deviation is None):
             raise ValueError("Build the Hamiltonian matrix before solving.")
+        matrix = (
+            hamiltonian
+            if deviation is None
+            else hamiltonian + self.lambda_penalty * (deviation @ deviation)
+        )
 
         n = self._matrix_size
         if n <= _DENSE_SOLVE_THRESHOLD:
@@ -351,7 +408,11 @@ class ConfigurationSubspace:
         if np.iscomplexobj(vector):
             pivot = vector[np.argmax(np.abs(vector))]
             vector = vector * (np.conj(pivot) / abs(pivot))
-        self._energy = float(values[0])
+        self._energy = (
+            float(values[0])
+            if deviation is None
+            else float(np.vdot(vector, hamiltonian @ vector).real)
+        )
         self.eigenvector = vector
 
     def diagonal_of(self, dets: np.ndarray) -> np.ndarray:

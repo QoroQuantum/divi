@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ._subspace import ConfigurationSubspace
+"""Quantum-selected configuration interaction."""
+
+from ._fcisolver import QSCISolver
 from ._workflow import QSCI, ExpansionRecord, QSCIState, extrapolate_pt2_to_zero
 
 __all__ = [
-    "ConfigurationSubspace",
     "ExpansionRecord",
     "QSCI",
+    "QSCISolver",
     "QSCIState",
     "extrapolate_pt2_to_zero",
 ]

@@ -15,6 +15,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.reporting._session import ProgressSession
+from tests._helpers import H2_ATOM, run_mean_field
 from tests.qprog._helpers import RecordingProgressSession
 
 _OPTIMIZER_FACTORIES = [
@@ -81,6 +82,21 @@ def gradient_free_optimizer(request):
 def checkpointing_optimizer(request):
     """Parametrize over optimizers that support save/load checkpointing."""
     return request.param()
+
+
+@pytest.fixture
+def h2_mean_field():
+    """H2/6-31G RHF; skips the test when PySCF is not installed."""
+    return run_mean_field(H2_ATOM, basis="6-31g")
+
+
+@pytest.fixture
+def h2_active_space(h2_mean_field):
+    """``(h1, eri, ecore)`` of H2/6-31G CAS(2,2)."""
+    mcscf = pytest.importorskip("pyscf.mcscf")
+    casci = mcscf.CASCI(h2_mean_field, 2, 2)
+    h1, ecore = casci.get_h1eff()
+    return h1, casci.get_h2eff(), ecore
 
 
 @pytest.fixture(params=["adjoint", "shift-rule"])

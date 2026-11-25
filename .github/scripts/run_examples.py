@@ -215,6 +215,12 @@ TUTORIALS: dict[str, dict] = {
             ),
         ],
     },
+    "chemistry/qsci_fcisolver_n2.py": {
+        "timeout_seconds": 300,
+        "patches": [
+            ("BOND_LENGTHS = (1.1, 1.6, 2.2, 2.7)", "BOND_LENGTHS = (1.1, 2.7)"),
+        ],
+    },
     "chemistry/vqe_fcisolver_casscf_h2o.py": {
         "timeout_seconds": 300,
         "patches": [

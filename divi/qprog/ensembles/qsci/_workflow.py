@@ -15,6 +15,7 @@ import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner
+from divi.qprog.mixins import SolutionSamplingMixin
 from divi.qprog.quantum_program import QuantumProgram
 
 from .._base import ProgramEnsemble, ReportingLevel
@@ -26,7 +27,9 @@ class ExpansionRecord(NamedTuple):
 
     Attributes:
         subspace_size: Configurations in the subspace.
-        energy: Lowest eigenvalue of the Hamiltonian projected onto it.
+        energy: ``<H>`` of the subspace's eigenvector, a variational upper
+            bound; with no penalty, the lowest eigenvalue of the Hamiltonian
+            projected onto it.
         pt2_correction: Epstein-Nesbet second-order correction to ``energy``.
     """
 
@@ -40,8 +43,8 @@ class QSCIState:
     """Result of a :class:`QSCI` round.
 
     Attributes:
-        energy: Lowest eigenvalue in the final subspace, a variational upper
-            bound on the ground-state energy.
+        energy: ``<H>`` of the final eigenvector, a variational upper bound on
+            the ground-state energy.
         configs: The final subspace's configurations, in eigenvector order.
         eigenvector: Amplitude of each configuration.
         records: One :class:`ExpansionRecord` per expansion step, starting with
@@ -120,10 +123,13 @@ class QSCI(ProgramEnsemble):
     Args:
         hamiltonian: Hermitian qubit Hamiltonian, of any width.
         program_factory: Builds the sampling programs from the backend, keyed by
-            program id. Each must expose ``probabilities()``, as
-            :class:`~divi.qprog.algorithms.TimeEvolution` does with no
-            observable, and its bitstrings must give qubit ``q`` at character
-            ``q``.
+            program id. Each is either a
+            :class:`~divi.qprog.mixins.SolutionSamplingMixin` program such as
+            :class:`~divi.qprog.algorithms.VQE`, whose ``best_probs`` after
+            ``run()`` are summed over parameter sets, or exposes
+            ``probabilities()``, as :class:`~divi.qprog.algorithms.TimeEvolution`
+            does with no observable. Bitstrings must give qubit ``q`` at
+            character ``q``.
         backend: Backend the sampling programs run on.
         config_filter: Keeps a sampled bitstring in the seed when it returns
             true. ``None`` keeps all.
@@ -135,11 +141,19 @@ class QSCI(ProgramEnsemble):
             are pruned after each step.
         delta_conv: Expansion stops once a step lowers the energy by no more
             than this (Hartree).
+        penalty: Hermitian operator ``D`` whose projected square, weighted by
+            ``lambda_penalty``, is added to the projected Hamiltonian before
+            every diagonalisation; energies stay ``<H>`` without it.
+            ``S^2 - S(S+1)`` keeps the state near spin ``S``. ``None`` adds
+            nothing.
+        lambda_penalty: Weight of ``penalty``.
         reporting_level: Forwarded to :class:`~divi.qprog.ensembles.ProgramEnsemble`.
 
     Raises:
         ValueError: If a count is not a positive integer, or ``n_expansions``
-            is negative; or if ``hamiltonian`` is empty or not Hermitian.
+            is negative; if ``lambda_penalty`` is negative or not finite; or if
+            ``hamiltonian`` or ``penalty`` is empty or not Hermitian, or they
+            act on different numbers of qubits.
     """
 
     def __init__(
@@ -155,6 +169,8 @@ class QSCI(ProgramEnsemble):
         max_subspace_size: int = 50_000,
         epsilon_wf: float = 1e-5,
         delta_conv: float = 1e-6,
+        penalty: SparsePauliOp | None = None,
+        lambda_penalty: float = 0.2,
         reporting_level: ReportingLevel = ReportingLevel.COMPACT,
     ):
         for name, value, minimum in (
@@ -182,12 +198,17 @@ class QSCI(ProgramEnsemble):
         self.max_subspace_size = max_subspace_size
         self.epsilon_wf = epsilon_wf
         self.delta_conv = delta_conv
-        self._subspace = ConfigurationSubspace(hamiltonian)
+        self.penalty = penalty
+        self.lambda_penalty = lambda_penalty
+        self._subspace = ConfigurationSubspace(
+            hamiltonian, penalty=penalty, lambda_penalty=lambda_penalty
+        )
 
     def initial_state(self) -> QSCIState:
         return QSCIState()
 
     def is_complete(self, state: QSCIState) -> bool:
+        """Whether ``state`` holds a diagonalised subspace."""
         return state.eigenvector is not None
 
     def create_programs(self, state: QSCIState | None = None):
@@ -197,7 +218,11 @@ class QSCI(ProgramEnsemble):
     def _seed_configs(self) -> list[str]:
         sampled: Counter[str] = Counter()
         for program in self.programs.values():
-            sampled.update(program.probabilities())
+            if isinstance(program, SolutionSamplingMixin):
+                for distribution in program.best_probs.values():
+                    sampled.update(distribution)
+            else:
+                sampled.update(program.probabilities())
         ranked = (
             config
             for config, _ in sampled.most_common()

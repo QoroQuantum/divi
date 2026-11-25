@@ -6,15 +6,19 @@ import numpy as np
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.qprog.algorithms import TimeEvolution
-from divi.qprog.ensembles import (
+from divi.qprog.algorithms import VQE, TimeEvolution
+from divi.qprog.ensembles.qsci import (
     QSCI,
     ExpansionRecord,
     QSCIState,
+    _subspace,
     extrapolate_pt2_to_zero,
 )
-from divi.qprog.ensembles._qsci import ConfigurationSubspace, _subspace
-from divi.qprog.ensembles._qsci._subspace import configs_to_limbs, limbs_to_configs
+from divi.qprog.ensembles.qsci._subspace import (
+    ConfigurationSubspace,
+    configs_to_limbs,
+    limbs_to_configs,
+)
 from tests._helpers import exact_match
 
 _N_QUBITS = 5
@@ -50,36 +54,68 @@ def _all_configs(n_qubits):
     return [format(i, f"0{n_qubits}b")[::-1] for i in range(2**n_qubits)]
 
 
-def _subspace_of(hamiltonian, configs):
-    subspace = ConfigurationSubspace(hamiltonian)
+def _subspace_of(hamiltonian, configs, **penalty):
+    subspace = ConfigurationSubspace(hamiltonian, **penalty)
     subspace.add_configurations(configs)
     subspace.extend_hamiltonian_matrix()
     subspace.solve_eigensystem()
     return subspace
 
 
-def _sampling_programs(mocker, distribution):
+def _build_probability_program(mocker, distribution):
     program = mocker.Mock()
     program.probabilities.return_value = distribution
-    return {"sampler": program}
+    return program
 
 
-def _qsci_on(mocker, dummy_simulator, distribution, hamiltonian=None, **kwargs):
+def _build_vqe(mocker, best_probs):
+    vqe = mocker.Mock(spec=VQE)
+    vqe.best_probs = best_probs
+    return vqe
+
+
+def _build_qsci(dummy_simulator, programs, hamiltonian=None, **kwargs):
+    """A QSCI whose sampling programs are ``programs``, already run."""
     qsci = QSCI(
         hamiltonian or _random_hamiltonian(_N_QUBITS, 3, odd_y=False),
         lambda backend: {},
         backend=dummy_simulator,
         **kwargs,
     )
-    qsci._programs = _sampling_programs(mocker, distribution)
+    qsci.programs = programs
     return qsci
 
 
-@pytest.mark.parametrize("odd_y", [False, True], ids=["real", "complex"])
-@pytest.mark.parametrize("dense", [True, False], ids=["dense", "sparse"])
-def test_ground_state_of_full_space_matches_exact(mocker, odd_y, dense):
-    if not dense:
+def _qsci_on(mocker, dummy_simulator, distribution, hamiltonian=None, **kwargs):
+    return _build_qsci(
+        dummy_simulator,
+        {"sampler": _build_probability_program(mocker, distribution)},
+        hamiltonian,
+        **kwargs,
+    )
+
+
+def _lowest_penalised_state(hamiltonian, penalty, lambda_penalty):
+    """The lowest eigenvector of ``H + lambda * D @ D`` over the whole space,
+    and its ``<H>``."""
+    dense_hamiltonian = hamiltonian.to_matrix()
+    dense_penalty = penalty.to_matrix()
+    _, vectors = np.linalg.eigh(
+        dense_hamiltonian + lambda_penalty * dense_penalty @ dense_penalty
+    )
+    expected = vectors[:, 0]
+    return expected, np.vdot(expected, dense_hamiltonian @ expected).real
+
+
+@pytest.fixture(params=["dense", "sparse"])
+def solver_path(request, mocker):
+    """Diagonalise densely, or with the sparse solver at every size."""
+    if request.param == "sparse":
         mocker.patch.object(_subspace, "_DENSE_SOLVE_THRESHOLD", 0)
+
+
+@pytest.mark.parametrize("odd_y", [False, True], ids=["real", "complex"])
+def test_ground_state_of_full_space_matches_exact(solver_path, odd_y):
     hamiltonian = _random_hamiltonian(_N_QUBITS, 11, odd_y=odd_y)
 
     subspace = _subspace_of(hamiltonian, _all_configs(_N_QUBITS))
@@ -123,6 +159,57 @@ def test_extending_matrix_equals_building_it_whole():
         whole.hamiltonian_matrix.toarray(),
         atol=1e-12,
     )
+
+
+@pytest.mark.parametrize("odd_y", [False, True], ids=["real", "complex"])
+def test_penalised_state_is_the_lowest_of_the_penalised_hamiltonian(solver_path, odd_y):
+    hamiltonian = _random_hamiltonian(_N_QUBITS, 11, odd_y=odd_y)
+    penalty = _random_hamiltonian(_N_QUBITS, 4, odd_y=False)
+
+    subspace = _subspace_of(
+        hamiltonian, _all_configs(_N_QUBITS), penalty=penalty, lambda_penalty=0.7
+    )
+
+    expected, energy = _lowest_penalised_state(hamiltonian, penalty, 0.7)
+    state = np.zeros(2**_N_QUBITS, dtype=complex)
+    state[[_basis_index(c) for c in subspace.configs]] = subspace.eigenvector
+    assert abs(np.vdot(expected, state)) == pytest.approx(1.0, abs=1e-8)
+    assert subspace.energy == pytest.approx(energy, abs=1e-9)
+
+
+def test_penalty_follows_extension():
+    hamiltonian = _random_hamiltonian(_N_QUBITS, 8, odd_y=False)
+    penalty = _random_hamiltonian(_N_QUBITS, 2, odd_y=False)
+    configs = _all_configs(_N_QUBITS)[:20]
+    grown = ConfigurationSubspace(hamiltonian, penalty=penalty)
+    for chunk in (configs[:7], configs[7:]):
+        grown.add_configurations(chunk)
+        grown.extend_hamiltonian_matrix()
+
+    grown.solve_eigensystem()
+
+    whole = _subspace_of(hamiltonian, configs, penalty=penalty)
+    assert grown.energy == pytest.approx(whole.energy, abs=1e-10)
+
+
+def test_penalty_follows_pruning():
+    hamiltonian = _random_hamiltonian(_N_QUBITS, 8, odd_y=False)
+    penalty = _random_hamiltonian(_N_QUBITS, 2, odd_y=False)
+    subspace = _subspace_of(hamiltonian, _all_configs(_N_QUBITS), penalty=penalty)
+
+    subspace.prune(float(np.sort(np.abs(subspace.eigenvector))[5]))
+    subspace.solve_eigensystem()
+
+    rebuilt = _subspace_of(hamiltonian, subspace.configs, penalty=penalty)
+    assert subspace.energy == pytest.approx(rebuilt.energy, abs=1e-10)
+
+
+def test_penalty_on_another_register_is_rejected():
+    with pytest.raises(
+        ValueError,
+        match=exact_match("The penalty acts on 5 qubits; the Hamiltonian on 4."),
+    ):
+        ConfigurationSubspace(_H_SMALL, penalty=_random_hamiltonian(5, 1, odd_y=False))
 
 
 def test_wide_register_matches_four_qubit_reference():
@@ -212,11 +299,24 @@ def test_malformed_configurations_are_rejected(configs, message):
         ConfigurationSubspace(_H_SMALL).add_configurations(configs)
 
 
-def test_non_hermitian_hamiltonian_is_rejected():
-    hamiltonian = SparsePauliOp.from_list([("XZ", 1.0 + 0.5j)])
+_NON_HERMITIAN = SparsePauliOp.from_list([("XZ", 1.0 + 0.5j)])
+_EMPTY = SparsePauliOp.from_list([("XZ", 0.0)])
 
-    with pytest.raises(ValueError, match="not Hermitian"):
-        ConfigurationSubspace(hamiltonian)
+
+@pytest.mark.parametrize(
+    "operators, message",
+    [
+        ({"hamiltonian": _NON_HERMITIAN}, "Hamiltonian is not Hermitian"),
+        ({"hamiltonian": _EMPTY}, "Hamiltonian has no non-zero terms"),
+        ({"penalty": _NON_HERMITIAN}, "Penalty is not Hermitian"),
+        ({"penalty": _EMPTY}, "Penalty has no non-zero terms"),
+    ],
+)
+def test_invalid_operators_are_named_when_rejected(operators, message):
+    with pytest.raises(ValueError, match=message):
+        ConfigurationSubspace(
+            **{"hamiltonian": SparsePauliOp.from_list([("ZI", 1.0)]), **operators}
+        )
 
 
 def test_configurations_round_trip_through_limbs():
@@ -258,6 +358,87 @@ def test_seed_is_filtered_ranked_and_capped(mocker, dummy_simulator):
     state = qsci.update_state(qsci.initial_state())
 
     assert set(state.configs) == {"00101", "01001"}
+
+
+@pytest.mark.parametrize(
+    "best_probs",
+    [
+        {0: {"00011": 0.3}, 1: {"00011": 0.3, "00101": 0.5}},
+        {0: {"00011": 0.3, "00101": 0.5}, 1: {"00011": 0.3}},
+    ],
+    ids=["runner-up-last", "runner-up-first"],
+)
+def test_seed_sums_every_parameter_set_of_a_solution_sampling_program(
+    mocker, dummy_simulator, best_probs
+):
+    qsci = _build_qsci(
+        dummy_simulator,
+        {"vqe": _build_vqe(mocker, best_probs)},
+        max_seed_configs=1,
+        n_expansions=0,
+    )
+
+    state = qsci.update_state(qsci.initial_state())
+
+    assert state.configs == ("00011",)
+
+
+def test_seed_pools_solution_sampling_and_probability_programs(mocker, dummy_simulator):
+    qsci = _build_qsci(
+        dummy_simulator,
+        {
+            "sampler": _build_probability_program(
+                mocker, {"00101": 0.25, "00110": 0.3}
+            ),
+            "vqe": _build_vqe(mocker, {0: {"00011": 0.3, "00101": 0.2}}),
+        },
+        max_seed_configs=1,
+        n_expansions=0,
+    )
+
+    state = qsci.update_state(qsci.initial_state())
+
+    assert state.configs == ("00101",)
+
+
+def test_penalty_applies_at_the_default_weight(mocker, dummy_simulator):
+    hamiltonian = _random_hamiltonian(_N_QUBITS, 11, odd_y=False)
+    penalty = _random_hamiltonian(_N_QUBITS, 4, odd_y=False)
+    every_config = dict.fromkeys(_all_configs(_N_QUBITS), 1 / 2**_N_QUBITS)
+    qsci = _qsci_on(
+        mocker,
+        dummy_simulator,
+        every_config,
+        hamiltonian,
+        penalty=penalty,
+        n_expansions=0,
+    )
+
+    state = qsci.update_state(qsci.initial_state())
+
+    _, energy = _lowest_penalised_state(hamiltonian, penalty, 0.2)
+    assert state.energy == pytest.approx(energy, abs=1e-9)
+
+
+def test_expansion_keeps_the_penalty(mocker, dummy_simulator):
+    hamiltonian = _random_hamiltonian(_N_QUBITS, 11, odd_y=False)
+    penalty = _random_hamiltonian(_N_QUBITS, 4, odd_y=False)
+    qsci = _qsci_on(
+        mocker,
+        dummy_simulator,
+        {"00000": 0.6, "11000": 0.4},
+        hamiltonian,
+        penalty=penalty,
+        expansion_width=4,
+        n_expansions=3,
+        delta_conv=-1.0,
+        epsilon_wf=1e-3,
+    )
+
+    state = qsci.update_state(qsci.initial_state())
+
+    rebuilt = _subspace_of(hamiltonian, state.configs, penalty=penalty)
+    assert state.energy == pytest.approx(rebuilt.energy, abs=1e-10)
 
 
 def test_every_sample_filtered_out_raises(mocker, dummy_simulator):
@@ -366,6 +547,17 @@ def test_invalid_counts_are_rejected(dummy_simulator, kwargs):
 
     with pytest.raises(ValueError, match=f"{name} must be an integer"):
         QSCI(_H_SMALL, lambda backend: {}, backend=dummy_simulator, **kwargs)
+
+
+@pytest.mark.parametrize("lambda_penalty", [-0.1, float("inf"), float("nan")])
+def test_invalid_lambda_penalty_is_rejected(lambda_penalty):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            f"lambda_penalty must be finite and non-negative; got {lambda_penalty!r}."
+        ),
+    ):
+        ConfigurationSubspace(_H_SMALL, lambda_penalty=lambda_penalty)
 
 
 def test_extrapolation_recovers_the_intercept_of_a_linear_trend():

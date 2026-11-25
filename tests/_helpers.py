@@ -145,6 +145,37 @@ def run_mean_field(atom: str, basis: str = "sto-3g", spin: int = 0):
     return (scf.ROHF if spin else scf.RHF)(molecule).run(verbose=0)
 
 
+H2_ATOM = "H 0 0 0; H 0 0 0.74"
+H3_CHAIN_ATOM = "H 0 0 0; H 0 0 0.9; H 0 0 1.8"
+
+
+def run_mcscf(
+    method, mean_field, n_orbitals, n_electrons, fcisolver=None, natorb=False
+):
+    """Run a quiet PySCF ``method``, with ``fcisolver`` replacing its FCI solver."""
+    mc = method(mean_field, n_orbitals, n_electrons)
+    mc.verbose = 0
+    mc.natorb = natorb
+    if fcisolver is not None:
+        mc.fcisolver = fcisolver
+    mc.kernel()
+    return mc
+
+
+def build_degenerate_orbital_integrals(exchange, coulomb=1.0):
+    """Two degenerate, non-hopping orbitals with an on-site Coulomb repulsion
+    and an inter-orbital exchange term that, for ``exchange > 0``, puts the
+    Sz=0 triplet component below the singlets -- a Hund's-rule-like case."""
+    n_orb = 2
+    one_body = np.zeros((n_orb, n_orb))
+    two_body = np.zeros((n_orb,) * 4)
+    two_body[0, 0, 0, 0] = coulomb
+    two_body[1, 1, 1, 1] = coulomb
+    two_body[0, 1, 1, 0] = exchange
+    two_body[1, 0, 0, 1] = exchange
+    return one_body, two_body, n_orb
+
+
 def unitary(simulator, circuit: QuantumCircuit) -> np.ndarray:
     """``circuit``'s unitary, column ``j`` its output state on basis input ``j``,
     with qubit 0 the least-significant bit."""

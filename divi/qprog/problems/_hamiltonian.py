@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Self
 
 import numpy as np
+import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 
 from divi._optional import import_optional
@@ -124,7 +125,9 @@ class MolecularProblem(HamiltonianProblem):
 
     Construct it from integrals directly, from a molecule with
     :meth:`from_molecule`, from a PySCF mean field's active space with
-    :meth:`from_casci`, or from an FCIDUMP file with :meth:`from_fcidump`. The electron counts may differ, as for a
+    :meth:`from_casci`, from the integrals PySCF passes an active-space solver
+    with :meth:`from_active_space`, or from an FCIDUMP file with
+    :meth:`from_fcidump`. The electron counts may differ, as for a
     spin-polarised fragment; :meth:`from_molecule` builds integrals for
     closed-shell molecules only, and keeps an open-shell PySCF molecule for
     :class:`~divi.qprog.ensembles.lassqd.LASSQD`.
@@ -252,6 +255,42 @@ class MolecularProblem(HamiltonianProblem):
             n_alpha=int(n_alpha),
             n_beta=int(n_beta),
             constant=float(constant),
+        )
+
+    @classmethod
+    def from_active_space(
+        cls,
+        h1e: npt.ArrayLike,
+        eri: npt.ArrayLike,
+        norb: int,
+        nelec: int | tuple[int, int],
+        ecore: float = 0.0,
+    ) -> Self:
+        """Build the problem PySCF passes an active-space solver's ``kernel``.
+
+        Requires the ``chem`` extra.
+
+        Args:
+            h1e: One-body integrals, ``(norb, norb)``.
+            eri: Two-body integrals in chemist order, in any PySCF packing.
+            norb: Active orbitals.
+            nelec: Active electrons, as a total split as PySCF splits it (the
+                odd one alpha) or as ``(n_alpha, n_beta)``.
+            ecore: Core energy, kept as :attr:`constant`.
+        """
+        ao2mo = import_optional(
+            "pyscf.ao2mo", extra="chem", capability="MolecularProblem.from_active_space"
+        )
+        if isinstance(nelec, tuple):
+            n_alpha, n_beta = nelec
+        else:
+            n_alpha, n_beta = nelec - nelec // 2, nelec // 2
+        return cls(
+            np.asarray(h1e),
+            ao2mo.restore(1, np.asarray(eri), norb),
+            n_alpha=int(n_alpha),
+            n_beta=int(n_beta),
+            constant=float(ecore),
         )
 
     @classmethod
