@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use Divi in your research, please cite it using the metadata below."
+type: software
+title: "Divi"
+abstract: "A Python library to automate generating, parallelizing, and executing quantum programs."
+authors:
+  - family-names: Darwish
+    given-names: Ahmed
+    affiliation: Qoro Quantum
+  - family-names: DiAdamo
+    given-names: Stephen
+    affiliation: Qoro Quantum
+version: 0.16.2
+license: Apache-2.0
+repository-code: "https://github.com/QoroQuantum/divi"
+url: "https://divi.readthedocs.io"
+keywords:
+  - quantum
+  - quantum-computing
+  - qiskit
+  - simulation
+  - optimization
+  - qaoa
+  - vqe
