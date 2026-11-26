@@ -441,7 +441,8 @@ Next Steps
   runs ``VQEFCISolver`` inside PySCF (``vqe_fcisolver_n2.py``,
   ``vqe_fcisolver_casscf_h2o.py``) and compares ansätze (``vqe_upccd_lih.py``,
   ``vqe_qcc_entanglers_h2.py``)
-- Learn about :doc:`../execution_workflows/optimizers` for optimisation strategies
+- Browse the :doc:`../api_reference/qprog/optimizers` for the available optimisation strategies, and
+  :doc:`../execution_workflows/optimizers` for gradient sources and early stopping
 - Explore :doc:`improving_results_qem` for error mitigation
 - Save and resume long runs with :doc:`../execution_workflows/resuming_long_runs`
 - Visualise the loss landscape with :doc:`../execution_workflows/visualization`

@@ -359,7 +359,7 @@ Limitations:
 Next Steps
 ----------
 
-- :doc:`optimizers` — choose an optimizer and interpret its convergence data.
+- :doc:`optimizers` — early stopping and interpreting optimizer convergence data.
 - :ref:`Result properties <reading-results>` — find parameter and loss
   histories on a variational program.
 - :ref:`dry-run` — preview one cost-pipeline evaluation used by a landscape

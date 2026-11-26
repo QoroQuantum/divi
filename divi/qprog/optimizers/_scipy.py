@@ -22,9 +22,21 @@ class ScipyMethod(Enum):
     """Supported optimisation methods from scipy.optimize."""
 
     NELDER_MEAD = "Nelder-Mead"
+    """Gradient-free simplex method (Nelder & Mead, *The Computer Journal*, 7(4),
+    1965)."""
+
     COBYLA = "COBYLA"
+    """Gradient-free local method that refines linear approximations of the
+    objective inside a trust region (Powell, 1994)."""
+
     L_BFGS_B = "L-BFGS-B"
+    """Limited-memory quasi-Newton method with bound constraints (Zhu et al.,
+    *ACM Transactions on Mathematical Software*, 23(4), 1997). Uses the program's
+    gradient."""
+
     SLSQP = "SLSQP"
+    """Sequential least-squares programming, a quasi-Newton method. Uses the same
+    gradient as L-BFGS-B."""
 
 
 _GRADIENT_METHODS = frozenset({ScipyMethod.L_BFGS_B, ScipyMethod.SLSQP})
@@ -36,7 +48,11 @@ class ScipyOptimizer(Optimizer):
 
     Supports gradient-free and gradient-based optimisation algorithms from scipy:
     Nelder-Mead simplex and COBYLA, which use only loss values, and L-BFGS-B and
-    SLSQP, which also use the program's gradient.
+    SLSQP, which also use the program's gradient (see
+    :ref:`optimizer-gradient-source`). Where the gradient is near zero at the
+    start, as on small or barren-plateau circuits, L-BFGS-B can reach its
+    ``gtol`` and stop after a few iterations, leaving a flat loss trajectory.
+    Select the method with :class:`ScipyMethod`. Does not support checkpointing.
     """
 
     def __init__(self, method: ScipyMethod):
@@ -152,7 +168,7 @@ class ScipyOptimizer(Optimizer):
         raise NotImplementedError(
             "ScipyOptimizer does not support state saving. Scipy's optimisation methods "
             "do not provide access to internal optimizer state during minimisation. "
-            "Please use MonteCarloOptimizer or PymooOptimizer for checkpointing support."
+            "Please use an optimizer whose supports_checkpointing is True."
         )
 
     @classmethod
@@ -170,7 +186,7 @@ class ScipyOptimizer(Optimizer):
         raise NotImplementedError(
             "ScipyOptimizer does not support state loading. Scipy's optimisation methods "
             "do not provide access to internal optimizer state during minimisation. "
-            "Please use MonteCarloOptimizer or PymooOptimizer for checkpointing support."
+            "Please use an optimizer whose supports_checkpointing is True."
         )
 
     def reset(self) -> None:
@@ -187,6 +203,6 @@ class ScipyOptimizer(Optimizer):
             NotImplementedError: ScipyOptimizer does not support checkpointing.
         """
         raise NotImplementedError(
-            "ScipyOptimizer does not support checkpointing. Please use "
-            "MonteCarloOptimizer or PymooOptimizer for checkpointing support."
+            "ScipyOptimizer does not support checkpointing. Please use an "
+            "optimizer whose supports_checkpointing is True."
         )

@@ -43,12 +43,17 @@ class MonteCarloState(BaseModel):
 
 
 class MonteCarloOptimizer(Optimizer):
-    """
-    Monte Carlo-based parameter search optimizer.
+    """Monte Carlo parameter search (Kalos & Whitlock, *Monte Carlo Methods*, 2008).
 
-    This optimizer samples parameter space randomly, selects the best-performing
-    samples, and uses them as centres for the next generation of samples with
-    decreasing variance. This implements a simple but effective evolutionary strategy.
+    Gradient-free stochastic search. Each iteration evaluates ``population_size``
+    parameter sets, keeps the ``n_best_sets`` with the lowest loss, and draws the
+    next population from Gaussian distributions centred on them with standard
+    deviation ``1 / (2 * (iteration + 1))``, so the search narrows over
+    iterations. With ``keep_best_params`` (the default) the selected sets also
+    carry over unchanged, which requires ``n_best_sets < population_size``.
+    Non-finite losses rank last, and the result is the best set seen across all
+    generations. :attr:`n_param_sets` equals ``population_size``. Supports
+    checkpointing, restoring the population and RNG state.
     """
 
     def __init__(

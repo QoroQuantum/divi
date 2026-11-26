@@ -36,15 +36,19 @@ class EarlyStopping:
     configurable criteria.  A single instance is created before the
     optimisation loop and :meth:`check` is called once per iteration.
 
+    Criteria are evaluated in priority order and the first to fire stops the
+    loop: patience (always active), then gradient norm, then cost variance.
+    Each reports its :class:`StopReason`.
+
     Args:
         patience: Number of consecutive iterations with no improvement
             (by at least ``min_delta``) before stopping. Must be ≥ 1.
         min_delta: Minimum absolute decrease in ``best_loss`` that counts
             as an improvement.  Must be ≥ 0.
         grad_norm_threshold: If not ``None``, stop when the L2 norm of the
-            gradient drops below this value.  Only effective when the
-            optimizer exposes gradient information (e.g. ``QUIVEROptimizer`` or
-            ``ScipyOptimizer`` with ``L_BFGS_B`` or ``SLSQP``).
+            gradient drops below this value.  Applies to optimizers that compute
+            the program's gradient or report one in their callback ``jac``; it
+            has no effect otherwise.
         variance_window: Number of recent cost values used to compute the
             rolling variance.  Must be ≥ 2.
         variance_threshold: If not ``None``, stop when the variance of

@@ -146,7 +146,9 @@ Variational Run Controls and Outputs
 
 For deeper variational workflow details, use these focused guides:
 
-- :doc:`optimizers` for optimizer behaviour and early stopping
+- :doc:`optimizers` for gradient sources, early stopping and optimizer results;
+  the :doc:`optimizer API reference <../api_reference/qprog/optimizers>` covers
+  each optimizer class
 - :doc:`resuming_long_runs` for checkpointing and state restore patterns
 - :doc:`visualization` for visualising optimisation trajectories, loss
   landscapes, and related diagnostics based on ``losses_history`` and

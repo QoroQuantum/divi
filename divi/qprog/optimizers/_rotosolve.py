@@ -70,12 +70,19 @@ class RotosolveOptimizer(Optimizer):
     ``{omega, ..., order * omega}``, one batch of ``2 * order + 1`` equidistant
     evaluations determines that polynomial, and the parameter moves to its global
     minimum. One iteration sweeps every parameter once, then measures the cost at
-    the result; the optimizer returns the best of these measurements.
+    the result; the optimizer returns the best of these measurements. It needs no
+    learning rate. Supports checkpointing, restoring the iterates and completed
+    sweeps.
 
     Frequencies come from the program's
-    :attr:`~divi.qprog.VariationalQuantumAlgorithm.parameter_space`; without a
-    program every parameter is taken to have frequency 1. See
-    :ref:`rotosolve-optimizer` for references.
+    :attr:`~divi.qprog.VariationalQuantumAlgorithm.parameter_space`
+    (Wierichs et al., *Quantum* 6, 677, 2022); without a program every parameter
+    is taken to have frequency 1. A program with a parameter of unknown frequency
+    raises :class:`~divi.pipeline.ContractViolation` from ``run()`` and
+    :meth:`~divi.qprog.QuantumProgram.dry_run`.
+
+    References: Ostaszewski et al., *Quantum* 5, 391, 2021; Nakanishi et al.,
+    *Phys. Rev. Research* 2, 043158, 2020.
 
     Args:
         shuffle: Sweep the parameters in a fresh random order each iteration,

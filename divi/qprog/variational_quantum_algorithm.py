@@ -1577,8 +1577,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             raise ValueError(
                 f"{type(self.optimizer).__name__} does not support checkpointing, "
                 "but checkpoint_config.checkpoint_dir was set. Remove the "
-                "checkpoint directory or use a checkpointing-capable optimizer "
-                "(e.g. MonteCarloOptimizer, PymooOptimizer, GridSearchOptimizer)."
+                "checkpoint directory or use an optimizer whose "
+                "supports_checkpointing is True."
             )
         checkpoint_dir = checkpoint_config.checkpoint_dir
         self._reject_used_checkpoint_dir(checkpoint_dir, self.current_iteration)

@@ -23,7 +23,10 @@ class GridSearchOptimizer(Optimizer):
 
     Evaluates all parameter combinations on a user-supplied grid in a
     single iteration and returns the best-performing parameters. Designed
-    for low-dimensional parameter spaces like CE-QAOA (gamma, beta).
+    for low-dimensional parameter spaces like CE-QAOA (gamma, beta). The grid is
+    evaluated in one pass regardless of ``max_iterations``, which warns if
+    greater than 1. Supports checkpointing, restoring the grid and the losses
+    already evaluated.
     """
 
     def __init__(
@@ -44,7 +47,8 @@ class GridSearchOptimizer(Optimizer):
             param_ranges: List of ``(low, high)`` tuples, one per parameter.
                 Used with *grid_points* to generate a Cartesian-product grid.
             grid_points: Number of grid points per parameter dimension.
-                Only used with *param_ranges*. Defaults to 20.
+                Only used with *param_ranges*. The grid holds
+                ``grid_points ** n_params`` points. Defaults to 20.
 
         Raises:
             ValueError: If neither *param_grid* nor *param_ranges* is provided,

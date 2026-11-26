@@ -315,7 +315,7 @@ Now that you have a VQE run working, continue with the focused guides:
 * **Scale up** — run many programs in parallel, or over adaptive rounds, with
   :doc:`execution_workflows/program_ensembles`.
 * **Improve noisy results** — mitigate errors with :doc:`algorithms/improving_results_qem`.
-* **Tune the optimizer** — see :doc:`execution_workflows/optimizers`.
+* **Tune the optimizer** — see :doc:`api_reference/qprog/optimizers` for the optimizer classes and :doc:`execution_workflows/optimizers` for gradient sources and early stopping.
 * **Inspect and diagnose runs** — :doc:`execution_workflows/visualization`.
 * **Understand how circuits flow through Divi** — the expand/execute/reduce model is in :doc:`execution_workflows/pipelines`, which also covers :ref:`previewing a run before you submit it <dry-run>`.
 * **End-to-end walkthroughs** — the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory on GitHub.

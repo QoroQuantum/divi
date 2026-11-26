@@ -333,7 +333,7 @@ Next Steps
 ----------
 
 - Run the ``tutorials/routing/ce_qaoa_routing.py`` tutorial
-- Explore :doc:`../execution_workflows/optimizers`
+- Explore the :doc:`../api_reference/qprog/optimizers`
 - See :doc:`combinatorial_optimization_qaoa_pce` for general QAOA usage
 
 References

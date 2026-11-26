@@ -18,8 +18,8 @@ from tests.qprog.optimizers._helpers import (
 
 _SCIPY_STATE = (
     "Scipy's optimisation methods do not provide access to internal optimizer "
-    "state during minimisation. Please use MonteCarloOptimizer or PymooOptimizer "
-    "for checkpointing support."
+    "state during minimisation. Please use an optimizer whose "
+    "supports_checkpointing is True."
 )
 
 
@@ -97,8 +97,8 @@ class TestScipyOptimizer:
             ),
             (
                 lambda tmp_path: ScipyOptimizer(ScipyMethod.L_BFGS_B).get_config(),
-                "ScipyOptimizer does not support checkpointing. Please use "
-                "MonteCarloOptimizer or PymooOptimizer for checkpointing support.",
+                "ScipyOptimizer does not support checkpointing. Please use an "
+                "optimizer whose supports_checkpointing is True.",
             ),
         ],
         ids=["save_state", "load_state", "get_config"],

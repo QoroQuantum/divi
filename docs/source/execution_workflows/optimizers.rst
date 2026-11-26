@@ -1,60 +1,22 @@
 Optimizers
 ==========
 
-.. list-table:: Per-step cost
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Optimizer
-     - Per-step cost
-   * - COBYLA or Nelder–Mead
-     - Grows with parameter count
-   * - Monte Carlo or CMA-ES
-     - Population-sized batches
-   * - SPSA or QN-SPSA
-     - Constant number of objective evaluations
-   * - QUIVER
-     - Controlled by direction count ``V``
-   * - ROSALIN or gCANS
-     - Adaptive samples for every gradient component
-   * - Rotosolve
-     - One small batch per parameter, in sequence
-   * - L-BFGS-B, SLSQP or QNG
-     - Parameter-shift and, for QNG, metric evaluations
-   * - Grid search
-     - Exponential in parameter count
-
-All optimizer classes are listed in the
+This guide covers behaviour shared across optimizers: where gradients come from,
+how to pick a metric estimator, which programs constrain the choice, early
+stopping, and reading results. Each optimizer's algorithm, parameters and
+references are documented on its class in the
 :doc:`optimizer API reference <../api_reference/qprog/optimizers>`. SciPy
-methods are selected with :class:`~divi.qprog.optimizers.ScipyMethod`.
+methods are selected with :class:`~divi.qprog.optimizers.ScipyMethod`, and
+CMA-ES and Differential Evolution with
+:class:`~divi.qprog.optimizers.PymooMethod`.
 
-Monte Carlo Optimisation
--------------------------
+.. _optimizer-gradient-source:
 
-The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimisation approach. It works by randomly sampling the parameter space and selecting configurations that minimise the target cost function.
+Gradient Source
+---------------
 
-Configure :class:`~divi.qprog.optimizers.MonteCarloOptimizer` by passing ``population_size`` (the number of parameter sets evaluated per iteration) and optionally ``n_best_sets`` (how many top-performing sets seed the next iteration) to its constructor. The read-only ``n_param_sets`` property then reflects the configured population size. By default (``keep_best_params=True``) the best sets also carry over unchanged, which requires ``n_best_sets < population_size``.
-
-SciPy Optimizers
-----------------
-
-Divi provides several SciPy-based optimizers through the :class:`~divi.qprog.optimizers.ScipyOptimizer` class:
-
-Nelder-Mead
-^^^^^^^^^^^
-
-Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimisation algorithm.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
-
-   optimizer = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
-
-L-BFGS-B
-^^^^^^^^
-
-L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that uses gradient information.
+Gradient-based optimizers receive the program's gradient from the variational
+algorithm.
 
 On a backend that estimates expectation values natively, without a noise model,
 and offers adjoint differentiation (:attr:`~divi.backends.CircuitRunner.supports_vjp`),
@@ -63,16 +25,8 @@ many parameters the circuit has. In a :class:`~divi.qprog.ensembles.ProgramEnsem
 these submissions go straight to the backend rather than into merged batches, and
 the progress display shows no batch row for them.
 
-Everywhere else (sampling backends, noise models, other Maestro simulation
-methods, error mitigation, and programs that bind data) Divi uses the parameter
-shift rule, which evaluates the function at shifted parameter values. Divi
-computes these parameter shifts in parallel.
-
-.. note::
-
-   On small or barren-plateau circuits the parameter-shift gradient can be
-   near-zero at the start, so L-BFGS-B may hit its ``gtol`` and stop after a
-   couple of iterations (a flat, uninformative loss trajectory).
+Otherwise Divi uses the parameter-shift rule, which evaluates the function at
+shifted parameter values, all in one batch.
 
 .. note::
 
@@ -85,97 +39,63 @@ computes these parameter shifts in parallel.
    Stochastic or approximate trotterization still requires SPSA or a
    gradient-free method.
 
-.. code-block:: python
+Troubleshooting: on small or barren-plateau circuits the gradient can be
+near-zero at the start, so L-BFGS-B may hit its ``gtol`` and stop after a couple
+of iterations, leaving a flat, uninformative loss trajectory.
 
-   optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
+Choosing a Metric Estimator
+---------------------------
 
-SLSQP
-^^^^^
+Optimizers that precondition their gradient with a metric take a
+:class:`~divi.qprog.optimizers.metrics.MetricEstimator`, and the estimator
+decides which programs they accept. The trade-off is between what the metric
+depends on and what it costs. The pullback metric
+(:class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator`) follows the
+loss and reuses the gradient measurement pass, but needs a loss built from
+expectation values. The Fubini–Study metric
+(:class:`~divi.qprog.optimizers.metrics.FubiniStudyMetricEstimator`) depends
+only on the ansatz, but needs Pauli-rotation gates with bare parameter angles.
+The stochastic-fidelity metric
+(:class:`~divi.qprog.optimizers.metrics.StochasticFidelityMetricEstimator`)
+also depends only on the ansatz, accepts any invertible ansatz, and costs a
+constant number of evaluations per step, at the price of a noisy estimate.
+Each optimizer's class documentation names its default.
 
-SLSQP (Sequential Least Squares Programming) is a quasi-Newton method using
-the same gradient as L-BFGS-B.
+Program-Specific Constraints
+----------------------------
 
-.. code-block:: python
+- A parameter in an unsupported gate or a non-linear angle, or with
+  incommensurate frequencies, has no parameter-shift rule; its program needs
+  adjoint differentiation, SPSA or a gradient-free method. QAOA has a rule only
+  under exact trotterization. An optimizer that needs the parameter-shift
+  gradient raises :exc:`NotImplementedError` for a program without one.
+- A loss computed from raw measurement counts has no gradient, so it needs a
+  gradient-free optimizer.
+- Checkpointing requires an optimizer whose ``supports_checkpointing`` is
+  ``True``. See :doc:`resuming_long_runs`.
 
-   optimizer = ScipyOptimizer(method=ScipyMethod.SLSQP)
+.. _rosalin-optimizer:
 
-COBYLA
-^^^^^^
+ROSALIN Compatibility
+---------------------
 
-COBYLA (Constrained Optimisation BY Linear Approximations) [#powell1994]_ is a gradient-free, local optimisation method—like Nelder-Mead—that supports nonlinear inequality constraints. It constructs successive linear approximations of the objective function and constraints, iteratively refining the solution within a trust region.
+:class:`~divi.qprog.optimizers.RosalinOptimizer` needs an expectation-valued VQA
+on a sampling backend, with ``shot_distribution`` unset or ``"weighted_random"``:
+either way each gradient component draws its own operator samples.
+``grouping_strategy="shadows"`` also works, drawing classical-shadow snapshots
+instead (see :ref:`measuring-observables`). Another ``shot_distribution``,
+``grouping_strategy="derandomised_shadows"`` or a backend that computes
+expectation values itself raises :class:`~divi.pipeline.ContractViolation` from
+``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`, as does a
+data-binding loss other than a plain mean or sum of predictions.
 
-.. code-block:: python
+Early Stopping
+--------------
 
-   optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
+Divi's :class:`~divi.qprog.EarlyStopping` controller terminates
+the loop automatically based on configurable criteria.
 
-PyMOO Optimizers
-----------------
-
-Divi also supports evolutionary algorithms through PyMOO:
-
-CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-CMA-ES [#hansen2001]_ is a stochastic, derivative-free method for numerical optimisation of non-linear or non-convex continuous optimisation problems.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import PymooOptimizer, PymooMethod
-
-   optimizer = PymooOptimizer(method=PymooMethod.CMAES)
-
-Differential Evolution
-^^^^^^^^^^^^^^^^^^^^^^
-
-Differential Evolution [#storn1997]_ is a method that optimises a problem by iteratively trying to improve a candidate solution with regard to a given measure of quality.
-
-.. code-block:: python
-
-   optimizer = PymooOptimizer(method=PymooMethod.DE)
-
-DE searches a box centred on the midpoint of the initial parameter sets, one
-period wide in each parameter (:math:`2\pi` where the period is unknown or above
-:math:`4\pi`). Initial sets that span more than the box are clipped to it, with a
-warning.
-
-Quantum Natural Gradient
-------------------------
-
-The :class:`~divi.qprog.optimizers.QNGOptimizer` preconditions the
-parameter-shift gradient with a regularised metric:
-
-.. math::
-
-   \theta \leftarrow \theta - \eta \, (G + \lambda I)^{-1} \nabla L,
-
-Choose a :class:`~divi.qprog.optimizers.metrics.MetricEstimator`:
-
-- :class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator` *(default)* shares
-  the loss-gradient measurement pass and scales with the loss, so rescaling the
-  loss leaves the step unchanged while the metric's mean diagonal is at least 1;
-  below that, the damping stays at ``regularization`` and the step shrinks with
-  the loss. It supports any loss that is a differentiable
-  function of the cost observables' expectation values, weighting each Pauli
-  term by the magnitude of its slope in the loss; it rejects losses read from
-  raw counts and supervised data-bound losses.
-
-- :class:`~divi.qprog.optimizers.metrics.FubiniStudyMetricEstimator` is
-  observable-independent and supports Pauli-rotation ansatze. It rejects
-  unsupported/composite-angle gates and data-bound programs.
-
-``solver="tikhonov"`` regularises flat directions; ``solver="pinv"`` uses a
-pseudo-inverse with cutoff ``rcond``.
-
-.. note::
-
-   Under ``"tikhonov"``, :math:`\lambda` must be large relative to the metric's
-   own scale, not merely positive: the step along a flat direction grows as
-   :math:`1/\lambda`, so ``1e-12`` gives a finite but enormous update. Keep
-   ``scale_regularization=True`` (the default), or set ``max_step_norm``. A
-   step larger than :math:`\pi/4` in any parameter is reported once per run.
-
-**Usage** is the same as any optimizer — pass an instance via the
-``optimizer=`` argument and call ``run()``:
+Pass an ``EarlyStopping`` instance to any variational algorithm:
 
 .. invisible-code-block: python
 
@@ -187,304 +107,6 @@ pseudo-inverse with cutoff ``rcond``.
    problem = MolecularProblem.from_molecule(
        gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr")
    )
-
-.. code-block:: python
-
-   from divi.qprog.algorithms import VQE
-   from divi.qprog.optimizers import QNGOptimizer
-
-   vqe = VQE(
-       problem,
-       backend=backend,
-       optimizer=QNGOptimizer(step_size=0.1, regularization=1e-3),
-       max_iterations=10,
-   )
-   vqe.run()
-
-To switch to the Fubini–Study metric, inject a different estimator:
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import QNGOptimizer
-   from divi.qprog.optimizers.metrics import FubiniStudyMetricEstimator
-
-   optimizer = QNGOptimizer(
-       metric_estimator=FubiniStudyMetricEstimator(),
-   )
-
-.. note::
-
-   QNG does not support checkpointing (``supports_checkpointing`` is
-   ``False``). Passing ``checkpoint_config`` with a checkpoint directory to
-   ``run()`` raises a ``ValueError`` upfront. The variational algorithm
-   already checkpoints the parameter history, so optimizer-level state is
-   not needed.
-
-QNG does not support QAOA or checkpointing.
-
-Simultaneous Perturbation (SPSA / QN-SPSA)
-------------------------------------------
-
-SPSA and QN-SPSA use a constant number of evaluations per step.
-
-SPSA
-^^^^
-
-The :class:`~divi.qprog.optimizers.SPSAOptimizer` [#spall1992]_ perturbs all
-parameters along one random :math:`\pm 1` direction and estimates the gradient
-from two evaluations:
-
-.. math::
-
-   \hat g_k = \frac{f(\theta + c_k h) - f(\theta - c_k h)}{2 c_k}\, h,
-   \qquad \theta \leftarrow \theta - a_k \hat g_k,
-
-The two points share a batch, so stochastic costs use one sampled Hamiltonian.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import SPSAOptimizer
-
-   optimizer = SPSAOptimizer()
-
-With no ``learning_rate``, the gain is **calibrated**: 25 sampled directions fix
-it so the first step is about ``2*pi/10`` in parameter space. Costs ``2 * calibration_steps``
-evaluations once; pass ``learning_rate=`` to skip it.
-
-``resamplings`` reduces gradient variance at proportional cost. ``blocking``
-spends an extra evaluation to reject steps whose loss rises by more than
-``allowed_increase``, which defaults to twice the loss's standard deviation at
-the start point and is fixed for the run.
-
-.. note::
-
-   A 1000× loss increase warns once.
-
-.. note::
-
-   A non-finite cost holds the step rather than entering the parameters. If no
-   evaluation is ever finite the result carries ``success=False``.
-
-.. note::
-
-   Pass ``rng=`` for reproducible directions. ``exact_loss=True`` spends one
-   extra evaluation for unbiased history and best-iterate selection. A QDrift
-   seed does not seed SPSA directions.
-
-QN-SPSA
-^^^^^^^
-
-The :class:`~divi.qprog.optimizers.QNSPSAOptimizer` [#gacon2021]_ preconditions
-SPSA with a pluggable metric:
-
-- :class:`~divi.qprog.optimizers.metrics.StochasticFidelityMetricEstimator` *(default)*
-  adds four state-overlap evaluations per step to SPSA's two objective
-  evaluations. It supports Qiskit-invertible ansatze, not data-bound programs.
-  QDrift uses one fixed ansatz realisation.
-
-- Fubini–Study or pullback estimators provide exact metrics, but their cost
-  scales with parameter count.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import QNSPSAOptimizer
-
-   # Faithful stochastic-fidelity metric (default)
-   optimizer = QNSPSAOptimizer(c=0.2, regularization=1e-3)
-
-   # Or reuse an exact metric with the SPSA gradient
-   from divi.qprog.optimizers.metrics import FubiniStudyMetricEstimator
-
-   optimizer = QNSPSAOptimizer(
-       metric_estimator=FubiniStudyMetricEstimator(),
-   )
-
-QN-SPSA bounds the preconditioned update to ``2*pi/10`` by default — the trust
-region acts after the metric solve, where a small eigenvalue can otherwise
-amplify a well-calibrated gradient. ``max_step_norm=None`` disables it.
-
-.. note::
-
-   Like QNG, neither SPSA nor QN-SPSA supports checkpointing
-   (``supports_checkpointing`` is ``False``): their only persistent state is the
-   parameter vector, which the variational algorithm already records. The
-   calibrated gains and running-average metric are recomputed each run.
-
-QUIVER (Adaptive Directional Gradients)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The :class:`~divi.qprog.optimizers.QUIVEROptimizer` [#coyle2026]_ estimates the
-gradient from ``V`` random directional derivatives:
-
-.. math::
-
-   \tilde\nabla^{\mathsf F} f = \frac{1}{V}\sum_{\ell=1}^{V}
-   \frac{f(\theta + \varepsilon v_\ell) - f(\theta - \varepsilon v_\ell)}
-   {2\varepsilon}\, v_\ell,
-   \qquad \theta \leftarrow \theta - a_k\,\tilde\nabla^{\mathsf F} f,
-
-This costs :math:`2V` evaluations.
-
-QUIVER uses Adam and adapts ``V`` and the per-direction shot count ``M`` with
-the paper's joint minimum-cost rule:
-
-.. math::
-
-   V^* = \frac{(N-1+\alpha_a)\widehat g^2}{\tau^2},
-   \qquad
-   M^* = \frac{N\widehat\sigma^2}{\alpha_a\widehat g^2}.
-
-The squared reconstructed-gradient norm and per-direction measurement variance
-are exponential moving averages. ``warmup`` holds the initial allocation fixed
-while they settle; later changes are limited to 0.7×–1.5× per step before the
-``V`` and ``M`` clamps are applied.
-
-``M_init=None`` inherits the backend's shot count, which also becomes the
-``M_max`` cap: ``M`` may fall and recover but never silently exceed that
-baseline. Pass a larger ``M_max`` to opt into late-run shot growth. ``M`` adapts
-only when the cost function exposes Divi's shot/variance contract; ``V`` adapts
-regardless, starting at 2, falling to 1, capped at ``min(n_params, 8)`` unless
-``V_max`` is given.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import QUIVEROptimizer
-
-   optimizer = QUIVEROptimizer(
-       epsilon=0.1,
-       allocation_alpha=1.0,
-   )
-
-``target_gradient_variance`` is loss-scale dependent; its default anchors the
-first :math:`V^*` to ``V_init``. Pass a value to enforce an absolute target.
-
-Use ``derivative_mode="parameter_shift"`` where an exact directional shift is
-valid; ``adapt_V=False`` or ``adapt_M=False`` pins the budget. QUIVER supports
-SPSA's ``blocking`` and ``exact_loss`` options, but not checkpointing. With no
-explicit ``learning_rate``, its Adam rate is ``2*(2*pi/10)/n_params``.
-
-QUIVER reports its reconstructed gradient to
-:class:`~divi.qprog.EarlyStopping`, so ``grad_norm_threshold``
-can stop a converged run before the allocation rule spends an explicit
-``M_max``. Without ``exact_loss`` or ``blocking``, the recorded loss is the
-average of the perturbed evaluations, not ``f(theta)``.
-
-.. note::
-
-   Adaptive ``M`` disables circuit-template batching.
-
-.. _rosalin-optimizer:
-
-ROSALIN and gCANS (Adaptive Gradient Shots)
---------------------------------------------
-
-:class:`~divi.qprog.optimizers.RosalinOptimizer` combines weighted random
-operator sampling with adaptive samples for each parameter-shift gradient
-component. ``allocation="icans"`` implements the individual CANS rule
-[#kubler2020]_ used by ROSALIN [#arrasmith2020]_; ``allocation="gcans"`` uses
-the global gain-per-shot rule [#gu2021]_.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import RosalinOptimizer
-
-   optimizer = RosalinOptimizer(
-       learning_rate=0.05,
-       total_shots=100_000,
-       lipschitz=1.0,  # use a valid bound for the target objective
-       min_shots=2,
-       allocation="icans",  # or "gcans"
-   )
-
-Use it with an expectation-valued VQA on a sampling backend, with
-``shot_distribution`` unset or ``"weighted_random"``: either way each gradient
-component draws its own operator samples. ``grouping_strategy="shadows"`` also
-works, drawing classical-shadow snapshots instead (see
-:ref:`measuring-observables`). Another ``shot_distribution``,
-``grouping_strategy="derandomised_shadows"`` or a backend that computes
-expectation values itself raises :class:`~divi.pipeline.ContractViolation` from
-``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`, as does a
-data-binding loss other than a plain mean or sum of predictions.
-
-iCANS allocates shots independently by coordinate and retains the original
-``smax`` cap. gCANS instead maximises expected improvement per total gradient
-shot and does not use that cap.
-
-.. _rotosolve-optimizer:
-
-Rotosolve
----------
-
-:class:`~divi.qprog.optimizers.RotosolveOptimizer` [#nakanishi2020]_
-[#ostaszewski2021]_ minimises the cost exactly along one parameter at a time.
-With the others fixed, the cost is a trigonometric polynomial in that parameter.
-Divi reads its frequencies from the program's
-:attr:`~divi.qprog.VariationalQuantumAlgorithm.parameter_space`
-[#wierichs2022]_, evaluates ``2 * order + 1`` equidistant points in one batch,
-and moves the parameter to the polynomial's global minimum. One iteration
-sweeps every parameter once.
-
-.. code-block:: python
-
-   from divi.qprog.optimizers import RotosolveOptimizer
-
-   optimizer = RotosolveOptimizer(shuffle=True)  # random order each sweep
-
-It needs no learning rate and supports checkpointing. A program with a
-parameter of unknown frequency raises :class:`~divi.pipeline.ContractViolation`
-from ``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`.
-
-Grid Search
------------
-
-The :class:`~divi.qprog.optimizers.GridSearchOptimizer` performs an exhaustive evaluation of every
-point on a user-defined parameter grid and returns the best-performing
-combination.
-
-.. code-block:: python
-
-   import numpy as np
-
-   from divi.qprog.optimizers import GridSearchOptimizer
-
-   # Auto-generate a 20×20 grid over [0, 2π] × [0, π]
-   optimizer = GridSearchOptimizer(
-       param_ranges=[(0, 2 * 3.14159), (0, 3.14159)],
-       grid_points=20,
-   )
-
-   # Or supply an explicit grid
-   optimizer = GridSearchOptimizer(
-       param_grid=np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
-   )
-
-The grid is evaluated in a single pass regardless of ``max_iterations``.
-A warning is issued if ``max_iterations > 1`` is supplied.
-
-.. note::
-
-   Grid search scales as ``grid_points ** n_params``.
-
-Program-Specific Constraints
-----------------------------
-
-- A parameter in an unsupported gate or a non-linear angle, or with
-  incommensurate frequencies, has no parameter-shift rule; its program needs
-  adjoint differentiation, SPSA or a gradient-free method. QAOA has a rule only
-  under exact trotterization.
-- A loss computed from raw measurement counts has no gradient, so it needs a
-  gradient-free optimizer.
-- Checkpointing requires an optimizer with restorable state. See
-  :doc:`resuming_long_runs` for the compatibility table.
-
-
-Early Stopping
---------------
-
-Divi's :class:`~divi.qprog.EarlyStopping` controller terminates
-the loop automatically based on configurable criteria.
-
-Pass an ``EarlyStopping`` instance to any variational algorithm:
 
 .. code-block:: python
 
@@ -508,53 +130,24 @@ Pass an ``EarlyStopping`` instance to any variational algorithm:
    print(f"Reason: {vqe.stop_reason}")        # e.g. "patience_exceeded"
    print(f"Converged: {vqe.optimize_result.success}")  # False for early stop
 
-Stopping Criteria
-^^^^^^^^^^^^^^^^^
+:class:`~divi.qprog.EarlyStopping` documents the three criteria (patience, gradient
+norm and cost variance) and their priority order. All three can be enabled
+together; the first one that triggers stops the loop.
 
-Three criteria are available and are evaluated **in priority order** after every
-iteration.  The first one that fires stops the loop.
-
-1. **Patience** *(always active)* — Stop when the cost has not improved by at
-   least ``min_delta`` for ``patience`` consecutive iterations.
-
-   .. code-block:: python
-
-      EarlyStopping(patience=10, min_delta=1e-4)
-
-2. **Gradient norm** *(optional)* — Stop when the L2 norm of the gradient falls
-   below ``grad_norm_threshold``.  Only effective with gradient-based optimizers
-   such as ``ScipyOptimizer(method=ScipyMethod.L_BFGS_B)``.
-
-   .. code-block:: python
-
-      EarlyStopping(patience=10, grad_norm_threshold=1e-6)
-
-3. **Cost variance** *(optional)* — Stop when the rolling variance of the last
-   ``variance_window`` cost values drops below ``variance_threshold``.
-
-   .. code-block:: python
-
-      EarlyStopping(
-          patience=10,
-          variance_window=20,
-          variance_threshold=1e-8,
-      )
-
-All three criteria can be enabled simultaneously; the first one that triggers
-will stop the loop.
+``grad_norm_threshold`` applies to optimizers that compute the program's
+gradient or report one in their callback ``jac``; it has no effect otherwise. It
+can stop a converged run before an optimizer with an adaptive sampling budget
+spends that budget. The patience and variance criteria read the loss the
+optimizer records, which an optimizer's class documentation states and which
+need not be the exact cost at the iterate.
 
 After the Run
 ^^^^^^^^^^^^^
 
-After ``run()`` completes, use :attr:`~divi.qprog.VariationalQuantumAlgorithm.stop_reason`
-to determine *why* optimisation ended:
-
-- ``None`` — optimisation ran to ``max_iterations`` without triggering early stopping
-- ``"patience_exceeded"`` — cost plateaued
-- ``"gradient_below_threshold"`` — gradient vanished
-- ``"cost_variance_settled"`` — cost variance settled
-
-The ``optimize_result`` attribute
+After ``run()`` completes,
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.stop_reason` holds the
+:class:`~divi.qprog.StopReason` that ended the loop, or ``None`` when it ran to
+``max_iterations``. The ``optimize_result`` attribute
 is always populated and its ``message`` field includes the stop reason.
 
 Inspecting Optimizer Results
@@ -569,7 +162,7 @@ semantics and types.
 
 Beyond the loss history, you can inspect the raw result object returned by the
 underlying optimizer
-via the ``optimize_result`` property.
+via the ``optimize_result`` attribute.
 This exposes optimizer-specific diagnostics such as:
 
 - ``nfev`` – number of cost-function evaluations
@@ -589,15 +182,6 @@ This exposes optimizer-specific diagnostics such as:
        print(f"Function evaluations: {result.nfev}")
        print(f"Converged: {result.success}")
 
-.. note::
-
-   ``optimize_result`` is always populated after :meth:`~divi.qprog.VariationalQuantumAlgorithm.run` completes.
-   When optimisation converges normally, ``success`` is ``True``.
-   When early stopping or cancellation terminates the run, ``success`` is
-   ``False`` and the ``message`` field describes the reason.  The available
-   attributes depend on the optimizer; see :class:`scipy.optimize.OptimizeResult`
-   for the full specification.
-
 Next Steps
 ----------
 
@@ -607,33 +191,5 @@ Next Steps
 
 References
 ----------
-
-.. [#kalos2008] Kalos, M. H., & Whitlock, P. A. (2008). *Monte Carlo Methods* (2nd ed.). Wiley-VCH.
-
-.. [#nelder1965] Nelder, J. A., & Mead, R. (1965). A simplex method for function minimization. *The Computer Journal*, 7(4), 308–313.
-
-.. [#zhu1997] Zhu, C., Byrd, R. H., Lu, P., & Nocedal, J. (1997). Algorithm 778: L-BFGS-B: Fortran subroutines for large-scale bound-constrained optimization. *ACM Transactions on Mathematical Software*, 23(4), 550–560.
-
-.. [#powell1994] Powell, M. J. D. (1994). A direct search optimization method that models the objective and constraint functions by linear interpolation. In *Advances in Optimization and Numerical Analysis* (pp. 51–67). Springer.
-
-.. [#hansen2001] Hansen, N., & Ostermeier, A. (2001). Completely derandomized self-adaptation in evolution strategies. *Evolutionary Computation*, 9(2), 159–195.
-
-.. [#storn1997] Storn, R., & Price, K. (1997). Differential evolution – a simple and efficient heuristic for global optimization over continuous spaces. *Journal of Global Optimization*, 11(4), 341–359.
-
-.. [#spall1992] Spall, J. C. (1992). Multivariate stochastic approximation using a simultaneous perturbation gradient approximation. *IEEE Transactions on Automatic Control*, 37(3), 332–341.
-
-.. [#gacon2021] Gacon, J., Zoufal, C., Carleo, G., & Woerner, S. (2021). Simultaneous perturbation stochastic approximation of the quantum Fisher information. *Quantum*, 5, 567.
-
-.. [#coyle2026] Coyle, B., Raj, S., Umathe, V., Cherrat, E. A., & Kashefi, E. (2026). Adaptive directional gradients for parameterised quantum circuits. *arXiv preprint* arXiv:2606.09734.
-
-.. [#kubler2020] Kübler, J. M., Arrasmith, A., Cincio, L., & Coles, P. J. (2020). `An Adaptive Optimizer for Measurement-Frugal Variational Algorithms <https://doi.org/10.22331/q-2020-05-11-263>`_. *Quantum*, 4, 263.
-
-.. [#arrasmith2020] Arrasmith, A., Cincio, L., Somma, R. D., & Coles, P. J. (2020). `Operator Sampling for Shot-frugal Optimization in Variational Algorithms <https://arxiv.org/abs/2004.06252>`_. arXiv:2004.06252.
-
-.. [#gu2021] Gu, A., Lowe, A., Dub, P. A., Coles, P. J., & Arrasmith, A. (2021). `Adaptive shot allocation for fast convergence in variational quantum algorithms <https://arxiv.org/abs/2108.10434>`_. arXiv:2108.10434.
-
-.. [#nakanishi2020] Nakanishi, K. M., Fujii, K., & Todo, S. (2020). `Sequential minimal optimization for quantum-classical hybrid algorithms <https://doi.org/10.1103/PhysRevResearch.2.043158>`_. *Physical Review Research*, 2, 043158.
-
-.. [#ostaszewski2021] Ostaszewski, M., Grant, E., & Benedetti, M. (2021). `Structure optimization for parameterized quantum circuits <https://doi.org/10.22331/q-2021-01-28-391>`_. *Quantum*, 5, 391.
 
 .. [#wierichs2022] Wierichs, D., Izaac, J., Wang, C., & Lin, C. Y.-Y. (2022). `General parameter-shift rules for quantum gradients <https://doi.org/10.22331/q-2022-03-30-677>`_. *Quantum*, 6, 677.

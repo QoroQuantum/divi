@@ -47,6 +47,11 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
     algorithm wires the estimator's gradient and metric in via
     :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`; calling
     ``optimize`` directly without ``jac`` and ``metric_fn`` raises ``ValueError``.
+    The gradient is the parameter-shift gradient, so a program without a
+    parameter-shift rule, such as a QAOA under stochastic or approximate
+    trotterization, raises :exc:`NotImplementedError`. The Fubini–Study metric
+    rejects gate angles that are expressions of a parameter rather than the bare
+    parameter. QNG does not support checkpointing.
 
     Args:
         step_size: Learning rate :math:`\\eta` for the parameter update.

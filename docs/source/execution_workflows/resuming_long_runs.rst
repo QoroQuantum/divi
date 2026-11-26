@@ -22,38 +22,11 @@ On each checkpoint, Divi writes **program** state (parameters, losses, iteration
 
 Checkpointing is available to variational programs such as
 :class:`~divi.qprog.algorithms.VQE` and :class:`~divi.qprog.algorithms.QAOA`,
-but the optimizer must also support restoring its state:
-
-.. list-table:: Checkpoint compatibility
-   :header-rows: 1
-   :widths: 45 20 35
-
-   * - Optimizer
-     - Supported
-     - Notes
-   * - :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
-     - Yes
-     - Restores the population and RNG state.
-   * - :class:`~divi.qprog.optimizers.PymooOptimizer`
-     - Yes
-     - Supports CMA-ES and Differential Evolution state.
-   * - :class:`~divi.qprog.optimizers.GridSearchOptimizer`
-     - Yes
-     - Restores the grid and any losses already evaluated.
-   * - :class:`~divi.qprog.optimizers.RotosolveOptimizer`
-     - Yes
-     - Restores the iterate and the number of completed sweeps.
-   * - :class:`~divi.qprog.optimizers.ScipyOptimizer`
-     - No
-     - The underlying SciPy methods do not expose resumable state.
-   * - :class:`~divi.qprog.optimizers.QNGOptimizer`
-     - No
-     - Rejects checkpoint configuration before the run starts.
-   * - :class:`~divi.qprog.optimizers.SPSAOptimizer`,
-       :class:`~divi.qprog.optimizers.QNSPSAOptimizer`, and
-       :class:`~divi.qprog.optimizers.QUIVEROptimizer`
-     - No
-     - Their adaptive state is rebuilt rather than restored.
+but the optimizer must also be able to restore its state: its
+:attr:`~divi.qprog.optimizers.Optimizer.supports_checkpointing` must be ``True``.
+Passing a checkpoint directory with any other optimizer raises
+:exc:`ValueError` before the run starts. Each optimizer's class documentation
+states whether it checkpoints and what it restores.
 
 Basic Usage
 -----------
@@ -416,11 +389,7 @@ The ``program_state.json`` file contains:
 - Random number generator state
 - Algorithm-specific state (e.g., eigenstate for :class:`~divi.qprog.algorithms.VQE`, solution nodes for :class:`~divi.qprog.algorithms.QAOA`)
 
-The ``optimizer_state.json`` file contains optimizer-specific data:
-
-- For ``MonteCarloOptimizer``: Population, evaluated population, losses, RNG state
-- For ``PymooOptimizer``: Serialised algorithm object and population
-- For ``GridSearchOptimizer``: Parameter grid, evaluated losses, best point
+The ``optimizer_state.json`` file contains the optimizer-specific state needed to continue.
 
 Error Handling
 --------------
@@ -463,7 +432,7 @@ Load failures can be handled explicitly:
 Limitations
 -----------
 
-- Optimizers marked unsupported in the compatibility table reject checkpointing
+- Optimizers whose ``supports_checkpointing`` is ``False`` reject checkpointing
 - Checkpoints are **not portable** across different Python versions or library versions
 - Problem configuration must be **manually provided** when loading (not stored in checkpoint)
 - A child that is not eligible for mid-round restore restarts from the ensemble
@@ -473,7 +442,7 @@ Next Steps
 ----------
 
 - :doc:`core_concepts` — parameters, ``best_params`` vs ``final_params``, and warm-starting
-- :doc:`optimizers` — which optimizers support resume and how ``run()`` interacts with checkpoints
+- :doc:`optimizers` — gradient sources, early stopping and optimizer results
 - :doc:`program_ensembles` — ensemble round semantics, child eligibility, and
   custom workflow-state checkpointing
 - :doc:`visualization` — trajectories using ``losses_history`` / ``param_history`` after long runs

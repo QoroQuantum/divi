@@ -169,8 +169,12 @@ class RosalinOptimizer(Optimizer):
     iteration telemetry; noisy current-point estimates are never compared to
     select a best iterate. All samples count toward ``total_shots``.
 
-    See :ref:`rosalin-optimizer` for algorithm background, primary references,
-    and selection guidance.
+    ``allocation="icans"`` is the individual CANS rule (Kübler et al., *Quantum*
+    4, 263, 2020) used by ROSALIN (Arrasmith et al., arXiv:2004.06252);
+    ``allocation="gcans"`` is the global gain-per-shot rule (Gu et al.,
+    arXiv:2108.10434). Supports checkpointing, restoring the iterate, shots used
+    and adaptive allocation state. See :ref:`rosalin-optimizer` for
+    the backends and measurement settings it accepts.
 
     Args:
         learning_rate: Constant gradient-descent step size :math:`\alpha`.
@@ -185,8 +189,9 @@ class RosalinOptimizer(Optimizer):
         ema_decay: Exponential-moving-average decay :math:`\mu`.
         bias: Positive stabiliser :math:`b` in the allocation denominator.
         allocation: Adaptive allocation rule. ``"icans"`` optimises each
-            gradient coordinate independently; ``"gcans"`` optimises expected
-            improvement per shot across the complete gradient.
+            gradient coordinate independently and retains the original ``smax``
+            cap; ``"gcans"`` optimises expected improvement per total gradient
+            shot across the complete gradient and does not use that cap.
     """
 
     requires_variance = True

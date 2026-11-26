@@ -50,7 +50,15 @@ class PymooMethod(Enum):
     """Supported optimisation methods from the pymoo library."""
 
     CMAES = "CMAES"
+    """Covariance Matrix Adaptation Evolution Strategy, a stochastic derivative-free
+    method for non-linear, non-convex continuous problems (Hansen & Ostermeier,
+    *Evolutionary Computation*, 9(2), 2001). Starts from the first initial set with
+    step size ``sigma0`` (default 0.1)."""
+
     DE = "DE"
+    """Differential Evolution, which improves a population of candidate solutions
+    by recombining members (Storn & Price, *Journal of Global Optimization*,
+    11(4), 1997). Searches a box, see :class:`PymooOptimizer`."""
 
 
 def _plain_python(value: Any) -> Any:
@@ -67,7 +75,13 @@ class PymooOptimizer(Optimizer):
     Optimizer wrapper for pymoo optimisation algorithms and CMA-ES.
 
     Supports population-based optimisation methods from the pymoo library (DE)
-    and the cma library (CMAES).
+    and the cma library (CMAES); select one with :class:`PymooMethod`. Supports
+    checkpointing, restoring the algorithm state.
+
+    DE searches a box centred on the midpoint of the initial parameter sets, one
+    period wide in each parameter (:math:`2\\pi` where the period is unknown or
+    above :math:`4\\pi`). Initial sets that span more than the box are clipped to
+    it, with a warning.
     """
 
     def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):

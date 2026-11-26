@@ -304,7 +304,8 @@ Next Steps
 
 - :doc:`../execution_workflows/framework_integration` — bring-your-own-circuit data binding with
   ``CustomVQA``
-- :doc:`../execution_workflows/optimizers` — optimizer choice and early stopping
+- :doc:`../execution_workflows/optimizers` — gradient sources and early stopping;
+  :doc:`../api_reference/qprog/optimizers` — the optimizer classes
 - :doc:`../api_reference/qprog/algorithms` — full ``QNN``, ``FeatureMap``, and
   ``Ansatz`` API
 - `qnn_classifier.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/qnn_classifier.py>`_

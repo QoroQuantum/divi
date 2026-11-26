@@ -369,6 +369,7 @@ class _SPSAConfigMixin:
 class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
     r"""Simultaneous Perturbation Stochastic Approximation (Spall).
 
+    Introduced by Spall, *IEEE Transactions on Automatic Control*, 37(3), 1992.
     Estimates the gradient from just **two** cost evaluations per step,
     independent of the parameter count, by perturbing all parameters at once
     along a random Bernoulli ±1 direction :math:`h`:
@@ -382,6 +383,14 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
     shot-noisy circuits where parameter-shift gradients are prohibitively
     expensive. Single-point optimizer (``n_param_sets == 1``); gradient-free, so
     any ``jac``/``metric_fn`` supplied by the variational algorithm is ignored.
+
+    The two perturbed points share one batch, so a stochastic cost such as QDrift
+    scores both against the same sampled Hamiltonian; a QDrift seed does not seed
+    the perturbation directions, ``rng`` does. A non-finite cost holds the step
+    rather than entering the parameters, and a run that never observes a finite
+    cost returns ``success=False``. A loss that becomes non-finite or exceeds 1000
+    times its starting magnitude (floored at 1) warns once. Does not support
+    checkpointing.
 
     Args:
         learning_rate: Spall's :math:`a` — the learning-rate gain numerator.
@@ -454,8 +463,8 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
                 sample so both perturbations share one stochastic-cost draw.
             initial_params: Starting parameters (1D, or 2D with a single row).
             callback_fn: Called after each step with an ``OptimizeResult`` whose
-                ``x`` and ``jac`` are 2D and ``fun`` is 1D; ``jac`` contains the
-                reconstructed directional gradient. May raise ``StopIteration``.
+                ``x`` is 2D and ``fun`` is 1D; it carries no ``jac``. May raise
+                ``StopIteration``.
             **kwargs: ``max_iterations`` (default 50, must be >= 1) and ``rng``
                 (the perturbation directions — pass it for reproducible runs).
                 ``jac`` and ``metric_fn`` are accepted and ignored (SPSA is
@@ -567,11 +576,14 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
     faithful QN-SPSA metric; passing
     :class:`~divi.qprog.optimizers.metrics.FubiniStudyMetricEstimator` (or
     :class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator`) instead uses that
-    estimator's exact metric while keeping the SPSA gradient.
+    estimator's exact metric while keeping the SPSA gradient. The exact
+    estimators measure per-term or per-block expectation values, so their
+    per-step cost is not constant.
 
     Single-point optimizer (``n_param_sets == 1``); the variational algorithm
     supplies the metric evaluator via
-    :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`.
+    :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`. Does not support
+    checkpointing.
 
     Args:
         learning_rate: Spall's :math:`a` — the learning-rate gain numerator.
@@ -849,7 +861,11 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         ``adapt_M`` for local shot-based simulators.
 
     Single-point optimizer (``n_param_sets == 1``); gradient-free, so any
-    ``jac``/``metric_fn`` supplied by the variational algorithm is ignored.
+    ``jac``/``metric_fn`` supplied by the variational algorithm is ignored. Each
+    step reports the reconstructed gradient in the callback's ``jac``, which
+    feeds :class:`~divi.qprog.EarlyStopping` ``grad_norm_threshold``. Adaptive
+    ``M`` takes effect only when the cost function exposes the shot-variance
+    contract. Does not support checkpointing.
 
     Args:
         learning_rate: Adam step-size numerator ``a`` in

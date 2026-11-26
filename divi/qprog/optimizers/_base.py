@@ -78,12 +78,13 @@ class Optimizer(ABC):
                   resumed optimisation receives only what is left.
                   Defaults vary by optimizer (e.g., 5 for population-based optimizers,
                   None for some scipy methods).
-                - rng (np.random.Generator, optional): Random number generator for
-                  stochastic optimizers (PymooOptimizer, MonteCarloOptimizer).
-                  Defaults to a new generator if not provided.
-                - jac (Callable, optional): Gradient/Jacobian function for
-                  gradient-based optimizers (used by ScipyOptimizer with the
-                  L_BFGS_B and SLSQP methods). Defaults to None.
+                - rng (np.random.Generator, optional): Passed to every optimizer;
+                  stochastic optimizers draw from it. Defaults to a new
+                  generator if not provided.
+                - jac (Callable, optional): The program's gradient, used by
+                  gradient-based optimizers. Defaults to None.
+                - Evaluators returned by :meth:`build_evaluators` arrive as
+                  further keyword arguments.
 
         Returns:
             OptimizeResult whose ``x`` is the single best parameter set as a 1-D

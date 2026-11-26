@@ -563,7 +563,11 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
     the geometry of the ansatz state — independent of the *loss observable* — so
     it applies to any qiskit-invertible ansatz. The overlap circuits are built by
     a preprocessor from the program's normal post-spec ansatz cohort and averaged
-    over preserved pipeline axes.
+    over preserved pipeline axes, so a stochastic ansatz such as QDrift builds
+    its overlap circuits from each sampled cohort member, cached by ansatz
+    structure. Each metric sample adds four
+    state-overlap evaluations to SPSA's two objective evaluations per step.
+    Data-bound programs are rejected.
     """
 
     uses_fidelity_sampling = True
