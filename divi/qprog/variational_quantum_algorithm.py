@@ -62,6 +62,7 @@ from divi.qprog.optimizers import (
     Optimizer,
     PymooOptimizer,
     RosalinOptimizer,
+    RotosolveOptimizer,
     ScipyMethod,
     ScipyOptimizer,
     argmin_finite,
@@ -84,6 +85,7 @@ _CHECKPOINTABLE_OPTIMIZERS: dict[str, type[Optimizer]] = {
     "MonteCarloOptimizer": MonteCarloOptimizer,
     "PymooOptimizer": PymooOptimizer,
     "RosalinOptimizer": RosalinOptimizer,
+    "RotosolveOptimizer": RotosolveOptimizer,
 }
 
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
@@ -1580,6 +1582,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
         checkpoint_dir = checkpoint_config.checkpoint_dir
         self._reject_used_checkpoint_dir(checkpoint_dir, self.current_iteration)
+        if self._early_stopping is not None and self.current_iteration == 0:
+            self._early_stopping.reset()
 
         iterations_remaining = self.max_iterations - self.current_iteration
         last_checkpointed_iteration: int | None = None

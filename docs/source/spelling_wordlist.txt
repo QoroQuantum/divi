@@ -33,6 +33,7 @@ ax
 backend
 backends
 Bärtschi
+Benedetti
 binarisation
 Binarisation
 Binarization
@@ -149,6 +150,7 @@ formatters
 Fortran
 fourier
 Fubini
+Fujii
 Gacon
 García
 gCANS
@@ -236,6 +238,7 @@ multimodal
 multinomial
 multiplet
 multiplets
+Nakanishi
 namespace
 namespaced
 NaN
@@ -267,6 +270,7 @@ orchestrator
 orchestrators
 orientational
 orqviz
+Ostaszewski
 Ostermeier
 Otero
 oversample
@@ -349,6 +353,7 @@ resumable
 reweights
 rng
 Rodríguez
+Rotosolve
 rtype
 runnable
 runopts
@@ -397,6 +402,7 @@ th
 thresholded
 Tikhonov
 timestep
+Todo
 tol
 toolchain
 trainability

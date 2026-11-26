@@ -40,6 +40,9 @@ but the optimizer must also support restoring its state:
    * - :class:`~divi.qprog.optimizers.GridSearchOptimizer`
      - Yes
      - Restores the grid and any losses already evaluated.
+   * - :class:`~divi.qprog.optimizers.RotosolveOptimizer`
+     - Yes
+     - Restores the iterate and the number of completed sweeps.
    * - :class:`~divi.qprog.optimizers.ScipyOptimizer`
      - No
      - The underlying SciPy methods do not expose resumable state.

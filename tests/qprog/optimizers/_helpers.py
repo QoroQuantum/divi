@@ -43,32 +43,67 @@ def make_one_qubit_meta(gates, order=None) -> MetaCircuit:
     )
 
 
-def sphere_cost_fn_population(params: np.ndarray) -> np.ndarray:
-    """Sphere cost function for a population of parameter sets."""
+def _require_population(params: np.ndarray) -> np.ndarray:
+    """``params``, which must be a 2-D array of parameter sets."""
     if params.ndim != 2:
         raise ValueError(
             "Input params for population cost function must be a 2D array."
         )
-    return np.sum(params**2, axis=1)
+    return params
+
+
+def _require_single_set(params: np.ndarray) -> np.ndarray:
+    """``params`` as a one-row 2-D array; it must hold exactly one parameter set."""
+    if params.ndim == 2 and params.shape[0] == 1:
+        return params
+    if params.ndim != 1:
+        raise ValueError("Input params for single cost function must be a 1D array.")
+    return params[None, :]
+
+
+def _collapse_single_row(values: np.ndarray) -> float | np.ndarray:
+    """``values`` for a batch, or its only entry as a float."""
+    return values if len(values) > 1 else float(values[0])
+
+
+def _compute_sphere_rows(rows: np.ndarray) -> np.ndarray:
+    """``sum(x**2)`` of each row."""
+    return np.sum(rows**2, axis=1)
+
+
+def sphere_cost_fn_population(params: np.ndarray) -> np.ndarray:
+    """Sphere cost function for a population of parameter sets."""
+    return _compute_sphere_rows(_require_population(params))
 
 
 def sphere_cost_fn_single(params: np.ndarray) -> float:
     """Sphere cost function for a single parameter set."""
-    if params.ndim != 1:
-        if params.ndim == 2 and params.shape[0] == 1:
-            params = params.squeeze(0)
-        else:
-            raise ValueError(
-                "Input params for single cost function must be a 1D array."
-            )
-    return float(np.sum(params**2))
+    return float(_compute_sphere_rows(_require_single_set(params))[0])
 
 
 def sphere_cost_fn_batch_aware(params: np.ndarray) -> float | np.ndarray:
     """Sphere cost supporting both one parameter set and a 2-D batch."""
-    params = np.atleast_2d(params)
-    values = np.sum(params**2, axis=1)
-    return values if params.shape[0] > 1 else float(values[0])
+    return _collapse_single_row(_compute_sphere_rows(np.atleast_2d(params)))
+
+
+def _compute_periodic_rows(rows: np.ndarray) -> np.ndarray:
+    """``sum(1 - cos(x))`` of each row: minimum 0 at ``x = 0``, period ``2pi``."""
+    return np.sum(1 - np.cos(rows), axis=1)
+
+
+def periodic_cost_fn_population(params: np.ndarray) -> np.ndarray:
+    """Periodic cost function for a population of parameter sets."""
+    return _compute_periodic_rows(_require_population(params))
+
+
+def periodic_cost_fn_single(params: np.ndarray) -> float:
+    """Periodic cost function for a single parameter set."""
+    return float(_compute_periodic_rows(_require_single_set(params))[0])
+
+
+def periodic_cost_fn_batch_aware(params: np.ndarray) -> float | np.ndarray:
+    """Periodic cost supporting both one parameter set and a 2-D batch."""
+    return _collapse_single_row(_compute_periodic_rows(np.atleast_2d(params)))
 
 
 def noisy_bowl(rng, sigma=0.0, dropout=0.0):

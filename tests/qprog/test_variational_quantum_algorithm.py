@@ -3053,6 +3053,25 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         assert program.current_iteration == 5
         assert program.stop_reason is None
 
+    def test_a_shared_early_stopping_restarts_with_each_fresh_run(self, mocker):
+        es = EarlyStopping(patience=3, min_delta=0.0)
+
+        for loss in (-0.5, -0.4):
+            program = self._create_program_with_mock_optimizer(
+                mocker, seed=42, early_stopping=es
+            )
+            program.max_iterations = 100
+            mocker.patch.object(
+                program, "_evaluate_cost_param_sets", return_value={0: loss}
+            )
+            self._setup_optimizer_with_flat_losses(
+                program, mocker, n_iterations=100, loss_value=loss
+            )
+
+            program.run()
+
+            assert program.current_iteration == 4
+
     def _early_stopping_flat_loss_program(self, mocker, patience):
         """A program whose flat losses trip ``patience`` long before its limit."""
         program = self._create_program_with_mock_optimizer(

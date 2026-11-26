@@ -14,6 +14,7 @@ from ._monte_carlo import MonteCarloOptimizer, MonteCarloState
 from ._pymoo import PymooMethod, PymooOptimizer, PymooState
 from ._qng import QNGOptimizer
 from ._rosalin import RosalinOptimizer
+from ._rotosolve import RotosolveOptimizer
 from ._scipy import ScipyMethod, ScipyOptimizer
 from ._spsa import QNSPSAOptimizer, QUIVEROptimizer, SPSAOptimizer
 
@@ -29,6 +30,7 @@ __all__ = [
     "QNSPSAOptimizer",
     "QUIVEROptimizer",
     "RosalinOptimizer",
+    "RotosolveOptimizer",
     "SPSAOptimizer",
     "ScipyMethod",
     "ScipyOptimizer",

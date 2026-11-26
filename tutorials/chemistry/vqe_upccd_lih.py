@@ -21,6 +21,7 @@ import numpy as np
 from pyscf import cc, gto, mcscf, scf
 
 from divi.backends import CircuitRunner
+from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import (
     VQE,
     Ansatz,
@@ -28,7 +29,7 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
     UpCCDAnsatz,
 )
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import RotosolveOptimizer
 from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend
 
@@ -67,8 +68,9 @@ def make_vqe(problem: MolecularProblem, ansatz: Ansatz, backend: CircuitRunner) 
     return VQE(
         problem,
         ansatz=ansatz,
-        optimizer=ScipyOptimizer(ScipyMethod.L_BFGS_B),
-        max_iterations=200,
+        optimizer=RotosolveOptimizer(),
+        max_iterations=30,
+        early_stopping=EarlyStopping(patience=1, min_delta=1e-7),
         backend=backend,
     )
 
@@ -123,5 +125,5 @@ if __name__ == "__main__":
             print(
                 f"  R = {bond_length} Å from {label:<12}: "
                 f"{1e3 * (vqe.best_loss - exact_energy):.3f} mHa after "
-                f"{len(vqe.losses_history)} iterations"
+                f"{len(vqe.losses_history)} sweeps"
             )

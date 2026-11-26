@@ -19,9 +19,10 @@ from divi.qprog.optimizers import Optimizer, ScipyMethod, ScipyOptimizer
 from tests.qprog.optimizers._helpers import (
     BOWL_CURVATURE,
     noisy_bowl,
+    periodic_cost_fn_batch_aware,
+    periodic_cost_fn_population,
+    periodic_cost_fn_single,
     sphere_cost_fn_batch_aware,
-    sphere_cost_fn_population,
-    sphere_cost_fn_single,
 )
 
 
@@ -30,41 +31,53 @@ def _initial_params(optimizer: Optimizer, seed: int = 42) -> np.ndarray:
     return rng.random((optimizer.n_param_sets, 4)) * 2 * np.pi
 
 
-def _variance_aware_sphere(
+def _variance_aware_periodic_cost(
     params: np.ndarray,
     *,
     estimator_samples=None,
     return_variance: bool = False,
 ):
-    values = sphere_cost_fn_batch_aware(params)
+    values = periodic_cost_fn_batch_aware(params)
     if not return_variance:
         return values
     return values, np.zeros(len(np.atleast_2d(params)), dtype=np.float64)
 
 
-setattr(_variance_aware_sphere, "supports_variance", True)
+setattr(_variance_aware_periodic_cost, "supports_variance", True)
 
 
-def _cost_fn(optimizer: Optimizer) -> Callable[[np.ndarray], float | np.ndarray]:
+CostFn = Callable[[np.ndarray], float | np.ndarray]
+
+
+def _resolve_cost_fn(optimizer: Optimizer, cost_fn: CostFn | None) -> CostFn:
+    """``cost_fn``, or the periodic cost shaped for ``optimizer``."""
+    if cost_fn is not None:
+        return cost_fn
     if getattr(optimizer, "requires_variance", False):
-        return _variance_aware_sphere
+        return _variance_aware_periodic_cost
     if optimizer.n_param_sets == 1:
-        return sphere_cost_fn_single
-    return sphere_cost_fn_population
+        return periodic_cost_fn_single
+    return periodic_cost_fn_population
 
 
-def verify_final_result_is_consistent(optimizer: Optimizer) -> None:
+def verify_final_result_is_consistent(
+    optimizer: Optimizer, cost_fn: CostFn | None = None
+) -> None:
     initial_params = _initial_params(optimizer)
-    result = optimizer.optimize(_cost_fn(optimizer), initial_params, max_iterations=5)
+    result = optimizer.optimize(
+        _resolve_cost_fn(optimizer, cost_fn), initial_params, max_iterations=5
+    )
 
     assert isinstance(result, OptimizeResult)
     assert result.x.shape == (4,)
-    assert np.isclose(result.fun, sphere_cost_fn_single(result.x))
+    assert np.isclose(result.fun, periodic_cost_fn_single(result.x))
 
 
-def verify_optimizer_descends_from_initial(optimizer: Optimizer) -> None:
+def verify_optimizer_descends_from_initial(
+    optimizer: Optimizer, cost_fn: CostFn | None = None
+) -> None:
     initial_params = _initial_params(optimizer)
-    cost_fn = _cost_fn(optimizer)
+    cost_fn = _resolve_cost_fn(optimizer, cost_fn)
     initial_cost = float(np.min(np.atleast_1d(cost_fn(initial_params))))
 
     result = optimizer.optimize(
@@ -74,7 +87,9 @@ def verify_optimizer_descends_from_initial(optimizer: Optimizer) -> None:
     assert float(np.atleast_1d(result.fun)[0]) < initial_cost
 
 
-def verify_checkpointing_capability_matches_config(optimizer: Optimizer) -> None:
+def verify_checkpointing_capability_matches_config(
+    optimizer: Optimizer, _cost_fn: CostFn | None = None
+) -> None:
     if optimizer.supports_checkpointing:
         assert isinstance(optimizer.get_config(), dict)
     else:
@@ -83,10 +98,13 @@ def verify_checkpointing_capability_matches_config(optimizer: Optimizer) -> None
 
 
 def verify_callback_results_are_consistent(
-    optimizer: Optimizer, *, require_matching_fun: bool | None = None
+    optimizer: Optimizer,
+    cost_fn: CostFn | None = None,
+    *,
+    require_matching_fun: bool | None = None,
 ) -> None:
     initial_params = _initial_params(optimizer)
-    cost_fn = _cost_fn(optimizer)
+    cost_fn = _resolve_cost_fn(optimizer, cost_fn)
     callback_results: list[OptimizeResult] = []
 
     optimizer.optimize(
@@ -113,8 +131,10 @@ def verify_callback_results_are_consistent(
             assert np.isfinite(result.fun).all()
 
 
-def verify_reset_allows_reuse(optimizer: Optimizer) -> None:
-    cost_fn = _cost_fn(optimizer)
+def verify_reset_allows_reuse(
+    optimizer: Optimizer, cost_fn: CostFn | None = None
+) -> None:
+    cost_fn = _resolve_cost_fn(optimizer, cost_fn)
     first = optimizer.optimize(cost_fn, _initial_params(optimizer), max_iterations=3)
 
     optimizer.reset()
@@ -128,7 +148,9 @@ def verify_reset_allows_reuse(optimizer: Optimizer) -> None:
         assert np.isfinite(result.fun)
 
 
-def verify_reset_preserves_configuration(optimizer: Optimizer) -> None:
+def verify_reset_preserves_configuration(
+    optimizer: Optimizer, cost_fn: CostFn | None = None
+) -> None:
     """``reset()`` clears run state without touching constructor configuration.
 
     Compares configuration attributes with ``==``, so it applies only to
@@ -147,7 +169,9 @@ def verify_reset_preserves_configuration(optimizer: Optimizer) -> None:
     ]
     original = {name: deepcopy(getattr(optimizer, name)) for name in attribute_names}
     optimizer.optimize(
-        _cost_fn(optimizer), _initial_params(optimizer), max_iterations=2
+        _resolve_cost_fn(optimizer, cost_fn),
+        _initial_params(optimizer),
+        max_iterations=2,
     )
 
     optimizer.reset()
@@ -155,8 +179,10 @@ def verify_reset_preserves_configuration(optimizer: Optimizer) -> None:
     assert {name: getattr(optimizer, name) for name in attribute_names} == original
 
 
-def verify_reset_is_idempotent(optimizer: Optimizer) -> None:
-    cost_fn = _cost_fn(optimizer)
+def verify_reset_is_idempotent(
+    optimizer: Optimizer, cost_fn: CostFn | None = None
+) -> None:
+    cost_fn = _resolve_cost_fn(optimizer, cost_fn)
     initial_params = _initial_params(optimizer)
     optimizer.optimize(cost_fn, initial_params, max_iterations=2)
 

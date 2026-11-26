@@ -21,8 +21,9 @@ import numpy as np
 from pyscf import gto, mcscf, scf
 
 from divi.backends import CircuitRunner
+from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import VQE, QCCAnsatz
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import RotosolveOptimizer
 from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend
 
@@ -33,8 +34,9 @@ def make_vqe(
     return VQE(
         problem,
         ansatz=ansatz,
-        optimizer=ScipyOptimizer(ScipyMethod.L_BFGS_B),
-        max_iterations=50,
+        optimizer=RotosolveOptimizer(),
+        max_iterations=30,
+        early_stopping=EarlyStopping(patience=1, min_delta=1e-7),
         backend=backend,
     )
 

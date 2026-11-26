@@ -20,8 +20,9 @@ from pyscf import gto, mcscf, scf
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians import sum_spin_rdms
+from divi.qprog import EarlyStopping
 from divi.qprog.algorithms import VQE, UCCSDAnsatz, VQEFCISolver
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import RotosolveOptimizer
 from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend
 
@@ -32,9 +33,10 @@ N_REPEATS = 5
 def make_solver(backend: CircuitRunner) -> VQEFCISolver:
     return VQEFCISolver(
         backend=backend,
-        optimizer=ScipyOptimizer(ScipyMethod.L_BFGS_B),
+        optimizer=RotosolveOptimizer(),
         ansatz=UCCSDAnsatz(),
-        max_iterations=200,
+        max_iterations=30,
+        early_stopping=EarlyStopping(patience=1, min_delta=1e-7),
     )
 
 
@@ -119,7 +121,7 @@ if __name__ == "__main__":
         sampler = VQE(
             problem,
             ansatz=UCCSDAnsatz(),
-            optimizer=ScipyOptimizer(ScipyMethod.L_BFGS_B),
+            optimizer=RotosolveOptimizer(),
             backend=sampling_backend,
         )
         errors = np.array(

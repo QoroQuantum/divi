@@ -17,6 +17,8 @@ Optimizers
      - Controlled by direction count ``V``
    * - ROSALIN or gCANS
      - Adaptive samples for every gradient component
+   * - Rotosolve
+     - One small batch per parameter, in sequence
    * - L-BFGS-B, SLSQP or QNG
      - Parameter-shift and, for QNG, metric evaluations
    * - Grid search
@@ -408,6 +410,30 @@ iCANS allocates shots independently by coordinate and retains the original
 ``smax`` cap. gCANS instead maximises expected improvement per total gradient
 shot and does not use that cap.
 
+.. _rotosolve-optimizer:
+
+Rotosolve
+---------
+
+:class:`~divi.qprog.optimizers.RotosolveOptimizer` [#nakanishi2020]_
+[#ostaszewski2021]_ minimises the cost exactly along one parameter at a time.
+With the others fixed, the cost is a trigonometric polynomial in that parameter.
+Divi reads its frequencies from the program's
+:attr:`~divi.qprog.VariationalQuantumAlgorithm.parameter_space`
+[#wierichs2022]_, evaluates ``2 * order + 1`` equidistant points in one batch,
+and moves the parameter to the polynomial's global minimum. One iteration
+sweeps every parameter once.
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import RotosolveOptimizer
+
+   optimizer = RotosolveOptimizer(shuffle=True)  # random order each sweep
+
+It needs no learning rate and supports checkpointing. A program with a
+parameter of unknown frequency raises :class:`~divi.pipeline.ContractViolation`
+from ``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`.
+
 Grid Search
 -----------
 
@@ -605,5 +631,9 @@ References
 .. [#arrasmith2020] Arrasmith, A., Cincio, L., Somma, R. D., & Coles, P. J. (2020). `Operator Sampling for Shot-frugal Optimization in Variational Algorithms <https://arxiv.org/abs/2004.06252>`_. arXiv:2004.06252.
 
 .. [#gu2021] Gu, A., Lowe, A., Dub, P. A., Coles, P. J., & Arrasmith, A. (2021). `Adaptive shot allocation for fast convergence in variational quantum algorithms <https://arxiv.org/abs/2108.10434>`_. arXiv:2108.10434.
+
+.. [#nakanishi2020] Nakanishi, K. M., Fujii, K., & Todo, S. (2020). `Sequential minimal optimization for quantum-classical hybrid algorithms <https://doi.org/10.1103/PhysRevResearch.2.043158>`_. *Physical Review Research*, 2, 043158.
+
+.. [#ostaszewski2021] Ostaszewski, M., Grant, E., & Benedetti, M. (2021). `Structure optimization for parameterized quantum circuits <https://doi.org/10.22331/q-2021-01-28-391>`_. *Quantum*, 5, 391.
 
 .. [#wierichs2022] Wierichs, D., Izaac, J., Wang, C., & Lin, C. Y.-Y. (2022). `General parameter-shift rules for quantum gradients <https://doi.org/10.22331/q-2022-03-30-677>`_. *Quantum*, 6, 677.
