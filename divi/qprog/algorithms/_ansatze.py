@@ -18,7 +18,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
-from itertools import combinations, pairwise, product
+from itertools import combinations, pairwise
 from numbers import Integral
 from typing import Any, ClassVar, Literal
 from warnings import warn
@@ -851,7 +851,7 @@ class HartreeFockAnsatz(ReferenceStateAnsatz):
         """``len(singles) + len(doubles)`` spin-conserving excitations out of the
         reference set by ``reference`` (required)."""
         counts = self._require_reference(reference)
-        singles, doubles = _spin_conserving_excitations(counts.n_electrons, n_qubits)
+        singles, doubles = _enumerate_excitations(counts.n_electrons, n_qubits)
         _require_balanced_spin(counts, "HartreeFockAnsatz")
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
@@ -871,7 +871,7 @@ class HartreeFockAnsatz(ReferenceStateAnsatz):
         reference: ElectronCounts | None = None,
     ) -> QuantumCircuit:
         counts = self._require_reference(reference)
-        singles, doubles = _spin_conserving_excitations(counts.n_electrons, n_qubits)
+        singles, doubles = _enumerate_excitations(counts.n_electrons, n_qubits)
         _require_balanced_spin(counts, "HartreeFockAnsatz")
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
@@ -1663,28 +1663,54 @@ def _validate_reference_counts(
         )
 
 
-def _spin_conserving_excitations(
-    n_electrons: int, n_qubits: int
+def _enumerate_excitations(
+    occupied: Sequence[int] | int, n_qubits: int, generalised: bool = False
 ) -> tuple[list[tuple[int, int]], list[tuple[int, int, int, int]]]:
-    """Singles and doubles out of the Hartree-Fock reference.
+    """Spin-conserving singles ``(i, a)`` and doubles ``(i, j, a, b)`` moving
+    ``i`` (and ``j``) to ``a`` (and ``b``); even qubits are spin-up.
 
-    Even qubits carry spin-up and odd qubits spin-down, so an excitation is kept
-    only when it leaves the total spin projection unchanged.
+    ``occupied`` lists the occupied qubits, or counts them from qubit 0. By
+    default the excitations take occupied qubits to virtual ones. With
+    ``generalised``, they exchange any qubits, each exchange listed once with
+    its lowest qubit first.
     """
-    _validate_reference_counts(n_electrons, n_qubits, require_virtual=True)
-    spin_up = [qubit % 2 == 0 for qubit in range(n_qubits)]
-    occupied = range(n_electrons)
-    virtual = range(n_electrons, n_qubits)
-    singles = [
-        (r, p) for r, p in product(occupied, virtual) if spin_up[p] == spin_up[r]
-    ]
+    is_count = not isinstance(occupied, Sequence)
+    _validate_reference_counts(
+        occupied if is_count else len(occupied), n_qubits, require_virtual=True
+    )
+    occupied = range(occupied) if is_count else occupied
+    if generalised:
+        singles = [
+            (p, q) for p, q in combinations(range(n_qubits), 2) if p % 2 == q % 2
+        ]
+        doubles = [
+            double
+            for support in combinations(range(n_qubits), 4)
+            for double in _pair_support(support)
+        ]
+        return singles, doubles
+    filled = set(occupied)
+    virtual = [qubit for qubit in range(n_qubits) if qubit not in filled]
+    singles = [(i, a) for i in occupied for a in virtual if i % 2 == a % 2]
     doubles = [
-        (s, r, q, p)
-        for s, r in combinations(occupied, 2)
-        for q, p in combinations(virtual, 2)
-        if spin_up[p] + spin_up[q] == spin_up[r] + spin_up[s]
+        (i, j, a, b)
+        for i, j in combinations(occupied, 2)
+        for a, b in combinations(virtual, 2)
+        if i % 2 + j % 2 == a % 2 + b % 2
     ]
     return singles, doubles
+
+
+def _pair_support(support: Sequence[int]) -> list[tuple[int, int, int, int]]:
+    """Spin-conserving doubles ``(i, j, a, b)`` exchanging ``support[0]`` and
+    one other qubit of the four with the remaining two."""
+    first = support[0]
+    doubles = []
+    for second in support[1:]:
+        a, b = (q for q in support if q not in (first, second))
+        if first % 2 + second % 2 == a % 2 + b % 2:
+            doubles.append((first, second, a, b))
+    return doubles
 
 
 def _qcc_excitation_words(
@@ -1692,17 +1718,10 @@ def _qcc_excitation_words(
 ) -> list[dict[int, str]]:
     """``XY`` per spin-conserving single and ``XXXY`` per double out of
     ``occupied``, singles first, ``Y`` on the last virtual."""
-    _validate_reference_counts(len(occupied), n_qubits, require_virtual=True)
-    filled = set(occupied)
-    virtual = [qubit for qubit in range(n_qubits) if qubit not in filled]
-    singles = [{i: "X", a: "Y"} for i in occupied for a in virtual if i % 2 == a % 2]
-    doubles = [
-        {i: "X", j: "X", a: "X", b: "Y"}
-        for i, j in combinations(occupied, 2)
-        for a, b in combinations(virtual, 2)
-        if i % 2 + j % 2 == a % 2 + b % 2
+    singles, doubles = _enumerate_excitations(occupied, n_qubits)
+    return [{i: "X", a: "Y"} for i, a in singles] + [
+        {i: "X", j: "X", a: "X", b: "Y"} for i, j, a, b in doubles
     ]
-    return singles + doubles
 
 
 def _paired_doubles(n_qubits: int, reference: ElectronCounts) -> list[tuple[int, int]]:
@@ -1734,38 +1753,66 @@ def _emit_double_excitation(
 ) -> None:
     """Emit a Givens rotation mixing ``|0011>`` and ``|1100>`` on ``(w0..w3)``.
 
-    Fourteen CNOTs and eight ``RY(±theta/8)``, from page 17 of Anselmetti et al.,
-    *New J. Phys.* **23** 113010 (2021), arXiv:2104.05695.
+    Rotations about the generator's eight words, from Fig. 4 of Ramôa et al.,
+    arXiv:2407.08696.
     """
-    eighth = theta / 8
-    qc.cx(w2, w3)
-    qc.cx(w0, w2)
-    qc.h(w3)
-    qc.h(w0)
-    qc.cx(w2, w3)
-    qc.cx(w0, w1)
-    qc.ry(eighth, w1)
-    qc.ry(-eighth, w0)
-    qc.cx(w0, w3)
-    qc.h(w3)
-    qc.cx(w3, w1)
-    qc.ry(eighth, w1)
-    qc.ry(-eighth, w0)
-    qc.cx(w2, w1)
-    qc.cx(w2, w0)
-    qc.ry(-eighth, w1)
-    qc.ry(eighth, w0)
-    qc.cx(w3, w1)
-    qc.h(w3)
-    qc.cx(w0, w3)
-    qc.ry(-eighth, w1)
-    qc.ry(eighth, w0)
-    qc.cx(w0, w1)
-    qc.cx(w2, w0)
-    qc.h(w0)
-    qc.h(w3)
-    qc.cx(w0, w2)
-    qc.cx(w2, w3)
+    _emit_odd_y_evolution(
+        qc,
+        {
+            letters[::-1]: sign * theta / 16
+            for letters, sign in _DOUBLE_EXCITATION_TERMS
+        },
+        (w0, w1, w2, w3),
+    )
+
+
+#: Pauli terms of :func:`_emit_double_excitation`'s generator, letters on wires
+#: ``(w3, w2, w1, w0)``, in sixteenths.
+_DOUBLE_EXCITATION_TERMS = (
+    ("XXXY", 1),
+    ("XXYX", 1),
+    ("XYXX", -1),
+    ("XYYY", 1),
+    ("YXXX", -1),
+    ("YXYY", 1),
+    ("YYXY", -1),
+    ("YYYX", -1),
+)
+
+#: Each ``RZ`` of :func:`_emit_odd_y_evolution` in order: the four-qubit word it
+#: rotates (letter ``k`` on wire ``k``) and the sign of that rotation.
+_ODD_Y_ROTATIONS = (
+    ("YXXX", 1),
+    ("XYXX", 1),
+    ("YYXY", -1),
+    ("XXXY", 1),
+    ("YXYY", -1),
+    ("XYYY", -1),
+    ("YYYX", -1),
+    ("XXYX", 1),
+)
+
+
+def _emit_odd_y_evolution(
+    qc: QuantumCircuit, coefficients: Mapping[str, Any], wires: Sequence[int]
+) -> None:
+    """Emit ``exp(-i sum_w coefficients[w] w)`` over the words ``w`` of
+    :data:`_ODD_Y_ROTATIONS`, letter ``k`` on ``wires[k]`` (Ramôa et al.,
+    Fig. 4)."""
+    angles = [2 * sign * coefficients.get(word, 0) for word, sign in _ODD_Y_ROTATIONS]
+    qc.sdg(wires[0])
+    for target in (3, 2, 1):
+        qc.cx(wires[0], wires[target])
+    qc.h(wires[0])
+    qc.sdg(wires[2])
+    for control, angle in zip((1, 3, 1, 2, 1, 3, 1, None), angles, strict=True):
+        qc.rz(angle, wires[0])
+        if control is not None:
+            qc.cx(wires[control], wires[0])
+    qc.h(wires[0])
+    for target in (1, 2, 3):
+        qc.cx(wires[0], wires[target])
+    qc.s(wires[2])
 
 
 def _emit_pauli_rotation(qc: QuantumCircuit, theta, word: Mapping[int, str]) -> None:

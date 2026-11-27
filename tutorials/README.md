@@ -64,6 +64,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 - **`vqe_fcisolver_casscf_h2o.py`** — `VQEFCISolver` in PySCF's CASSCF for water: CASCI against CASSCF, the dipole moment and natural occupations through PySCF, and how sampling shots set the error of measured density matrices
 - **`vqe_upccd_lih.py`** — `UpCCDAnsatz` against `UCCSDAnsatz` on LiH: parameter counts, energy and fidelity against the seniority-zero floor, and a start from CCSD pair amplitudes
 - **`vqe_qcc_entanglers_h2.py`** — Choosing `QCCAnsatz` entanglers on H2: the default excitation entanglers, a pool of Pauli words ranked by energy gradient, and a single chosen entangler
+- **`adapt_vqe_lih.py`** — `AdaptVQE` on LiH: the qubit-excitation, Pauli and CEO pools with one-operator and TETRIS growth, then the grown circuit reused as a fixed `AdaptAnsatz` along the bond
 - **`vqe_hyperparameter_sweep.py`** — Hyperparameter sweeps across multiple molecules
 - **`qsci_lih.py`** — `QSCI` on LiH (12 qubits): qDRIFT-sampled seed subspace, then expansion by second-order contribution, against exact FCI with the PT2 correction
 - **`qsci_fcisolver_n2.py`** — `QSCISolver` as PySCF's active-space solver on N2 dissociation in 6-31G CAS(6,8): the VQE-sampled and grown subspaces against exact CASCI, with `<S^2>` of each final state

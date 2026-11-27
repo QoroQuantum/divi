@@ -27,11 +27,12 @@ from divi.pipeline import (
     PipelineEnv,
     PipelineResult,
     ResultFormat,
+    ShotDistStrategy,
     Stage,
     dry_run_pipeline,
     extract_param_set_idx,
 )
-from divi.pipeline.abc import _EstimatorSamplePlan
+from divi.pipeline.abc import CostVariance, _EstimatorSamplePlan
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
@@ -634,11 +635,14 @@ class QuantumProgram(ABC):
             "implement _initial_spec to use evaluate()."
         )
 
-    def _make_measurement_stage(self) -> Stage:
-        """The default ``handles_measurement`` terminal. Overridden by
+    def _make_measurement_stage(
+        self, shot_distribution: ShotDistStrategy | None = None
+    ) -> Stage:
+        """The default ``handles_measurement`` terminal, splitting shots by
+        ``shot_distribution`` when given. Overridden by
         :class:`~divi.qprog.mixins.ObservableMeasuringMixin` to carry the program's
         grouping / shot-distribution strategy."""
-        return MeasurementStage()
+        return MeasurementStage(shot_distribution=shot_distribution)
 
     def _build_preprocessor_pipeline(
         self,
@@ -691,7 +695,7 @@ class QuantumProgram(ABC):
         return_variance: Literal[True],
         preserve_keys: Literal[False] = False,
         axes_to_preserve: Sequence[str] = (),
-    ) -> tuple[dict[int, Any], dict[int, float]]: ...
+    ) -> tuple[dict[int, Any], dict[int, CostVariance]]: ...
 
     @overload
     def evaluate(
@@ -719,7 +723,9 @@ class QuantumProgram(ABC):
         return_variance: bool = False,
         preserve_keys: bool = False,
         axes_to_preserve: Sequence[str] = (),
-    ) -> dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, float]]: ...
+    ) -> (
+        dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, CostVariance]]
+    ): ...
 
     def evaluate(
         self,
@@ -732,7 +738,9 @@ class QuantumProgram(ABC):
         return_variance: bool = False,
         preserve_keys: bool = False,
         axes_to_preserve: Sequence[str] = (),
-    ) -> dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, float]]:
+    ) -> (
+        dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, CostVariance]]
+    ):
         """Measure this program's prepared state under ``preprocessor`` for ``params``.
 
         The single entry point external callers (optimizers, metric estimators)
@@ -753,7 +761,9 @@ class QuantumProgram(ABC):
                 budget shared by every parameter set or one budget per set. This
                 is distinct from backend shots and is mutually exclusive with
                 ``shots``.
-            return_variance: Also return per-set shot-noise variance.
+            return_variance: Also return per-set shot-noise variance: a float
+                for one observable, the covariance matrix of the observables
+                for a tuple of several, ``nan`` where it is unavailable.
             preserve_keys: Output control. When ``True``, return the raw
                 pipeline-result dict (keyed by full ``(axis, value)`` keys)
                 instead of collapsing it to ``{param_set_idx: value}``.
@@ -848,23 +858,25 @@ class QuantumProgram(ABC):
             for param_idx, value in values.items()
         }
 
-    def _map_cost_shot_variances(self, values: Mapping[int, float]) -> dict[int, float]:
+    def _map_cost_shot_variances(
+        self, values: Mapping[int, Any]
+    ) -> dict[int, CostVariance]:
         """Map the last pipeline run's shot-noise variance to each param-set index.
 
         The variance is computed at the counts stage with only the obs_group axis
         stripped. For a plain expval cost that leaves exactly the param_set axis,
-        so each index maps to one variance. A pipeline with extra reduce axes
-        (e.g. ZNE scales, a QNN data batch) yields several entries per index;
-        collapsing them to a single scalar would be wrong, so such indices — and
-        any value absent from the artifact (e.g. native-expval backends produce
-        none) — are reported as ``nan`` so the optimizer falls back to its
-        variance-free path.
+        so each index maps to one variance, or to the covariance matrix of a
+        tuple of observables. A pipeline with extra reduce axes (e.g. ZNE
+        scales, a QNN data batch) yields several entries per index; collapsing
+        them would be wrong, so such indices — and any value absent from the
+        artifact (e.g. native-expval backends produce none) — are reported as
+        ``nan`` so the optimizer falls back to its variance-free path.
         """
         raw_var = self._last_cost_variance or {}
-        by_idx: dict[int, float] = {}
+        by_idx: dict[int, CostVariance] = {}
         collided: set[int] = set()
         for key, variance in raw_var.items():
-            idx = extract_param_set_idx(key)
+            idx = extract_param_set_idx(key, default=0)
             if idx in by_idx:
                 collided.add(idx)
             by_idx[idx] = variance

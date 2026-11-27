@@ -25,6 +25,7 @@ from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 from scipy.linalg import expm
 from scipy.stats import unitary_group
 
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._openfermion import _spo_from_integrals
 from divi.qprog.algorithms import (
     VQE,
@@ -47,11 +48,11 @@ from divi.qprog.algorithms._ansatze import (
     _emit_pauli_rotation,
     _emit_rotation_block,
     _emit_single_excitation,
+    _enumerate_excitations,
     _layered,
     _resolve_spin_counts,
     _rotation_one_particle,
     _rotation_schedule,
-    _spin_conserving_excitations,
     fit_rotation_angles,
     lucj_jastrow_pairs,
     n_rotation_params,
@@ -995,7 +996,7 @@ class TestHartreeFockAnsatz:
         applied first. The two orderings differ, so this pins the one the
         excitation amplitudes were fitted against."""
         n_electrons = 2
-        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+        singles, doubles = _enumerate_excitations(range(n_electrons), n_qubits)
         per_layer = len(singles) + len(doubles)
         params = np.linspace(0.11, 0.97, n_layers * per_layer)
 
@@ -1026,23 +1027,33 @@ class TestHartreeFockAnsatz:
         assert np.allclose(actual, expected @ reference)
 
     @pytest.mark.parametrize(
-        "n_electrons, n_qubits, expected_singles, expected_doubles",
+        "occupied, n_qubits, generalized, expected_singles, expected_doubles",
         [
-            (2, 4, [(0, 2), (1, 3)], [(0, 1, 2, 3)]),
+            ((0, 1), 4, False, [(0, 2), (1, 3)], [(0, 1, 2, 3)]),
             (
-                2,
+                (0, 1),
                 6,
+                False,
                 [(0, 2), (0, 4), (1, 3), (1, 5)],
                 [(0, 1, 2, 3), (0, 1, 2, 5), (0, 1, 3, 4), (0, 1, 4, 5)],
             ),
+            ((0, 3), 4, False, [(0, 2), (3, 1)], [(0, 3, 1, 2)]),
+            (
+                (0, 1),
+                4,
+                True,
+                [(0, 2), (1, 3)],
+                [(0, 1, 2, 3), (0, 3, 1, 2)],
+            ),
         ],
+        ids=["closed-shell-4", "closed-shell-6", "excited-reference", "generalized"],
     )
-    def test_spin_conserving_excitations_enumerate_occupied_to_virtual(
-        self, n_electrons, n_qubits, expected_singles, expected_doubles
+    def test_enumerate_excitations_conserves_spin(
+        self, occupied, n_qubits, generalized, expected_singles, expected_doubles
     ):
         """Even qubits carry spin-up, odd spin-down; only excitations preserving
         the total spin projection are kept."""
-        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+        singles, doubles = _enumerate_excitations(occupied, n_qubits, generalized)
         assert singles == expected_singles
         assert doubles == expected_doubles
 
@@ -1072,20 +1083,20 @@ class TestHartreeFockAnsatz:
         "emit, n_qubits, expected_cx",
         [
             (lambda qc, theta: _emit_single_excitation(qc, theta, 0, 1), 2, 2),
-            (lambda qc, theta: _emit_double_excitation(qc, theta, 0, 1, 2, 3), 4, 14),
+            (lambda qc, theta: _emit_double_excitation(qc, theta, 0, 1, 2, 3), 4, 13),
         ],
         ids=["single", "double"],
     )
     def test_excitation_emitters_land_in_the_lowering_basis(
         self, emit, n_qubits, expected_cx
     ):
-        """An excitation emitted outside ``{h, ry, cx}`` picks up extra
+        """An excitation emitted outside the lowering basis picks up extra
         single-qubit depth when the circuit is lowered, for no change in
         entangling cost."""
         qc = QuantumCircuit(n_qubits)
         emit(qc, 0.7137)
         names = gate_names(qc)
-        assert set(names) <= {"h", "ry", "cx"}
+        assert set(names) <= set(_QISKIT_TO_QASM2)
         assert names.count("cx") == expected_cx
 
 

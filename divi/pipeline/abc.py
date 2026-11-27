@@ -41,6 +41,10 @@ ChildResults = dict[Any, Any]
 
 StageToken = Any
 
+#: Shot-noise variance of one cost value, or the covariance matrix of a tuple of
+#: observables.
+CostVariance = float | npt.NDArray[np.float64]
+
 
 @runtime_checkable
 class _ScopedStageToken(Protocol):
@@ -277,8 +281,9 @@ class PipelineEnv:
     collect_variance: bool = False
     """When ``True``, measurement stages also estimate the shot-noise variance of
     each cost value from raw counts and write it to ``artifacts['cost_variance']``
-    (``{param_set_idx: variance}``). Off by default — the estimate costs nothing
-    extra in circuits but adds a small classical post-processing pass."""
+    (``{param_set_idx: variance}``); a tuple of several observables gets their
+    covariance matrix. Off by default — the estimate costs nothing extra in
+    circuits but adds a small classical post-processing pass."""
 
     axes_to_preserve: tuple[str, ...] = ()
     """Stage axes that should not be reduced away. Advanced callers use this
@@ -502,6 +507,6 @@ class BundleStage(Stage[MetaCircuitBatch, MetaCircuitBatch], ABC):
         raw: ChildResults,
         batch: MetaCircuitBatch,
         token: StageToken,
-    ) -> dict[tuple, float] | None:
+    ) -> dict[tuple, CostVariance] | None:
         """Estimate cost variance when this stage owns measurement semantics."""
         return None

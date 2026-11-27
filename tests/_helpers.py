@@ -150,15 +150,22 @@ H3_CHAIN_ATOM = "H 0 0 0; H 0 0 0.9; H 0 0 1.8"
 
 
 def run_mcscf(
-    method, mean_field, n_orbitals, n_electrons, fcisolver=None, natorb=False
+    method,
+    mean_field,
+    n_orbitals,
+    n_electrons,
+    fcisolver=None,
+    natorb=False,
+    mo_coeff=None,
 ):
-    """Run a quiet PySCF ``method``, with ``fcisolver`` replacing its FCI solver."""
+    """Run a quiet PySCF ``method``, with ``fcisolver`` replacing its FCI solver,
+    from ``mo_coeff`` when given."""
     mc = method(mean_field, n_orbitals, n_electrons)
     mc.verbose = 0
     mc.natorb = natorb
     if fcisolver is not None:
         mc.fcisolver = fcisolver
-    mc.kernel()
+    mc.kernel(mo_coeff)
     return mc
 
 

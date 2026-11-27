@@ -147,7 +147,9 @@ After the Run
 After ``run()`` completes,
 :attr:`~divi.qprog.VariationalQuantumAlgorithm.stop_reason` holds the
 :class:`~divi.qprog.StopReason` that ended the loop, or ``None`` when it ran to
-``max_iterations``. The ``optimize_result`` attribute
+``max_iterations``. A program that grows its ansatz,
+:class:`~divi.qprog.algorithms.AdaptVQE`, always sets it, to the rule that
+ended the growth. The ``optimize_result`` attribute
 is always populated and its ``message`` field includes the stop reason.
 
 Inspecting Optimizer Results

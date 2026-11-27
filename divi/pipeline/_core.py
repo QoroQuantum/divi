@@ -17,6 +17,7 @@ import numpy as np
 from qiskit import QuantumCircuit
 
 from divi.backends._cancellation import _sigint_to_event
+from divi.circuits import MetaCircuit
 from divi.exceptions import VJPUnavailableError
 from divi.hamiltonians.trotterization import ExactTrotterization
 from divi.reporting._events import ProgressEvent
@@ -48,6 +49,7 @@ from ._result_keys_operations import (
 from .abc import (
     BundleStage,
     ChildResults,
+    CostVariance,
     DiviPerformanceWarning,
     ExpansionResult,
     MetaCircuitBatch,
@@ -196,7 +198,7 @@ def _validate_stage_order(stages: Sequence[Stage]) -> None:
 
 def _measurement_cost_variance(
     stages: Sequence[Stage], raw: ChildResults, trace: PipelineTrace
-) -> dict[tuple, float]:
+) -> dict[tuple, CostVariance]:
     """Delegate variance semantics to the pipeline's measurement stage."""
     measurement_idx, measurement_stage = next(
         (idx, stage)
@@ -211,6 +213,28 @@ def _measurement_cost_variance(
         if cost_variance is not None
         else _counts_to_cost_variance(raw, trace.final_batch)
     )
+
+
+def _collect_cost_variance(
+    stages: Sequence[Stage],
+    raw: ChildResults,
+    env: PipelineEnv,
+    plan: PipelineTrace,
+    unmeasured: MetaCircuitBatch,
+) -> dict[tuple, CostVariance]:
+    """Shot-noise variance of every cost value, zero for unmeasured constants."""
+    constants = {
+        strip_axis_from_label(branch_key, OBS_GROUP_AXIS): _build_zero_variance(node)
+        for key, node in unmeasured.items()
+        for branch_key in batch_lineage({key: node}, len(env.param_sets)).values()
+    }
+    return _measurement_cost_variance(stages, raw, plan) | constants
+
+
+def _build_zero_variance(node: MetaCircuit) -> CostVariance:
+    """A zero variance, or a zero covariance matrix for an observable tuple."""
+    n_observables = len(node.observable or ())
+    return 0.0 if n_observables <= 1 else np.zeros((n_observables, n_observables))
 
 
 def _execute_measured(
@@ -429,31 +453,21 @@ class CircuitPipeline:
             ),
             None,
         )
-        if result_format is ResultFormat.PROBS:
-            raw = _counts_to_probs(raw, env.backend.shots)
-        elif result_format is ResultFormat.COUNTS:
-            raw = {key: _check_histogram(key, counts) for key, counts in raw.items()}
-        elif result_format is ResultFormat.EXPVALS:
-            ham_ops = plan.env_artifacts.get("ham_ops")
-            if ham_ops is not None:
-                # Backend-native expval: no shot counts, so a shot-noise
-                # variance is undefined; cost_variance is left unset and
-                # consumers default to nan.
+        ham_ops = plan.env_artifacts.get("ham_ops")
+        match result_format:
+            case ResultFormat.PROBS:
+                raw = _counts_to_probs(raw, env.backend.shots)
+            case ResultFormat.COUNTS:
+                raw = {
+                    key: _check_histogram(key, counts) for key, counts in raw.items()
+                }
+            case ResultFormat.EXPVALS if ham_ops is not None:
                 raw = _expval_dicts_to_indexed(raw, ham_ops)
-            else:
+            case ResultFormat.EXPVALS:
                 if env.collect_variance:
-                    # Constants have no shot noise; several observables, no scalar.
-                    env.artifacts["cost_variance"] = _measurement_cost_variance(
-                        self._stages, raw, plan
-                    ) | {
-                        strip_axis_from_label(branch_key, OBS_GROUP_AXIS): (
-                            0.0 if len(node.observable or ()) == 1 else float("nan")
-                        )
-                        for key, node in unmeasured.items()
-                        for branch_key in batch_lineage(
-                            {key: node}, len(env.param_sets)
-                        ).values()
-                    }
+                    env.artifacts["cost_variance"] = _collect_cost_variance(
+                        self._stages, raw, env, plan, unmeasured
+                    )
                 raw = _counts_to_expvals(raw, plan.final_batch)
         if unmeasured:
             raw = _insert_unmeasured_rows(raw, plan.final_batch, len(env.param_sets))
