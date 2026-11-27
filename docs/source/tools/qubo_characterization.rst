@@ -99,13 +99,14 @@ Starting QAOA from the service's angles:
 
 The recommended layer count minimises QAOA's mean energy, and it can draw an
 optimal assignment rarely. To take the best of the sampled bitstrings instead,
-start from the sampling layer count:
+start from the sampling layer count; reports from before the service added it
+leave it ``None``:
 
 .. skip: next
 
 .. code-block:: python
 
-   layers = result.recommended_layers_for_sampling
+   layers = result.recommended_layers_for_sampling or result.recommended_layers
    qaoa = QAOA(problem, n_layers=layers)
    qaoa.run(initial_params=result.qaoa_initial_params(layers))
 

@@ -482,7 +482,7 @@ class CharacterizationResult:
         the sampled bitstrings instead, warm-start at
         :attr:`recommended_layers_for_sampling`::
 
-            layers = result.recommended_layers_for_sampling
+            layers = result.recommended_layers_for_sampling or result.recommended_layers
             qaoa = QAOA(problem, n_layers=layers)
             qaoa.run(initial_params=result.qaoa_initial_params(layers))
 
