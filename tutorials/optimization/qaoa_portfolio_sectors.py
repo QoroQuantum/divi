@@ -185,22 +185,25 @@ def run_qaoa(problem, backend, label, best, worst, spread):
     ok = [s for s in samples if balanced(s.decoded)]
     share = sum(s.prob for s in ok)
     hit = sum(s.prob for s in ok if tuple(s.decoded) == best)
-    mean_ar = (
-        sum(s.prob * (worst - avg_correlation(s.decoded)) for s in ok)
-        / share
-        / (worst - avg_correlation(best))
-    )
     print(f"{label}: {problem.cost_hamiltonian.num_qubits} qubits")
-    print(
-        f"  sector-balanced samples {share:.0%}, best basket {hit:.1%} of samples "
-        f"(uniform: {1 / 216:.1%}), mean AR of a balanced sample {mean_ar:.3f}"
-    )
-    report(
-        "best sample (filter)",
-        min((s.decoded for s in ok), key=avg_correlation),
-        best,
-        worst,
-    )
+    if ok:
+        mean_ar = (
+            sum(s.prob * (worst - avg_correlation(s.decoded)) for s in ok)
+            / share
+            / (worst - avg_correlation(best))
+        )
+        print(
+            f"  sector-balanced samples {share:.0%}, best basket {hit:.1%} of samples "
+            f"(uniform: {1 / 216:.1%}), mean AR of a balanced sample {mean_ar:.3f}"
+        )
+        report(
+            "best sample (filter)",
+            min((s.decoded for s in ok), key=avg_correlation),
+            best,
+            worst,
+        )
+    else:
+        print("  no sector-balanced sample, so filter has nothing to keep")
     repaired = qaoa.get_top_solutions(n=1, include_decoded=True, feasibility="repair")[
         0
     ]
