@@ -163,7 +163,12 @@ def test_casscf_matches_pyscf(default_test_simulator):
     reference = run_mcscf(mcscf.CASSCF, mean_field, 4, 4)
 
     casscf = run_mcscf(
-        mcscf.CASSCF, mean_field, 4, 4, _build_solver(default_test_simulator)
+        mcscf.CASSCF,
+        mean_field,
+        4,
+        4,
+        _build_solver(default_test_simulator),
+        mo_coeff=reference.mo_coeff,
     )
 
     assert casscf.e_tot == pytest.approx(reference.e_tot, abs=1e-6)

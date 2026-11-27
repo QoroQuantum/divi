@@ -70,6 +70,7 @@ NO_PATCHES = [
     "chemistry/vqe_h2_molecule.py",
     "chemistry/vqe_upccd_lih.py",
     "chemistry/vqe_qcc_entanglers_h2.py",
+    "chemistry/adapt_vqe_lih.py",
     "chemistry/lassqd_ethylene_uvvis.py",
     "chemistry/qsci_lih.py",
 ]

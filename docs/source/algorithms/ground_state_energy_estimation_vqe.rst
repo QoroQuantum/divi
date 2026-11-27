@@ -65,7 +65,8 @@ integrations with ``pip install "qoro-divi[pennylane]"`` or PySCF/OpenFermion
 integrations with ``pip install "qoro-divi[chem]"``.
 
 This page covers single-instance ground-state energy estimation with
-:class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
+:class:`~divi.qprog.algorithms.VQE`, ansätze grown by
+:class:`~divi.qprog.algorithms.AdaptVQE`, and large-scale sweeps with
 :class:`~divi.qprog.ensembles.VQEHyperparameterSweep`.
 
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
@@ -277,6 +278,121 @@ holding every layer. The built-in ansätze in
    overstate them: too many cost extra evaluations, too few give a wrong
    gradient.
 
+Growing the Ansatz with ADAPT-VQE
+---------------------------------
+
+:class:`~divi.qprog.algorithms.AdaptVQE` builds its ansatz instead of taking
+one. It starts from the reference determinant and, each step, measures the
+energy gradient of every operator in a pool at the current state, appends the
+operator whose gradient is largest, and optimises again from the previous
+parameters with the new one at zero. The gradients of a step are measured in a
+single batched evaluation alongside the energy.
+
+.. code-block:: python
+
+   from pyscf import gto, scf
+   from divi.backends import MaestroSimulator
+   from divi.qprog.algorithms import AdaptVQE
+   from divi.qprog.algorithms.adapt import CEOPool
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import MolecularProblem
+
+   mean_field = scf.RHF(
+       gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+   ).run()
+   adapt = AdaptVQE(
+       MolecularProblem.from_casci(mean_field, 2, 2),
+       pool=CEOPool(),
+       growth="tetris",
+       optimizer=ScipyOptimizer(ScipyMethod.BFGS),
+       backend=MaestroSimulator(),
+   )
+   adapt.run()
+   print(f"Energy: {adapt.best_loss:.6f} Ha, operators: {len(adapt.operators)}")
+
+The problem needs electron counts, as a
+:class:`~divi.qprog.problems.MolecularProblem` supplies.
+
+- **Pools** — :class:`~divi.qprog.algorithms.adapt.QubitExcitationPool` (the
+  default) holds spin-conserving single and double qubit excitations;
+  :class:`~divi.qprog.algorithms.adapt.PauliPool` holds each of their Pauli words as
+  its own rotation; :class:`~divi.qprog.algorithms.adapt.CEOPool` couples the
+  excitations that share four qubits, under one parameter or, when more than
+  one of them has a gradient, one parameter each. Each pool takes its
+  excitations from occupied to virtual orbitals of the reference, or between
+  any orbitals with ``generalised=True``. A custom pool subclasses
+  :class:`~divi.qprog.algorithms.adapt.OperatorPool`.
+- **Growth** — ``growth="single"`` appends one operator per step;
+  ``growth="tetris"`` also appends, in order of gradient, further operators on
+  qubits not yet used that step, so a step can add several.
+- **Re-optimisation** — ``reoptimize="all"`` (the default) optimises every
+  parameter each step; ``reoptimize="new"`` holds the earlier ones fixed,
+  optimises only those just added, and stops the run when its choices begin to
+  repeat.
+- **Hessian recycling** — with
+  ``ScipyOptimizer(ScipyMethod.BFGS)`` under ``reoptimize="all"``, each step
+  starts BFGS from the previous step's inverse Hessian, padded for the new
+  parameters.
+
+On a backend that computes expectation values, the run stops when no
+candidate's gradient magnitude reaches ``gradient_threshold`` or after
+``max_steps`` steps; it warns when it reaches ``max_steps`` first. A small
+largest gradient does not bound the energy error, so set the thresholds from
+the accuracy a study needs. ``admission_threshold``
+separately sets the gradient an operator needs to join a TETRIS step or to
+take its own parameter in a coupled exchange. An
+:class:`~divi.qprog.EarlyStopping` passed as ``early_stopping`` applies across
+growth steps rather than within each step's optimisation, and
+``adapt.stop_reason`` gives the :class:`~divi.qprog.StopReason` that ended the
+run.
+
+On a sampling backend
+^^^^^^^^^^^^^^^^^^^^^
+
+Measured gradients carry shot noise, so fixed thresholds stop meaning
+anything: noise alone can exceed ``gradient_threshold`` and an operator chosen
+by the largest measured gradient may be noise. On a backend that samples,
+``AdaptVQE`` therefore works with the uncertainty of every estimate, taken
+from the measurement counts:
+
+- **Significance** — a gradient counts only when it clears a test that keeps
+  the chance of any false detection in a step below ``significance``, across
+  every candidate and every shot doubling.
+- **Shot doubling** — when no gradient is significant, the step measures again
+  with twice the shots, up to ``max_shot_scale`` times the backend's shots per
+  measurement group. Every later evaluation of the run, the optimiser's
+  included, uses the scale reached; the energy after each step and the final
+  energy are measured at ``max_shot_scale``. Gradient screening and landscape
+  measurements split their shots across measurement groups by weight, with a
+  floor per group, whatever ``shot_distribution`` says.
+- **Landscapes** — for the ``shortlist_size`` largest significant candidates,
+  the energy as a function of the new operator's angles is measured as a short
+  trigonometric series. The candidate predicted to lower the energy most is
+  appended at the angles that achieve it, and the optimiser starts from there.
+  A :class:`~divi.qprog.algorithms.adapt.CEOPool` operator takes
+  one parameter per excitation only when that lowers the energy significantly
+  further.
+- **Stopping** — the run stops when no gradient is significant at the largest
+  shot scale (``StopReason.RESOLUTION_LIMITED``) or after ``max_steps``, which
+  is therefore the run's budget. Under ``reoptimize="new"``, it also stops
+  when its choices begin to repeat. An ``early_stopping`` passed explicitly
+  ends the run when the measured energy stops improving across steps, but it
+  can halt a run whose progress per step is smaller than the measurement
+  noise.
+
+Optimisation methods that use each parameter's frequencies, such as
+:class:`~divi.qprog.optimizers.RotosolveOptimizer`, suit this mode well.
+``shot_distribution="weighted_random"`` and shadow grouping are rejected on a
+sampling backend, since each draws random shot counts.
+
+After a run, ``adapt.step_history`` records what each step appended and the
+energy it
+reached, and ``adapt.operators`` lists the grown circuit's operators. Those
+operators make a fixed :class:`~divi.qprog.algorithms.AdaptAnsatz`, which an
+ordinary :class:`~divi.qprog.algorithms.VQE` can train, for example at a
+nearby geometry starting from ``adapt.best_params``. ADAPT-VQE does not
+support checkpointing.
+
 VQE Hyperparameter Sweep
 ------------------------
 
@@ -439,8 +555,9 @@ Next Steps
 - Runnable tutorials are in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory;
   `tutorials/chemistry/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/chemistry>`_
   runs ``VQEFCISolver`` inside PySCF (``vqe_fcisolver_n2.py``,
-  ``vqe_fcisolver_casscf_h2o.py``) and compares ansätze (``vqe_upccd_lih.py``,
-  ``vqe_qcc_entanglers_h2.py``)
+  ``vqe_fcisolver_casscf_h2o.py``), compares ansätze (``vqe_upccd_lih.py``,
+  ``vqe_qcc_entanglers_h2.py``) and grows one with ADAPT-VQE
+  (``adapt_vqe_lih.py``)
 - Browse the :doc:`../api_reference/qprog/optimizers` for the available optimisation strategies, and
   :doc:`../execution_workflows/optimizers` for gradient sources and early stopping
 - Explore :doc:`improving_results_qem` for error mitigation

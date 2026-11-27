@@ -14,6 +14,7 @@ from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
+import divi.pipeline.stages._measurement_stage as measurement_stage_module
 from divi.backends import MaestroConfig
 from divi.circuits import MetaCircuit
 from divi.pipeline import (
@@ -116,6 +117,25 @@ def test_fanout_and_regroup(dummy_pipeline_env):
     )
     assert len(reduced) == 1
     assert list(reduced.values())[0] == pytest.approx([1.3])
+
+
+def test_each_observable_tuple_expanded_again_is_grouped_once(
+    dummy_pipeline_env, mocker
+):
+    grouping = mocker.spy(measurement_stage_module, "_compute_measurement_groups")
+    stage = MeasurementStage()
+    batch = {(("spec", "a"),): _two_term_meta(), (("spec", "b"),): _two_term_meta()}
+
+    first = stage.expand(batch, dummy_pipeline_env)
+    again = stage.expand(
+        {key: replace(meta, precision=4) for key, meta in batch.items()},
+        dummy_pipeline_env,
+    )
+
+    assert grouping.call_count == len(batch)
+    assert [meta.backend_ham_ops for meta in again.batch.values()] == [
+        meta.backend_ham_ops for meta in first.batch.values()
+    ]
 
 
 class TestMeasurementStageExpvalBackendReduce:
@@ -2141,7 +2161,7 @@ class TestMeasurementStageIdentityOnlyObservable:
             (("circuit", "measured"),): pytest.approx((1 - 0.6**2) / 100),
         }
 
-    def test_cost_variance_is_zero_for_one_constant_and_undefined_for_several(self):
+    def test_cost_variance_of_constants_is_zero_as_a_scalar_or_a_matrix(self):
         env = PipelineEnv(backend=ShotsBackendSpy(shots=100), collect_variance=True)
         single = meta_with_observable(SparsePauliOp("I", 2.0))
         pair = replace(
@@ -2154,7 +2174,9 @@ class TestMeasurementStageIdentityOnlyObservable:
         assert result[()] == [[2.0], [1.0, 4.0]]
         variance = env.artifacts["cost_variance"]
         assert variance[(("circuit", "single"),)] == 0.0
-        assert np.isnan(variance[(("circuit", "pair"),)])
+        np.testing.assert_array_equal(
+            variance[(("circuit", "pair"),)], np.zeros((2, 2))
+        )
         assert len(variance) == 2
 
     def test_cost_variance_is_keyed_per_parameter_set(self):
@@ -2179,7 +2201,9 @@ class TestMeasurementStageIdentityOnlyObservable:
         assert len(variance) == 4
         for index in (0, 1):
             assert variance[(("circuit", "single"), ("param_set", index))] == 0.0
-            assert np.isnan(variance[(("circuit", "pair"), ("param_set", index))])
+            np.testing.assert_array_equal(
+                variance[(("circuit", "pair"), ("param_set", index))], np.zeros((2, 2))
+            )
 
     def test_an_empty_observable_tuple_is_rejected(self):
         meta = replace(meta_with_observable(SparsePauliOp("Z")), observable=())

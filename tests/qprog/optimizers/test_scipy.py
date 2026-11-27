@@ -59,6 +59,7 @@ def _after_a_failed_run(cost_fn, method):
 
 @pytest.fixture(
     params=[
+        ScipyMethod.BFGS,
         ScipyMethod.L_BFGS_B,
         ScipyMethod.SLSQP,
         ScipyMethod.COBYLA,
@@ -129,6 +130,7 @@ class TestScipyOptimizer:
     @pytest.mark.parametrize(
         ("method", "expects_jac"),
         [
+            (ScipyMethod.BFGS, True),
             (ScipyMethod.L_BFGS_B, True),
             (ScipyMethod.SLSQP, True),
             (ScipyMethod.NELDER_MEAD, False),
@@ -168,6 +170,34 @@ class TestScipyOptimizer:
         else:
             assert recorded["jac"] is None
         assert recorded["method"] == method.value
+
+    def test_bfgs_converges_sooner_from_the_exact_inverse_hessian(self):
+        curvature = np.diag([1.0, 10.0, 100.0])
+
+        def minimise(**kwargs):
+            return ScipyOptimizer(ScipyMethod.BFGS).optimize(
+                lambda x: 0.5 * x @ curvature @ x,
+                np.ones(3),
+                jac=lambda x: curvature @ x,
+                **kwargs,
+            )
+
+        cold = minimise()
+        warm = minimise(initial_inverse_hessian=np.linalg.inv(curvature))
+
+        assert warm.nit < cold.nit
+        np.testing.assert_allclose(warm.x, np.zeros(3), atol=1e-10)
+        assert warm.hess_inv.shape == (3, 3)
+
+    def test_an_initial_inverse_hessian_is_rejected_outside_bfgs(self):
+        message = "initial_inverse_hessian applies only to BFGS; got L-BFGS-B."
+
+        with pytest.raises(ValueError, match=exact_match(message)):
+            ScipyOptimizer(ScipyMethod.L_BFGS_B).optimize(
+                sphere_cost_fn_single,
+                np.array([0.5, -0.5]),
+                initial_inverse_hessian=np.eye(2),
+            )
 
     def test_callback_shapes_are_normalized(self, monkeypatch):
         """Callbacks should always observe 2D parameters and 1D losses."""

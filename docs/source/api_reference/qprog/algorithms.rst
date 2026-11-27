@@ -13,6 +13,16 @@ an arbitrary parameterised circuit as a variational program.
    :no-inherited-members:
    :include-all-objects:
 
+ADAPT-VQE Pools and Operators
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodapi:: divi.qprog.algorithms.adapt
+   :no-heading:
+   :no-main-docstr:
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :skip: AdaptAnsatz, AdaptVQE
+
 Trotterization Strategies
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

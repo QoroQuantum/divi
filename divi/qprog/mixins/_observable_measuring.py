@@ -114,10 +114,13 @@ class ObservableMeasuringMixin:
         # Building the stage validates the measurement configuration.
         self._make_measurement_stage()
 
-    def _make_measurement_stage(self) -> MeasurementStage:
-        """The measurement terminal carrying this program's grouping / shot strategy."""
+    def _make_measurement_stage(
+        self, shot_distribution: ShotDistStrategy | None = None
+    ) -> MeasurementStage:
+        """The measurement terminal carrying this program's grouping / shot
+        strategy; ``shot_distribution``, when given, replaces the program's."""
         return MeasurementStage(
             grouping_strategy=self._grouping_strategy,
-            shot_distribution=self._shot_distribution,
+            shot_distribution=shot_distribution or self._shot_distribution,
             measure_all=self._measure_all_qubits,
         )

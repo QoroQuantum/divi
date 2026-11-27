@@ -77,6 +77,9 @@ def _wire_grouping_from_labels(
 #: Groups scanned per vectorised conflict check in QWC first-fit grouping.
 _QWC_GROUP_CHUNK = 2048
 
+#: Pauli letters as bytes, indexed by :func:`_encode_paulis` codes.
+_PAULI_LETTERS = np.frombuffer(b"IXZY", dtype=np.uint8)
+
 
 def _encode_paulis(paulis: PauliList) -> npt.NDArray[np.uint8]:
     """Per-term, per-qubit Pauli codes ``x + 2z``: 0 I, 1 X, 2 Z, 3 Y."""
@@ -198,9 +201,19 @@ def _build_observable_union(
         raise ValueError("The observable tuple is empty.")
 
     union, per_obs_term_indices = flatten_observable_tuple(observable)
-    # Qiskit labels are little-endian; we store big-endian internally.
-    labels = [label[::-1].ljust(n_qubits, "I") for label in union.paulis.to_labels()]
-    return union, per_obs_term_indices, labels
+    return (
+        union,
+        per_obs_term_indices,
+        _label_paulis(_encode_paulis(union.paulis), n_qubits),
+    )
+
+
+def _label_paulis(codes: npt.NDArray[np.uint8], n_qubits: int) -> list[str]:
+    """Big-endian Pauli labels (qubit 0 on the left) of :func:`_encode_paulis`
+    ``codes``, padded to ``n_qubits``."""
+    return [
+        row.tobytes().decode().ljust(n_qubits, "I") for row in _PAULI_LETTERS[codes]
+    ]
 
 
 def _compute_measurement_groups(
@@ -246,7 +259,14 @@ def _compute_measurement_groups(
     union, per_obs_term_indices, be_labels = _build_observable_union(
         observable, n_qubits
     )
-    n_union_terms = len(be_labels)
+    n_union_terms = len(union)
+    if strategy == BACKEND_EXPVAL:
+        return (
+            BACKEND_EXPVAL_GROUPS,
+            [list(range(n_union_terms))],
+            union,
+            per_obs_term_indices,
+        )
 
     if strategy in ("qwc", "default"):
         partition_indices = _group_qubit_wise_commuting(_encode_paulis(union.paulis))
@@ -254,15 +274,11 @@ def _compute_measurement_groups(
         partition_indices = _wire_grouping_from_labels(be_labels)
     elif strategy is None:
         partition_indices = [[i] for i in range(n_union_terms)]
-    elif strategy == BACKEND_EXPVAL:
-        partition_indices = [list(range(n_union_terms))]
     else:
         raise ValueError(f"Unknown grouping strategy: {strategy}")
 
-    measurement_groups = (
-        BACKEND_EXPVAL_GROUPS
-        if strategy == BACKEND_EXPVAL
-        else tuple(tuple(be_labels[i] for i in group) for group in partition_indices)
+    measurement_groups = tuple(
+        tuple(be_labels[i] for i in group) for group in partition_indices
     )
 
     covered = np.zeros(n_union_terms, dtype=bool)

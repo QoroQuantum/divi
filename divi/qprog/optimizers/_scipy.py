@@ -29,6 +29,11 @@ class ScipyMethod(Enum):
     """Gradient-free local method that refines linear approximations of the
     objective inside a trust region (Powell, 1994)."""
 
+    BFGS = "BFGS"
+    """Quasi-Newton method that keeps a dense inverse-Hessian estimate (Nocedal &
+    Wright, *Numerical Optimization*, 2006, §6.1). Uses the program's gradient,
+    and can start from a given inverse Hessian."""
+
     L_BFGS_B = "L-BFGS-B"
     """Limited-memory quasi-Newton method with bound constraints (Zhu et al.,
     *ACM Transactions on Mathematical Software*, 23(4), 1997). Uses the program's
@@ -39,7 +44,9 @@ class ScipyMethod(Enum):
     gradient as L-BFGS-B."""
 
 
-_GRADIENT_METHODS = frozenset({ScipyMethod.L_BFGS_B, ScipyMethod.SLSQP})
+_GRADIENT_METHODS = frozenset(
+    {ScipyMethod.BFGS, ScipyMethod.L_BFGS_B, ScipyMethod.SLSQP}
+)
 
 
 class ScipyOptimizer(Optimizer):
@@ -47,8 +54,8 @@ class ScipyOptimizer(Optimizer):
     Optimizer wrapper for scipy.optimize methods.
 
     Supports gradient-free and gradient-based optimisation algorithms from scipy:
-    Nelder-Mead simplex and COBYLA, which use only loss values, and L-BFGS-B and
-    SLSQP, which also use the program's gradient (see
+    Nelder-Mead simplex and COBYLA, which use only loss values, and BFGS,
+    L-BFGS-B and SLSQP, which also use the program's gradient (see
     :ref:`optimizer-gradient-source`). Where the gradient is near zero at the
     start, as on small or barren-plateau circuits, L-BFGS-B can reach its
     ``gtol`` and stop after a few iterations, leaving a flat loss trajectory.
@@ -93,22 +100,36 @@ class ScipyOptimizer(Optimizer):
         Run the scipy optimisation algorithm.
 
         Args:
-            cost_fn (Callable): Function to minimise. Should accept a 1D array of
+            cost_fn: Function to minimise. Should accept a 1D array of
                 parameters and return a scalar cost value.
-            initial_params (npt.NDArray[np.float64]): Initial parameter values as a 1D or 2D array.
+            initial_params: Initial parameter values as a 1D or 2D array.
                 If 2D with shape (1, n_params), it will be squeezed to 1D.
-            callback_fn (Callable, optional): Function called after each iteration
+            callback_fn: Function called after each iteration
                 with an `OptimizeResult` object. Defaults to None.
             **kwargs: Additional keyword arguments:
 
-                - max_iterations (int, optional): Total desired number of iterations.
+                - max_iterations: Total desired number of iterations.
                   Defaults to None (no limit for some methods).
-                - jac (Callable): Gradient function (used by L-BFGS-B and SLSQP).
+                - jac: Gradient function (used by BFGS, L-BFGS-B and
+                  SLSQP).
+                - initial_inverse_hessian: BFGS's starting
+                  inverse Hessian, ``(n_params, n_params)``. Defaults to the
+                  identity.
 
         Returns:
-            OptimizeResult: Optimisation result with final parameters and cost value.
+            OptimizeResult: Optimisation result with final parameters and cost
+            value; BFGS also returns its final inverse Hessian as ``hess_inv``.
+
+        Raises:
+            ValueError: If ``initial_inverse_hessian`` is given to a method other
+                than BFGS.
         """
         max_iterations = kwargs.pop("max_iterations", None)
+        initial_inverse_hessian = kwargs.pop("initial_inverse_hessian", None)
+        if initial_inverse_hessian is not None and self.method != ScipyMethod.BFGS:
+            raise ValueError(
+                f"initial_inverse_hessian applies only to BFGS; got {self.method.value}."
+            )
 
         # Normalize x/fun to 2D/1D for the callback contract, keeping every other key.
         if callback_fn:
@@ -137,6 +158,10 @@ class ScipyOptimizer(Optimizer):
         if initial_params is None:
             raise ValueError("ScipyOptimizer requires initial_params.")
 
+        options: dict[str, Any] = {"maxiter": maxiter}
+        if initial_inverse_hessian is not None:
+            options["hess_inv0"] = initial_inverse_hessian
+
         # The optimisers' BLAS calls are tiny; a thread per core in every process
         # would spin and starve concurrent simulations.
         with _SINGLE_THREADED_BLAS.hold():
@@ -150,7 +175,7 @@ class ScipyOptimizer(Optimizer):
                     else None
                 ),
                 callback=callback_wrapper,
-                options={"maxiter": maxiter},
+                options=options,
             )
 
     def save_state(self, checkpoint_dir: Path | str) -> None:

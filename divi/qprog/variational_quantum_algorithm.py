@@ -357,12 +357,13 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._cost_circuit = None
 
     def _has_run_optimization(self) -> bool:
-        """Check if optimisation has been run at least once.
+        """Check if optimisation has been run at least once, even one that
+        stopped before completing an iteration.
 
         Returns:
             bool: True if optimisation has been run, False otherwise.
         """
-        return len(self._losses_history) > 0
+        return self.optimize_result is not None or len(self._losses_history) > 0
 
     def has_results(self) -> bool:
         """Return True once the program has been trained or sampled."""
@@ -370,12 +371,14 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     @property
     def stop_reason(self) -> StopReason | None:
-        """Reason the optimisation was stopped early, or ``None``.
+        """Reason the run stopped, or ``None``.
 
         Returns:
-            StopReason | None: The :class:`~divi.qprog.StopReason`
-                that triggered early stopping, or ``None`` if optimisation
-                completed normally or has not been run yet.
+            StopReason | None: The :class:`~divi.qprog.StopReason` that
+                triggered early stopping or, for a program that grows its
+                ansatz such as :class:`~divi.qprog.algorithms.AdaptVQE`, ended
+                the growth; ``None`` when an optimisation ran to its iteration
+                limit or has not been run yet.
         """
         return self._stop_reason
 
@@ -1555,12 +1558,14 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self,
         initial_params: npt.NDArray[np.float64] | None,
         checkpoint_config: CheckpointConfig,
+        optimizer_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         """Run the remaining iterations and settle ``best_params`` / ``final_params``.
 
         Every exit path leaves the last iteration checkpointed. Optimizers
         receive the remaining count, so none of them needs to know about
-        resumption.
+        resumption. ``optimizer_kwargs`` reach :meth:`Optimizer.optimize` as
+        extra keyword arguments.
         """
         if checkpoint_config.checkpoint_dir:
             logger.info(
@@ -1763,6 +1768,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         for key, evaluator in extra_evaluators.items():
             if key != "jac":
                 optimize_kwargs[key] = evaluator
+        optimize_kwargs.update(optimizer_kwargs or {})
 
         resource_start = (
             self.total_device_shots,

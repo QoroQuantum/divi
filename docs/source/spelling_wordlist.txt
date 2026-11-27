@@ -140,6 +140,7 @@ expval
 expvals
 extrapolator
 fallbacks
+fermionic
 fidelities
 Fiedler
 Firt
@@ -156,6 +157,7 @@ García
 gCANS
 Gemma
 Goldfarb
+Grimsley
 Gu
 Hadamard
 Hadamards
@@ -338,6 +340,7 @@ qwc
 Qwen
 Rademacher
 Raj
+Ramôa
 rdm
 realizations
 regressor

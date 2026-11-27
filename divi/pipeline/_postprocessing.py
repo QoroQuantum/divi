@@ -21,7 +21,7 @@ from scipy.sparse import csr_matrix
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._result_keys_operations import OBS_GROUP_AXIS, _find_batch_key
-from divi.pipeline.abc import ChildResults
+from divi.pipeline.abc import ChildResults, CostVariance
 
 # ---------------------------------------------------------------------------
 # Expectation-value computation helpers
@@ -258,10 +258,8 @@ def _observable_coeff_map(
 def _counts_to_cost_variance(
     raw: ChildResults,
     batch: Mapping[Any, MetaCircuit],
-    term_factors_by_spec: (
-        Mapping[tuple, Mapping[int, float | npt.NDArray[np.float64]]] | None
-    ) = None,
-) -> dict[tuple, float]:
+    term_factors_by_spec: (Mapping[tuple, Mapping[int, CostVariance]] | None) = None,
+) -> dict[tuple, CostVariance]:
     """Estimate the shot-noise variance of each cost value from raw counts,
     for groups whose shot counts are fixed in advance.
 
@@ -276,10 +274,23 @@ def _counts_to_cost_variance(
     contributes.
 
     Returns ``{base_key: variance}``, where ``base_key`` is the branch key with
-    the ``obs_group`` axis stripped — matching the post-reduce cost keys. Specs
-    with multiple observables, or a group with no shots, yield ``nan``.
+    the ``obs_group`` axis stripped — matching the post-reduce cost keys. A spec
+    with several observables yields their covariance matrix, from
+    :func:`_counts_to_observable_covariance`; a group with no shots yields
+    ``nan``.
     """
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
+    tuples = {
+        bk
+        for bk, node in batch.items()
+        if isinstance(node.observable, tuple) and len(node.observable) > 1
+    }
+    by_tuple = {
+        branch_key: counts
+        for branch_key, counts in raw.items()
+        if _find_batch_key(branch_key, batch_keys) in tuples
+    }
+    raw = {key: counts for key, counts in raw.items() if key not in by_tuple}
     coeffs_by_bk = {bk: _observable_coeff_map(node) for bk, node in batch.items()}
     factors_by_spec = term_factors_by_spec or {}
     factor_keys = set(factors_by_spec)
@@ -329,7 +340,7 @@ def _counts_to_cost_variance(
             (labels, coefficients * factors, eigenvalues, frequencies, shots)
         )
 
-    out: dict[tuple, float] = dict.fromkeys(invalid_keys, float("nan"))
+    out: dict[tuple, CostVariance] = dict.fromkeys(invalid_keys, float("nan"))
     for base_key, groups in groups_by_base.items():
         if base_key in invalid_keys:
             continue
@@ -341,7 +352,81 @@ def _counts_to_cost_variance(
             variance += (mean_square - mean**2) / shots
         # A pooled mean can exceed a group's own, so clamp the sum at zero.
         out[base_key] = max(0.0, float(variance))
+    out.update(_counts_to_observable_covariance(by_tuple, batch, term_factors_by_spec))
     return out
+
+
+def _counts_to_observable_covariance(
+    raw: ChildResults,
+    batch: Mapping[Any, MetaCircuit],
+    term_factors_by_spec: (Mapping[tuple, Mapping[int, CostVariance]] | None) = None,
+) -> dict[tuple, npt.NDArray[np.float64]]:
+    """Estimate the shot-noise covariance of each node's observables from counts.
+
+    For groups with fixed shot counts ``M_g``, the covariance of the observable
+    estimates is ``Σ_g Cov_g(y) / M_g`` over the per-shot values
+    ``y_k = Σ_{P∈g} c_kP f_gP λ_P``, with ``f_gP`` as in
+    :func:`_counts_to_cost_variance`. Identity terms carry no shot noise; a group
+    with no shots makes its key's matrix ``nan``.
+
+    Returns ``{base_key: covariance}`` keyed like
+    :func:`_counts_to_cost_variance`, one row and column per observable.
+    """
+    batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
+    factors_by_spec = term_factors_by_spec or {}
+    factor_keys = set(factors_by_spec)
+    tables: dict[tuple, dict[str, npt.NDArray[np.float64]]] = {}
+    out: dict[tuple, npt.NDArray[np.float64]] = {}
+    for branch_key, counts in raw.items():
+        bk, group_labels, n_qubits = _resolve_group(
+            branch_key, batch_keys, labels_by_bk, nq_by_bk
+        )
+        if bk not in tables:
+            tables[bk] = _build_coefficient_table(batch[bk])
+        table = tables[bk]
+        n_obs = len(batch[bk].observable or ())
+        base_key = tuple(ax for ax in branch_key if ax[0] != OBS_GROUP_AXIS)
+        counts = _check_histogram(branch_key, counts)
+        shots = sum(counts.values())
+        if shots <= 0:
+            out[base_key] = np.full((n_obs, n_obs), np.nan)
+            continue
+        labels = [str(p) for p in group_labels]
+        bitstrings = list(counts)
+        frequencies = np.asarray([counts[b] for b in bitstrings], dtype=np.float64)
+        factors = np.ones(len(labels))
+        if factor_keys:
+            group_factors = factors_by_spec[_find_batch_key(base_key, factor_keys)]
+            factors = factors * group_factors.get(
+                int(dict(branch_key)[OBS_GROUP_AXIS]), 1.0
+            )
+        coefficients = factors * np.stack(
+            [table.get(label, np.zeros(n_obs)) for label in labels], axis=1
+        )
+        values = coefficients @ _compute_bitstring_eigenvalues(
+            bitstrings, labels, n_qubits
+        )
+        mean = values @ frequencies / shots
+        covariance = (
+            (values * frequencies) @ values.T / shots - np.outer(mean, mean)
+        ) / shots
+        if base_key in out:
+            covariance = covariance + out[base_key]
+        out[base_key] = covariance
+    return out
+
+
+def _build_coefficient_table(node: MetaCircuit) -> dict[str, npt.NDArray[np.float64]]:
+    """Big-endian Pauli label to the coefficient it has in each of ``node``'s
+    observables."""
+    observables = node.observable or ()
+    table: dict[str, npt.NDArray[np.float64]] = {}
+    for index, op in enumerate(observables):
+        coeffs = np.real(np.asarray(op.coeffs)).astype(np.float64)
+        for le_label, coeff in zip(op.paulis.to_labels(), coeffs, strict=True):
+            label = le_label[::-1].ljust(node.n_qubits, "I")
+            table.setdefault(label, np.zeros(len(observables)))[index] += coeff
+    return table
 
 
 def _welford_add(
@@ -363,7 +448,7 @@ def _counts_to_wrs_cost_variance(
     batch: Mapping[Any, MetaCircuit],
     weights_by_spec: Mapping[tuple, Mapping[int, np.ndarray]],
     empty_draws_by_spec: Mapping[tuple, int],
-) -> dict[tuple, float]:
+) -> dict[tuple, CostVariance]:
     """Estimate the variance of a weighted-random-sampling cost estimator.
 
     Each measured bitstring contributes ``Σ_P c_P w_P λ_P`` over the selected
@@ -420,7 +505,7 @@ def _counts_to_wrs_cost_variance(
         if empty_draws:
             moments[base_key] = _welford_add(state, 0.0, empty_draws)
 
-    out: dict[tuple, float] = {}
+    out: dict[tuple, CostVariance] = {}
     for base_key in moments.keys() | invalid_keys:
         if base_key in invalid_keys:
             out[base_key] = float("nan")

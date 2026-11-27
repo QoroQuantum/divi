@@ -2560,6 +2560,20 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
         ):
             _ = program.best_loss
 
+    def test_a_run_converged_at_its_start_reports_its_result(self, mocker, recwarn):
+        program = self._create_program_with_mock_optimizer(mocker)
+        program.max_iterations = 1
+        start = np.array([[0.1, 0.2, 0.3, 0.4]])
+        program.optimizer.optimize = mocker.Mock(
+            return_value=OptimizeResult(x=start, fun=np.array([-0.5]), nit=0)
+        )
+
+        program.run(initial_params=start, perform_final_computation=False)
+
+        assert program.best_loss == -0.5
+        np.testing.assert_array_equal(program.best_params, start[0])
+        assert not recwarn.list
+
     def test_best_probs_warns_when_empty_after_optimization(self, mocker):
         """Test that best_probs warns when empty even after optimization."""
         program = self._create_program_with_mock_optimizer(mocker)

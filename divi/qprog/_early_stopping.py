@@ -13,7 +13,12 @@ __all__ = ["EarlyStopping", "StopReason"]
 
 
 class StopReason(str, Enum):
-    """Reason why early stopping was triggered.
+    """Why an optimisation stopped early, or why a growing ansatz stopped.
+
+    The first three members come from :class:`EarlyStopping`. ``CONVERGED``,
+    ``RESOLUTION_LIMITED``, ``CYCLE`` and ``MAX_STEPS`` end the growth of
+    :class:`~divi.qprog.algorithms.AdaptVQE`, which can also stop on an
+    :class:`EarlyStopping` reason across its steps.
 
     Inherits from ``str`` so that values serialise naturally to JSON
     and can be compared directly with plain strings.
@@ -27,6 +32,18 @@ class StopReason(str, Enum):
 
     COST_VARIANCE_SETTLED = "cost_variance_settled"
     """Variance of recent cost values dropped below ``variance_threshold``."""
+
+    CONVERGED = "converged"
+    """A growing ansatz found no candidate gradient that reaches its threshold."""
+
+    RESOLUTION_LIMITED = "resolution_limited"
+    """No candidate gradient was significant at the largest shot budget."""
+
+    CYCLE = "cycle"
+    """The growth choices started to repeat."""
+
+    MAX_STEPS = "max_steps"
+    """The growth used up ``max_steps``."""
 
 
 class EarlyStopping:

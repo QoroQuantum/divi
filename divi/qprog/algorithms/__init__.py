@@ -23,6 +23,7 @@ from ._custom_vqa import CustomVQA
 from ._feature_maps import AngleEmbedding, FeatureMap, ZZFeatureMap
 from ._vqe import VQE
 from ._vqe_fcisolver import VQEFCISolver
+from .adapt import AdaptAnsatz, AdaptVQE
 from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
 from ._pce import (
     PCE,
@@ -43,6 +44,8 @@ from ._qnn import QNN
 from ._time_evolution import TimeEvolution
 
 __all__ = [
+    "AdaptAnsatz",
+    "AdaptVQE",
     "AmplitudeSeedError",
     "AmplitudeSeededAnsatz",
     "AngleEmbedding",

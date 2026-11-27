@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Hashable, Iterable, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
-from typing import Any, get_args
+from typing import Any, NamedTuple, get_args
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
@@ -57,6 +57,7 @@ from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
     ContractViolation,
+    CostVariance,
     MetaCircuitBatch,
     PipelineEnv,
     ResultFormat,
@@ -375,6 +376,30 @@ class MeasurementToken:
         )
 
 
+class _ObservableMemo(NamedTuple):
+    """An observable tuple a stage expanded, with each member's non-identity
+    terms and identity part and its groupings by ``(strategy, n_qubits)``."""
+
+    observable: SparsePauliOp | tuple[SparsePauliOp, ...]
+    splits: tuple[tuple[SparsePauliOp, SparsePauliOp], ...]
+    groupings: dict[tuple, tuple]
+
+    def group_terms(self, strategy: _ResolvedGroupingStrategy, n_qubits: int) -> tuple:
+        """:func:`_compute_measurement_groups` of the non-identity terms,
+        computed once per ``(strategy, n_qubits)``."""
+        if (strategy, n_qubits) not in self.groupings:
+            groups, partition, union, per_observable = _compute_measurement_groups(
+                tuple(terms for terms, _ in self.splits), strategy, n_qubits
+            )
+            self.groupings[strategy, n_qubits] = (
+                groups,
+                tuple(map(tuple, partition)),
+                union,
+                tuple(map(tuple, per_observable)),
+            )
+        return self.groupings[strategy, n_qubits]
+
+
 class MeasurementStage(BundleStage):
     """Unified measurement stage for all circuit measurement types.
 
@@ -519,6 +544,29 @@ class MeasurementStage(BundleStage):
         self._result_format_override = result_format_override
         self._shot_distribution = shot_distribution
         self._measure_all = measure_all
+        self._observable_memos: dict[int, _ObservableMemo] = {}
+
+    def _memoize_batch(
+        self, batch: MetaCircuitBatch
+    ) -> dict[Hashable, _ObservableMemo]:
+        """The memo of each key's observable tuple in ``batch``, kept from the
+        previous expand for any tuple it already held."""
+        previous = self._observable_memos
+        memos_by_id: dict[int, _ObservableMemo] = {}
+        memos: dict[Hashable, _ObservableMemo] = {}
+        for key, meta in batch.items():
+            observable = meta.observable or ()
+            memo = memos_by_id.get(id(observable)) or previous.get(id(observable))
+            if memo is None or memo.observable is not observable:
+                memo = _ObservableMemo(
+                    observable,
+                    tuple(_split_identity_terms(member) for member in observable),
+                    {},
+                )
+            memos_by_id[id(observable)] = memo
+            memos[key] = memo
+        self._observable_memos = memos_by_id
+        return memos
 
     # ------------------------------------------------------------------ #
     # Real-path QASM factories (shared inside :meth:`expand` / :meth:`dry_expand`).
@@ -679,12 +727,8 @@ class MeasurementStage(BundleStage):
         ``qasm_factory`` maps ``(surviving_groups, n_qubits, measure_all=...)``
         to one measurement QASM per group.
         """
-        splits_by_key = {
-            key: tuple(
-                _split_identity_terms(member) for member in meta.observable or ()
-            )
-            for key, meta in batch.items()
-        }
+        memos = self._memoize_batch(batch)
+        splits_by_key = {key: memo.splits for key, memo in memos.items()}
         strategy, sample_budgets = self._resolve_expval_mode(
             [tuple(terms for terms, _ in splits) for splits in splits_by_key.values()],
             env,
@@ -765,7 +809,7 @@ class MeasurementStage(BundleStage):
                     partition_indices,
                     union_obs,
                     per_obs_term_indices,
-                ) = _compute_measurement_groups(observable, strategy, meta.n_qubits)
+                ) = memos[key].group_terms(strategy, meta.n_qubits)
                 plans = _plan_spec_shots(
                     key,
                     union_obs,
@@ -944,7 +988,7 @@ class MeasurementStage(BundleStage):
         raw: ChildResults,
         batch: MetaCircuitBatch,
         token: StageToken,
-    ) -> dict[tuple, float]:
+    ) -> dict[tuple, CostVariance]:
         """Estimate variance according to this stage's sampling strategy."""
         random_plans = {
             key: plan

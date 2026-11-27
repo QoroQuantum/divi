@@ -14,6 +14,7 @@ from divi.pipeline._postprocessing import (
     _batched_expectation,
     _counts_to_cost_variance,
     _counts_to_expvals,
+    _counts_to_observable_covariance,
     _counts_to_probs,
     _counts_to_wrs_cost_variance,
     _expval_dicts_to_indexed,
@@ -238,11 +239,12 @@ class TestCountsToCostVariance:
             + (1.2**2 - (1.2 * z_estimate) ** 2) / 20
         )
 
-    def test_multi_observable_cost_variance_is_nan_for_every_key(
+    def test_multi_observable_cost_variance_is_their_covariance_for_every_key(
         self, dummy_sampling_pipeline_env
     ):
+        observables = (SparsePauliOp("Z"), SparsePauliOp.from_list([("Z", 2.0)]))
         trace, lineage, _ = _trace_measurement(
-            dummy_sampling_pipeline_env, (SparsePauliOp("Z"), SparsePauliOp("X")), 1
+            dummy_sampling_pipeline_env, observables, 1
         )
         counts = {"0": 75, "1": 25}
         raw = _repeat_per_param_set(lineage, [counts, counts])
@@ -250,7 +252,10 @@ class TestCountsToCostVariance:
         result = _counts_to_cost_variance(raw, trace.final_batch)
 
         assert len(result) == 2
-        assert all(np.isnan(v) for v in result.values())
+        for covariance in result.values():
+            np.testing.assert_allclose(
+                covariance, 0.0075 * np.array([[1.0, 2.0], [2.0, 4.0]])
+            )
 
     def test_zero_shot_key_leaves_other_keys_intact(self, single_z_trace):
         trace, lineage = single_z_trace
@@ -291,6 +296,134 @@ class TestCountsToCostVariance:
         )
         # Same <Z>=0.5, 10× shots → exactly 10× smaller variance.
         assert var_low == pytest.approx(10.0 * var_high)
+
+
+class TestCountsToObservableCovariance:
+    """Spec: _counts_to_observable_covariance estimates Σ_g Cov_g(y)/M_g over
+    the per-shot values y_k of every observable in the tuple."""
+
+    def test_one_observable_matches_the_cost_variance(
+        self, dummy_sampling_pipeline_env
+    ):
+        observable = SparsePauliOp.from_list([("ZI", 2.0), ("IZ", 0.5), ("XX", 1.5)])
+        trace, lineage, node = _trace_measurement(
+            dummy_sampling_pipeline_env, observable
+        )
+        raw: ChildResults = {
+            bk: (
+                {"00": 70, "10": 30}
+                if "XX" in node.measurement_groups[dict(bk)[OBS_GROUP_AXIS]]
+                else {"00": 50, "10": 30, "01": 20}
+            )
+            for bk in lineage.values()
+        }
+
+        (covariance,) = _counts_to_observable_covariance(
+            raw, trace.final_batch
+        ).values()
+        (variance,) = _counts_to_cost_variance(raw, trace.final_batch).values()
+
+        assert covariance.shape == (1, 1)
+        assert covariance[0, 0] == pytest.approx(variance)
+
+    def test_observables_sharing_a_group_covary(self, dummy_sampling_pipeline_env):
+        # z_q0 and 2·z_q0 + z_q1 from one group of 100 shots.
+        observables = (
+            SparsePauliOp("IZ"),
+            SparsePauliOp.from_list([("IZ", 2.0), ("ZI", 1.0)]),
+        )
+        trace, lineage, _ = _trace_measurement(
+            dummy_sampling_pipeline_env, observables, 2
+        )
+        raw: ChildResults = {
+            bk: {"00": 50, "10": 30, "01": 20} for bk in lineage.values()
+        }
+
+        (covariance,) = _counts_to_observable_covariance(
+            raw, trace.final_batch
+        ).values()
+
+        np.testing.assert_allclose(
+            covariance, [[0.0084, 0.0144], [0.0144, 0.0304]], atol=1e-12
+        )
+
+    @staticmethod
+    def _pair_over_two_groups():
+        """``A = z_q0 + 0.5 XX`` and ``B = 2 z_q1`` over groups (ZI, IZ) and (XX)."""
+        spec_key = (("spec", "pair"),)
+        observables = (
+            SparsePauliOp.from_list([("IZ", 1.0), ("XX", 0.5)]),
+            SparsePauliOp.from_list([("ZI", 2.0)]),
+        )
+        batch = {
+            spec_key: meta_from_circuit(
+                QuantumCircuit(2), observable=observables
+            ).set_measurement_groups((("ZI", "IZ"), ("XX",)))
+        }
+        return spec_key, batch
+
+    def test_sums_the_groups_and_skips_an_observable_absent_from_one(self):
+        spec_key, batch = self._pair_over_two_groups()
+        raw: ChildResults = {
+            (*spec_key, (OBS_GROUP_AXIS, 0)): {"00": 50, "10": 30, "01": 20},
+            (*spec_key, (OBS_GROUP_AXIS, 1)): {"00": 70, "10": 30},
+        }
+
+        (covariance,) = _counts_to_observable_covariance(raw, batch).values()
+
+        # (ZI, IZ): y_A = z_q0, y_B = 2 z_q1; (XX): y_A = 0.5 xx, B absent.
+        np.testing.assert_allclose(
+            covariance,
+            [[0.0084 + 0.0021, -0.0048], [-0.0048, 0.0256]],
+            atol=1e-12,
+        )
+
+    def test_term_factors_scale_each_group_before_its_covariance(self):
+        spec_key, batch = self._pair_over_two_groups()
+        raw: ChildResults = {
+            (*spec_key, (OBS_GROUP_AXIS, 0)): {"00": 50, "10": 30, "01": 20},
+            (*spec_key, (OBS_GROUP_AXIS, 1)): {"00": 70, "10": 30},
+        }
+
+        (covariance,) = _counts_to_observable_covariance(
+            raw, batch, {spec_key: {0: np.array([0.5, 0.5])}}
+        ).values()
+
+        # Halving group (ZI, IZ) quarters its contribution; (XX) is unchanged.
+        np.testing.assert_allclose(
+            covariance,
+            [[0.0084 / 4 + 0.0021, -0.0048 / 4], [-0.0048 / 4, 0.0256 / 4]],
+            atol=1e-12,
+        )
+
+    def test_a_group_without_shots_leaves_a_nan_matrix(self):
+        spec_key, batch = self._pair_over_two_groups()
+        raw: ChildResults = {
+            (*spec_key, (OBS_GROUP_AXIS, 0)): {"00": 50, "10": 30, "01": 20},
+            (*spec_key, (OBS_GROUP_AXIS, 1)): {},
+        }
+
+        (covariance,) = _counts_to_observable_covariance(raw, batch).values()
+
+        assert covariance.shape == (2, 2)
+        assert np.isnan(covariance).all()
+
+    def test_a_mixed_batch_gives_a_scalar_and_a_matrix(self):
+        pair_key, batch = self._pair_over_two_groups()
+        single_key = (("spec", "single"),)
+        batch[single_key] = meta_from_circuit(
+            QuantumCircuit(1), observable=SparsePauliOp("Z")
+        ).set_measurement_groups((("Z",),))
+        raw: ChildResults = {
+            (*pair_key, (OBS_GROUP_AXIS, 0)): {"00": 50, "10": 30, "01": 20},
+            (*pair_key, (OBS_GROUP_AXIS, 1)): {"00": 70, "10": 30},
+            (*single_key, (OBS_GROUP_AXIS, 0)): {"0": 75, "1": 25},
+        }
+
+        variances = _counts_to_cost_variance(raw, batch)
+
+        assert variances[single_key] == pytest.approx(0.0075)
+        assert variances[pair_key].shape == (2, 2)
 
 
 class TestCountsToWRSCostVariance:

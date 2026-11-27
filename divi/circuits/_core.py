@@ -25,12 +25,12 @@ def flatten_observable_tuple(
     """Flatten a tuple of observables into a single union ``SparsePauliOp``.
 
     Pauli terms that appear in multiple observables (or repeat within one)
-    collapse to a single union slot. The union's coefficient on a slot is
-    the sum of every owning observable's *absolute* coefficient on that
-    Pauli (the weights used by shot allocation).
+    collapse to a single union slot, in order of first appearance. The union's
+    coefficient on a slot is the sum of every owning observable's *absolute*
+    coefficient on that Pauli (the weights used by shot allocation).
 
     Args:
-        observable: Non-empty tuple of Hermitian ``SparsePauliOp``.
+        observable: Non-empty tuple of Hermitian ``SparsePauliOp`` of one width.
 
     Returns:
         ``(union, per_obs_term_indices)``:
@@ -44,43 +44,31 @@ def flatten_observable_tuple(
     if not observable:
         raise ValueError("flatten_observable_tuple requires at least one observable.")
 
-    slot_by_key: dict[bytes, int] = {}
-    union_z_rows: list[np.ndarray] = []
-    union_x_rows: list[np.ndarray] = []
-    union_coeffs: list[float] = []
-    per_obs_term_indices: list[list[int]] = []
-
-    for obs in observable:
-        x_arr = obs.paulis.x  # bool[N_terms, n_qubits]
-        z_arr = obs.paulis.z
-        coeffs = np.abs(obs.coeffs.real)
-        indices: list[int] = []
-        for i in range(x_arr.shape[0]):
-            key = z_arr[i].tobytes() + x_arr[i].tobytes()
-            slot = slot_by_key.get(key)
-            if slot is None:
-                slot = len(union_z_rows)
-                slot_by_key[key] = slot
-                union_z_rows.append(z_arr[i])
-                union_x_rows.append(x_arr[i])
-                union_coeffs.append(float(coeffs[i]))
-            else:
-                union_coeffs[slot] += float(coeffs[i])
-            indices.append(slot)
-        per_obs_term_indices.append(indices)
-
-    if not union_z_rows:
+    z = np.concatenate([obs.paulis.z for obs in observable])
+    x = np.concatenate([obs.paulis.x for obs in observable])
+    if not len(z):
         raise ValueError(
             "flatten_observable_tuple: every observable in the tuple is empty."
         )
 
-    union_z = np.stack(union_z_rows)
-    union_x = np.stack(union_x_rows)
-    union = SparsePauliOp(
-        PauliList.from_symplectic(union_z, union_x),
-        coeffs=np.array(union_coeffs, dtype=complex),
+    packed = np.packbits(np.concatenate([z, x], axis=1), axis=1)
+    keys = packed.view(np.dtype((np.void, packed.shape[1]))).ravel()
+    _, first, inverse = np.unique(keys, return_index=True, return_inverse=True)
+    by_appearance = np.argsort(first)
+    slots = np.argsort(by_appearance)[inverse]
+
+    coeffs = np.bincount(
+        slots,
+        weights=np.concatenate([np.abs(obs.coeffs.real) for obs in observable]),
+        minlength=len(first),
     )
-    return union, per_obs_term_indices
+    rows = first[by_appearance]
+    union = SparsePauliOp(
+        PauliList.from_symplectic(z[rows], x[rows]),
+        coeffs=coeffs.astype(complex),
+    )
+    bounds = np.cumsum([len(obs) for obs in observable])[:-1]
+    return union, [part.tolist() for part in np.split(slots, bounds)]
 
 
 # Canonical precision for QASM parameter rendering, threaded
