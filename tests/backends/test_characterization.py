@@ -115,6 +115,7 @@ REPORT = {
         "requested_layers": 2,
         "curve": _CURVE,
         "recommended_layers": 3,
+        "recommended_layers_for_sampling": 3,
         "recommended_reason": "the deeper layer counts computed gain little over it",
         "at_requested": _CURVE[1],
     },
@@ -656,6 +657,7 @@ class TestCharacterizationResult:
         assert result.problem == result.structure == result.constraints == {}
         assert result.penalty == {}
         assert result.recommended_layers is None
+        assert result.recommended_layers_for_sampling is None
         assert result.gap_closed is None
         assert result.recommended_lambda is None
         assert result.fixed_values == {}
@@ -664,6 +666,7 @@ class TestCharacterizationResult:
         result = _result()
 
         assert result.recommended_layers == 3
+        assert result.recommended_layers_for_sampling == 3
         assert result.gap_closed == 0.88
         assert result.recommended_lambda == 1.519
         assert result.fixed_values == {0: 0}
@@ -750,14 +753,57 @@ class TestCharacterizationResult:
             "• Use p = 3 layers.",
             "• At p = 2 QAOA closes 88.0%.",
             "Qubits after reduction: 1 · fixed: 1 · unused: 0 · independent parts: 1",
-            "2 │ 88.0% │ 0.8800 │ 4 │ exact statevector simulation",
-            "3 ★ │ 94.0% │ 0.9400 │ 4 │ exact statevector simulation",
+            "2 │ 88.0% │ 0.88 │ 4 │ exact statevector simulation",
+            "3 ★ ◆ │ 94.0% │ 0.94 │ 4 │ exact statevector simulation",
             f"★ recommended: {REPORT['qaoa']['recommended_reason']}",
+            "◆ recommended to take the best of sampled bitstrings",
             "γ = [0.3000, 0.5000]",
             "optimised at this layer count",
             limit,
         ):
             assert expected in text
+        assert "†" not in text
+
+    def test_display_marks_the_sampling_layer_count_and_grown_rows(self, mocker):
+        """A grown, unoptimised row that samples the optimum most often carries both marks, each explained."""
+        curve = [
+            {**_curve_entry(1, 0.6, [0.4], [0.8]), "p_ground": 0.02},
+            {**_curve_entry(2, 0.8, [0.3, 0.5], [0.9, 0.4]), "p_ground": 0.03},
+            {
+                **_curve_entry(3, 0.82, [0.2, 0.4, 0.6], [1.0, 0.6, 0.3]),
+                "p_ground": 0.05,
+                "optimized": False,
+            },
+        ]
+        qaoa = {
+            **REPORT["qaoa"],
+            "curve": curve,
+            "recommended_layers": 2,
+            "recommended_layers_for_sampling": 3,
+        }
+
+        text = self._displayed(mocker, _result(report={**REPORT, "qaoa": qaoa}))
+
+        for expected in (
+            "1 │ 60.0% │ 0.02 │",
+            "2 ★ │ 80.0% │ 0.03 │",
+            "3 ◆ † │ 82.0% │ 0.05 │",
+            "◆ recommended to take the best of sampled bitstrings",
+            "† grown from shallower optima, not optimised at this layer count",
+        ):
+            assert expected in text
+
+    def test_display_shows_small_optimum_probabilities_in_significant_figures(
+        self, mocker
+    ):
+        """A probability far below 1e-4 stays readable; a report without the sampling field claims no sampling pick."""
+        curve = [{**_CURVE[0], "p_ground": 5.85e-6}]
+        qaoa = {"curve": curve, "recommended_layers": 1}
+
+        text = self._displayed(mocker, _result(report={"qaoa": qaoa}))
+
+        assert "1 ★ │ 69.0% │ 5.85e-06 │" in text
+        assert "◆" not in text
 
     def test_display_lists_splits_and_penalty_blocks(self, mocker):
         structure = {
