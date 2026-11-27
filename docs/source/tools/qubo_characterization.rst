@@ -68,7 +68,11 @@ Shortcuts read individual values:
    * - Shortcut
      - Meaning
    * - ``recommended_layers``
-     - The recommended QAOA layer count.
+     - The recommended QAOA layer count, for the lowest mean energy.
+   * - ``recommended_layers_for_sampling``
+     - The layer count to run when taking the best of QAOA's sampled
+       bitstrings: ``recommended_layers`` unless another layer count draws an
+       optimal assignment markedly more often.
    * - ``gap_closed``
      - Share of the gap from random guessing to the optimum that QAOA's mean
        energy closes at the requested layers: 0 is no better than guessing,
@@ -92,6 +96,18 @@ Starting QAOA from the service's angles:
 
    qaoa = QAOA(problem, n_layers=result.recommended_layers)
    qaoa.run(initial_params=result.qaoa_initial_params())
+
+The recommended layer count minimises QAOA's mean energy, and it can draw an
+optimal assignment rarely. To take the best of the sampled bitstrings instead,
+start from the sampling layer count:
+
+.. skip: next
+
+.. code-block:: python
+
+   layers = result.recommended_layers_for_sampling
+   qaoa = QAOA(problem, n_layers=layers)
+   qaoa.run(initial_params=result.qaoa_initial_params(layers))
 
 Each recommendation is a dict with ``level`` (``"warning"``, ``"action"`` or
 ``"info"``, in that order), ``topic`` and plain ``text``:

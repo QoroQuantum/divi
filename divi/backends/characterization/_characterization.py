@@ -428,8 +428,18 @@ class CharacterizationResult:
 
     @property
     def recommended_layers(self) -> int | None:
-        """The recommended QAOA layer count; ``None`` when no layer count was computed."""
+        """The recommended QAOA layer count, for the lowest mean energy; ``None`` when no layer count was computed."""
         return self.qaoa.get("recommended_layers")
+
+    @property
+    def recommended_layers_for_sampling(self) -> int | None:
+        """The layer count to run when taking the best of QAOA's sampled bitstrings.
+
+        It is :attr:`recommended_layers` unless another layer count draws an
+        optimal assignment markedly more often. ``None`` when no layer count
+        was sampled, or the report predates the field.
+        """
+        return self.qaoa.get("recommended_layers_for_sampling")
 
     @property
     def gap_closed(self) -> float | None:
@@ -467,10 +477,20 @@ class CharacterizationResult:
             qaoa = QAOA(problem, n_layers=result.recommended_layers)
             qaoa.run(initial_params=result.qaoa_initial_params())
 
+        :attr:`recommended_layers` minimises QAOA's mean energy, and that
+        layer count can draw an optimal assignment rarely. To take the best of
+        the sampled bitstrings instead, warm-start at
+        :attr:`recommended_layers_for_sampling`::
+
+            layers = result.recommended_layers_for_sampling
+            qaoa = QAOA(problem, n_layers=layers)
+            qaoa.run(initial_params=result.qaoa_initial_params(layers))
+
         Args:
             layers: Layer count to warm-start; defaults to
-                :attr:`recommended_layers`, else the requested layers. Must
-                match the ``n_layers`` of the ``QAOA`` you feed it into.
+                :attr:`recommended_layers` (the mean-energy pick), else the
+                requested layers. Must match the ``n_layers`` of the ``QAOA``
+                you feed it into.
 
         Returns:
             The angles, or ``None`` when the report carries none.
@@ -552,18 +572,35 @@ class CharacterizationResult:
                 "Method",
             ):
                 table.add_column(column)
+            sampling = self.recommended_layers_for_sampling
             for e in curve:
-                marker = " ★" if e.get("layers") == self.recommended_layers else ""
+                layers = e.get("layers")
+                markers = [
+                    symbol
+                    for symbol, shown in (
+                        ("★", layers == self.recommended_layers),
+                        ("◆", sampling is not None and layers == sampling),
+                        ("†", e.get("optimized") is False),
+                    )
+                    if shown
+                ]
                 table.add_row(
-                    f"{e.get('layers')}{marker}",
+                    " ".join([str(layers), *markers]),
                     _number(e.get("gap_closed"), ".1%"),
-                    _number(e.get("p_ground"), ".4f"),
+                    # Significant figures, as the advice quotes it: four decimals print 5.85e-6 as 0.0000.
+                    _number(e.get("p_ground"), ".3g"),
                     _number(e.get("shots_for_confidence"), ","),
                     escape(e.get("method_label") or "—"),
                 )
             parts.append(table)
             if reason := self.qaoa.get("recommended_reason"):
                 parts.append(f"★ recommended: {escape(reason)}")
+            if sampling is not None and any(e.get("layers") == sampling for e in curve):
+                parts.append("◆ recommended to take the best of sampled bitstrings")
+            if any(e.get("optimized") is False for e in curve):
+                parts.append(
+                    "† grown from shallower optima, not optimised at this layer count"
+                )
         if self.angles.get("gammas"):
             note = "; ".join(
                 filter(
