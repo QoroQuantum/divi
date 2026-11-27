@@ -8,6 +8,7 @@ active spaces."""
 import hashlib
 import itertools
 import math
+import numbers
 import os
 import tempfile
 from collections.abc import Callable, Sequence
@@ -22,7 +23,7 @@ import ffsim.optimize
 import ffsim.qiskit
 import numpy as np
 from pydantic import Field, model_validator
-from pyscf import ao2mo, cc, gto, scf
+from pyscf import ao2mo, cc, gto, lib, scf
 from pyscf.scf import stability
 from qiskit import ClassicalRegister, QuantumCircuit, transpile
 
@@ -606,6 +607,7 @@ def prepare_lucj_fragment(
         n_reps=1,
         spin_balanced=False,
         refit=True,
+        regularization=0.0,
         run_linear_method=run_linear_method,
         report=report,
         on_iteration=on_iteration,
@@ -616,16 +618,18 @@ def prepare_lucj(
     problem: MolecularProblem,
     *,
     interaction: LUCJInteraction = "heavy-hex",
-    n_reps: int = 1,
+    n_reps: int | tuple[int, int] = 1,
     spin_balanced: bool | None = None,
     refit: bool = True,
+    regularization: float = 0.0,
     run_linear_method: bool = False,
 ) -> LUCJPreparation:
     """Build a CCSD-seeded LUCJ circuit for SQD sampling (arXiv:2405.05068).
 
     The circuit acts on mean-field orbitals: ROHF, solved from several
     starting occupations and checked for stability, then RHF from its density
-    for a spin-balanced circuit. Its parameters come from the CCSD amplitudes
+    for a spin-balanced circuit. Orbitals are ordered doubly occupied, singly
+    occupied, empty. Its parameters come from the CCSD amplitudes
     (restricted when spin-balanced, unrestricted otherwise), and from ffsim's
     linear method on the exact statevector with ``run_linear_method``. With
     spin-dependent one-electron integrals, the mean field and linear method
@@ -636,21 +640,29 @@ def prepare_lucj(
         problem: The active-space Hamiltonian.
         interaction: Opposite-spin pairs; same-spin pairs join neighbouring
             orbitals.
-        n_reps: LUCJ layers. A spin-unbalanced operator fills them with
-            alpha-beta or same-spin terms, whichever are larger; a balanced
-            layer holds both.
+        n_reps: LUCJ layers. An integer gives a spin-unbalanced operator's
+            layers to alpha-beta or same-spin terms, whichever are larger; a
+            balanced layer holds both. A pair ``(n_alpha_beta, n_same_spin)``
+            fixes the split, for the spin-unbalanced operator only.
         spin_balanced: One set of parameters for both spins. ``None`` chooses
             it when the spin counts and the alpha and beta one-electron
             integrals are equal.
         refit: Re-optimise the truncated, masked CCSD factorisation to match
             the amplitudes (ffsim's ``optimize``), rather than truncate the
             exact factorisation.
+        regularization: Weight of the refit's penalty on its diagonal Coulomb
+            terms' norm moving from the exact factorisation's (ffsim's
+            ``regularization``); needs ``refit``.
         run_linear_method: Optimise the seeded parameters with ffsim's linear
             method.
 
     Raises:
         ValueError: If ``spin_balanced`` is ``True`` for unequal spin counts or
-            spin-dependent one-electron integrals.
+            spin-dependent one-electron integrals; if ``n_reps`` is neither an
+            integer of at least 1 nor a pair of integers, or the pair has a
+            negative entry, sums to 0 or meets a spin-balanced operator; or if
+            ``regularization`` is negative or not a number, or set without
+            ``refit``.
         RuntimeError: If no mean field converges, or a stage produces
             non-finite values.
     """
@@ -665,6 +677,7 @@ def prepare_lucj(
         n_reps=n_reps,
         spin_balanced=spin_balanced,
         refit=refit,
+        regularization=regularization,
         run_linear_method=run_linear_method,
     )
 
@@ -695,15 +708,66 @@ def _solve_restricted_mean_field(
     return mean_field
 
 
+def _order_orbitals_by_occupation(mean_field: Any) -> None:
+    """Reorder an ROHF solution's orbitals doubly occupied, singly occupied,
+    empty."""
+    occupations = np.asarray(mean_field.mo_occ)
+    order = np.argsort(-occupations, kind="stable")
+    if np.array_equal(order, np.arange(order.size)):
+        return
+    energies = mean_field.mo_energy
+    mean_field.mo_coeff = np.asarray(mean_field.mo_coeff)[:, order]
+    mean_field.mo_occ = occupations[order]
+    mean_field.mo_energy = lib.tag_array(
+        np.asarray(energies)[order],
+        mo_ea=np.asarray(energies.mo_ea)[order],
+        mo_eb=np.asarray(energies.mo_eb)[order],
+    )
+
+
+def _resolve_lucj_layers(n_reps: int | tuple[int, int], spin_balanced: bool) -> int:
+    """The LUCJ layers ``n_reps`` asks for in total.
+
+    Raises:
+        ValueError: If ``n_reps`` is neither an integer of at least 1 nor a
+            pair of integers, or the pair has a negative entry, sums to 0 or
+            meets a spin-balanced operator.
+    """
+    if isinstance(n_reps, numbers.Integral):
+        if n_reps < 1:
+            raise ValueError(f"n_reps must be at least 1; got {n_reps}.")
+        return int(n_reps)
+    if not (
+        isinstance(n_reps, tuple)
+        and len(n_reps) == 2
+        and all(isinstance(count, numbers.Integral) for count in n_reps)
+    ):
+        raise ValueError(
+            f"n_reps must be an integer or a pair of integers; got {n_reps!r}."
+        )
+    if spin_balanced:
+        raise ValueError(
+            "n_reps as an (alpha-beta, same-spin) pair needs the spin-unbalanced "
+            "operator. Pass spin_balanced=False."
+        )
+    if min(n_reps) < 0 or sum(n_reps) < 1:
+        raise ValueError(
+            "n_reps pair entries must be at least 0 and sum to at least 1; "
+            f"got {n_reps}."
+        )
+    return int(sum(n_reps))
+
+
 @_SINGLE_THREADED_NUMERICS.hold()
 def _prepare_lucj(
     problem: MolecularProblem,
     spec: FragmentSpec,
     *,
     interaction: LUCJInteraction,
-    n_reps: int,
+    n_reps: int | tuple[int, int],
     spin_balanced: bool | None,
     refit: bool,
+    regularization: float,
     run_linear_method: bool,
     report: Callable[[str], None] | None = None,
     on_iteration: Callable[[float], None] | None = None,
@@ -717,9 +781,15 @@ def _prepare_lucj(
             "spin_balanced=True needs equal alpha and beta electron counts and "
             "one-electron integrals."
         )
+    n_layers = _resolve_lucj_layers(n_reps, spin_balanced)
+    if not regularization >= 0:
+        raise ValueError(f"regularization must be at least 0; got {regularization}.")
+    if regularization and not refit:
+        raise ValueError("regularization needs refit=True.")
 
     announce("Fragment ROHF")
     mean_field = _solve_fragment_rohf(problem.one_body, problem.two_body, spec)
+    _order_orbitals_by_occupation(mean_field)
     if spin_balanced:
         mean_field = _solve_restricted_mean_field(mean_field, problem, spec)
     orbital_rotation = np.asarray(mean_field.mo_coeff)
@@ -740,16 +810,17 @@ def _prepare_lucj(
         initial_params = ffsim.UCJOpSpinBalanced.from_t_amplitudes(
             t2,
             t1=t1,
-            n_reps=n_reps,
+            n_reps=n_layers,
             interaction_pairs=balanced_pairs,
             optimize=refit,
+            regularization=regularization,
         ).to_parameters(interaction_pairs=balanced_pairs)
 
         def build_operator(params: np.ndarray) -> Any:
             return ffsim.UCJOpSpinBalanced.from_parameters(
                 params,
                 norb=n_orbitals,
-                n_reps=n_reps,
+                n_reps=n_layers,
                 interaction_pairs=balanced_pairs,
                 with_final_orbital_rotation=True,
             )
@@ -769,13 +840,14 @@ def _prepare_lucj(
             n_reps=n_reps,
             interaction_pairs=unbalanced_pairs,
             optimize=refit,
+            regularization=regularization,
         ).to_parameters(interaction_pairs=unbalanced_pairs)
 
         def build_operator(params: np.ndarray) -> Any:
             return ffsim.UCJOpSpinUnbalanced.from_parameters(
                 params,
                 norb=n_orbitals,
-                n_reps=n_reps,
+                n_reps=n_layers,
                 interaction_pairs=unbalanced_pairs,
                 with_final_orbital_rotation=True,
             )

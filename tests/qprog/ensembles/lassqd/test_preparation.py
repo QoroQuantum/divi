@@ -14,7 +14,7 @@ from qiskit import ClassicalRegister, QuantumCircuit
 
 ffsim = pytest.importorskip("ffsim")
 
-from pyscf import cc, gto, scf
+from pyscf import cc, gto, lib, scf
 
 from divi.circuits._conversions import lower_to_basis_gates
 from divi.qprog.ensembles.lassqd import _preparation as preparation
@@ -51,11 +51,13 @@ def _patch_linear_method(mocker, optimum):
     )
 
 
-def _patch_mean_field_and_ccsd(mocker, mo_coeff, t1, t2):
+def _patch_mean_field_and_ccsd(mocker, mo_coeff, t1, t2, mo_occ):
     """Stub the fragment ROHF and CCSD solves with fixed results."""
     mocker.patch(
         f"{_PREPARATION}._solve_fragment_rohf",
-        return_value=mocker.Mock(mo_coeff=mo_coeff, e_tot=0.0),
+        return_value=mocker.Mock(
+            mo_coeff=mo_coeff, mo_occ=mo_occ, mo_energy=np.zeros(len(mo_occ)), e_tot=0.0
+        ),
     )
     mocker.patch(
         f"{_PREPARATION}.run_fragment_coupled_cluster",
@@ -281,7 +283,9 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
         t1=t1,
         n_reps=1,
     ).to_parameters(interaction_pairs=pairs)
-    _patch_mean_field_and_ccsd(mocker, np.eye(4), t1, t2)
+    _patch_mean_field_and_ccsd(
+        mocker, np.eye(4), t1, t2, mo_occ=np.array([2.0, 2.0, 0.0, 0.0])
+    )
     _patch_linear_method(mocker, lambda x0: x0)
 
     result = prepare_lucj_fragment(
@@ -294,7 +298,9 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
 
 def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     rotation = np.array([[0.0, -1.0], [1.0, 0.0]])
-    _patch_mean_field_and_ccsd(mocker, rotation, *_one_pair_amplitudes())
+    _patch_mean_field_and_ccsd(
+        mocker, rotation, *_one_pair_amplitudes(), mo_occ=np.array([2.0, 0.0])
+    )
     _patch_linear_method(mocker, lambda x0: x0)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
@@ -418,7 +424,11 @@ def test_the_linear_method_lowers_the_spin_balanced_seed_energy(water_active_spa
 def test_spin_balanced_preparation_reports_an_unconverged_rhf(
     water_active_space, mocker
 ):
-    rohf = mocker.Mock(make_rdm1=mocker.Mock(return_value=np.zeros((2, 4, 4))))
+    rohf = mocker.Mock(
+        make_rdm1=mocker.Mock(return_value=np.zeros((2, 4, 4))),
+        mo_occ=np.array([2.0, 2.0, 0.0, 0.0]),
+        mo_energy=np.zeros(4),
+    )
     mocker.patch(f"{_PREPARATION}._solve_fragment_rohf", return_value=rohf)
     unconverged = mocker.Mock(converged=False)
     unconverged.newton.return_value = mocker.Mock(converged=False)
@@ -434,14 +444,15 @@ def test_spin_balanced_preparation_reports_an_unconverged_rhf(
 
 
 @pytest.mark.parametrize(
-    "n_alpha, n_beta, beta_shift, options, operator_type",
+    "n_alpha, n_beta, beta_shift, options, operator_type, n_layers",
     [
-        (2, 2, 0.0, {}, ffsim.UCJOpSpinBalanced),
-        (2, 2, 0.1, {}, ffsim.UCJOpSpinUnbalanced),
-        (2, 2, 0.0, {"spin_balanced": False}, ffsim.UCJOpSpinUnbalanced),
-        (3, 1, 0.0, {}, ffsim.UCJOpSpinUnbalanced),
-        (2, 2, 0.0, {"interaction": "all"}, ffsim.UCJOpSpinBalanced),
-        (2, 2, 0.0, {"n_reps": 2}, ffsim.UCJOpSpinBalanced),
+        (2, 2, 0.0, {}, ffsim.UCJOpSpinBalanced, 1),
+        (2, 2, 0.1, {}, ffsim.UCJOpSpinUnbalanced, 1),
+        (2, 2, 0.0, {"spin_balanced": False}, ffsim.UCJOpSpinUnbalanced, 1),
+        (3, 1, 0.0, {}, ffsim.UCJOpSpinUnbalanced, 1),
+        (2, 2, 0.0, {"interaction": "all"}, ffsim.UCJOpSpinBalanced, 1),
+        (2, 2, 0.0, {"n_reps": 2}, ffsim.UCJOpSpinBalanced, 2),
+        (3, 1, 0.0, {"n_reps": (1, 1)}, ffsim.UCJOpSpinUnbalanced, 2),
     ],
     ids=[
         "closed-shell",
@@ -450,10 +461,11 @@ def test_spin_balanced_preparation_reports_an_unconverged_rhf(
         "triplet",
         "all-pairs",
         "two-layers",
+        "layer-pair",
     ],
 )
 def test_prepare_lucj_builds_the_requested_operator(
-    water_active_space, n_alpha, n_beta, beta_shift, options, operator_type
+    water_active_space, n_alpha, n_beta, beta_shift, options, operator_type, n_layers
 ):
     problem = _with_electrons(
         water_active_space,
@@ -468,7 +480,7 @@ def test_prepare_lucj_builds_the_requested_operator(
 
     assert len(result.params) == operator_type.n_params(
         4,
-        options.get("n_reps", 1),
+        n_layers,
         interaction_pairs=pairs[:n_pair_lists],
         with_final_orbital_rotation=True,
     )
@@ -496,6 +508,204 @@ def test_refitting_changes_the_seeded_parameters(water_active_space, n_alpha, n_
     )
 
     assert np.max(np.abs(refitted - truncated)) > 1e-3
+
+
+def test_a_layer_pair_chooses_the_spin_channel_of_each_layer():
+    """Water's (4e,6o) space, which has same-spin doubles on neighbouring
+    orbitals, prepared spin-unbalanced with one layer of either kind."""
+    mean_field = scf.RHF(h2o_molecule(basis="6-31g")).run(verbose=0)
+    problem = MolecularProblem.from_casci(mean_field, 6, 4)
+    pairs = build_lucj_interaction_pairs(6)
+
+    def layer(n_reps):
+        result = prepare_lucj(problem, n_reps=n_reps, spin_balanced=False)
+        return ffsim.UCJOpSpinUnbalanced.from_parameters(
+            result.params,
+            norb=6,
+            n_reps=1,
+            interaction_pairs=pairs,
+            with_final_orbital_rotation=True,
+        ).diag_coulomb_mats[0]
+
+    alpha_beta, same_spin = layer((1, 0)), layer((0, 1))
+
+    assert np.abs(alpha_beta[1]).max() > 1e-6
+    np.testing.assert_array_equal(same_spin[1], 0.0)
+    assert np.abs(same_spin[[0, 2]]).max() > 1e-6
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta, options, message",
+    [
+        (2, 2, {"n_reps": 0}, "n_reps must be at least 1; got 0."),
+        (
+            3,
+            1,
+            {"n_reps": (0, 0)},
+            "n_reps pair entries must be at least 0 and sum to at least 1; got (0, 0).",
+        ),
+        (
+            3,
+            1,
+            {"n_reps": (-1, 2)},
+            "n_reps pair entries must be at least 0 and sum to at least 1; "
+            "got (-1, 2).",
+        ),
+        (
+            2,
+            2,
+            {"n_reps": (1, 1)},
+            "n_reps as an (alpha-beta, same-spin) pair needs the spin-unbalanced "
+            "operator. Pass spin_balanced=False.",
+        ),
+        (
+            3,
+            1,
+            {"n_reps": (1, 1, 1)},
+            "n_reps must be an integer or a pair of integers; got (1, 1, 1).",
+        ),
+        (
+            3,
+            1,
+            {"n_reps": (0.5, 0.5)},
+            "n_reps must be an integer or a pair of integers; got (0.5, 0.5).",
+        ),
+        (
+            2,
+            2,
+            {"n_reps": 1.5},
+            "n_reps must be an integer or a pair of integers; got 1.5.",
+        ),
+        (
+            3,
+            1,
+            {"n_reps": [1, 1]},
+            "n_reps must be an integer or a pair of integers; got [1, 1].",
+        ),
+        (
+            2,
+            2,
+            {"regularization": -0.5},
+            "regularization must be at least 0; got -0.5.",
+        ),
+        (
+            2,
+            2,
+            {"regularization": float("nan")},
+            "regularization must be at least 0; got nan.",
+        ),
+        (
+            2,
+            2,
+            {"regularization": 1e-3, "refit": False},
+            "regularization needs refit=True.",
+        ),
+    ],
+    ids=[
+        "no-layers",
+        "empty-pair",
+        "negative-pair-entry",
+        "pair-on-a-balanced-operator",
+        "three-entries",
+        "fractional-pair",
+        "fractional-count",
+        "list",
+        "negative-regularization",
+        "nan-regularization",
+        "regularization-without-refit",
+    ],
+)
+def test_prepare_lucj_rejects_invalid_settings_before_any_mean_field(
+    water_active_space, mocker, n_alpha, n_beta, options, message
+):
+    solve = mocker.spy(preparation, "_solve_fragment_rohf")
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        prepare_lucj(_with_electrons(water_active_space, n_alpha, n_beta), **options)
+
+    solve.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta", [(2, 2), (3, 1)], ids=["spin-balanced", "spin-unbalanced"]
+)
+def test_regularization_changes_the_refitted_parameters(
+    water_active_space, n_alpha, n_beta
+):
+    problem = _with_electrons(water_active_space, n_alpha, n_beta)
+
+    plain, regularised = (
+        prepare_lucj(problem, regularization=weight).params for weight in (0.0, 0.1)
+    )
+
+    assert np.max(np.abs(plain - regularised)) > 1e-6
+
+
+_EMPTY_BEFORE_SINGLY_OCCUPIED = [0, 1, 3, 2]
+
+
+def _swap_orbitals(mean_field, order):
+    """Permute an ROHF solution's orbitals, as PySCF would have listed them."""
+    energies = mean_field.mo_energy
+    mean_field.mo_coeff = mean_field.mo_coeff[:, order]
+    mean_field.mo_occ = mean_field.mo_occ[order]
+    mean_field.mo_energy = lib.tag_array(
+        energies[order], mo_ea=energies.mo_ea[order], mo_eb=energies.mo_eb[order]
+    )
+    return mean_field
+
+
+def test_reordering_by_occupation_permutes_every_orbital_array(water_active_space):
+    problem = _with_electrons(water_active_space, 3, 1)
+    spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=3, n_beta=1)
+    mean_field = _solve_fragment_rohf(problem.one_body, problem.two_body, spec)
+    energies = mean_field.mo_energy
+    expected = {
+        "mo_coeff": mean_field.mo_coeff.copy(),
+        "mo_occ": mean_field.mo_occ.copy(),
+        "mo_energy": np.asarray(energies).copy(),
+        "mo_ea": energies.mo_ea.copy(),
+        "mo_eb": energies.mo_eb.copy(),
+    }
+    _swap_orbitals(mean_field, _EMPTY_BEFORE_SINGLY_OCCUPIED)
+
+    preparation._order_orbitals_by_occupation(mean_field)
+
+    reordered = mean_field.mo_energy
+    for name, value in {
+        "mo_coeff": mean_field.mo_coeff,
+        "mo_occ": mean_field.mo_occ,
+        "mo_energy": np.asarray(reordered),
+        "mo_ea": reordered.mo_ea,
+        "mo_eb": reordered.mo_eb,
+    }.items():
+        np.testing.assert_array_equal(value, expected[name], err_msg=name)
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta", [(3, 1), (1, 3)], ids=["alpha-majority", "beta-majority"]
+)
+def test_lucj_preparation_orders_the_rohf_orbitals_by_occupation(
+    water_active_space, mocker, n_alpha, n_beta
+):
+    """An ROHF solution with an empty orbital before a singly occupied one still
+    gives a circuit that starts from the mean-field determinant."""
+    problem = _with_electrons(water_active_space, n_alpha, n_beta)
+    in_order = prepare_lucj(problem)
+    solve = preparation._solve_fragment_rohf
+    mocker.patch(
+        f"{_PREPARATION}._solve_fragment_rohf",
+        side_effect=lambda *args: _swap_orbitals(
+            solve(*args), _EMPTY_BEFORE_SINGLY_OCCUPIED
+        ),
+    )
+
+    result = prepare_lucj(problem)
+
+    assert _state_energy(result.problem) == pytest.approx(
+        result.mean_field_energy, abs=1e-9
+    )
+    assert result.ccsd_energy == pytest.approx(in_order.ccsd_energy, abs=1e-8)
 
 
 def test_fragment_rohf_reaches_the_ground_state_of_a_spin_polarised_iron_fragment():
@@ -759,7 +969,9 @@ def test_beta_majority_ccsd_amplitudes_are_relabelled_to_physical_spin_channels(
 
 def test_non_finite_ccsd_amplitudes_fail_before_factorization(mocker):
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
-    _patch_mean_field_and_ccsd(mocker, np.eye(2), *_one_pair_amplitudes(np.nan))
+    _patch_mean_field_and_ccsd(
+        mocker, np.eye(2), *_one_pair_amplitudes(np.nan), mo_occ=np.array([2.0, 0.0])
+    )
 
     with pytest.raises(RuntimeError, match=r"fragment \(3, 4\).*non-finite CCSD"):
         prepare_lucj_fragment(_two_orbital_problem(spec), spec)
