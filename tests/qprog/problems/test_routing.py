@@ -1445,6 +1445,7 @@ class TestTSPPartitioning:
     ):
         ensemble = PartitioningProgramEnsemble(
             problem=two_bowties_problem,
+            program_factory=QAOA,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             backend=dummy_simulator,
@@ -1477,6 +1478,7 @@ class TestTSPPartitioning:
         )
         ensemble = PartitioningProgramEnsemble(
             problem=problem,
+            program_factory=QAOA,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             backend=dummy_simulator,
@@ -1498,29 +1500,27 @@ class TestTSPPartitioning:
         assert sorted(tour[:-1]) == list(range(8))
         assert tour_cost == compute_tour_cost(tour, _TWO_BOWTIES)
 
-    @pytest.mark.parametrize("routine", ["pce", "progressive_pce"])
+    @pytest.mark.parametrize("factory", [PCE, ProgressivePCE])
     def test_partitions_build_pce_programs(
-        self, dummy_simulator, two_bowties_problem, routine
+        self, dummy_simulator, two_bowties_problem, factory
     ):
         ensemble = PartitioningProgramEnsemble(
             problem=two_bowties_problem,
             n_layers=1,
-            quantum_routine=routine,
+            program_factory=factory,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             backend=dummy_simulator,
         )
         ensemble.create_programs()
         assert sorted(ensemble.programs) == [("P0", 4), ("P1", 4)]
-        assert all(
-            isinstance(program, PCE | ProgressivePCE)
-            for program in ensemble.programs.values()
-        )
+        assert all(type(program) is factory for program in ensemble.programs.values())
 
     def test_partitioned_run_accepts_checkpointing(
         self, dummy_simulator, two_bowties_problem, tmp_path
     ):
         ensemble = PartitioningProgramEnsemble(
             problem=two_bowties_problem,
+            program_factory=QAOA,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=1,
@@ -1532,14 +1532,14 @@ class TestTSPPartitioning:
 
 @pytest.mark.e2e
 class TestTSPPartitioningE2E:
-    @pytest.mark.parametrize("routine", ["qaoa", "pce"])
+    @pytest.mark.parametrize("factory", [QAOA, PCE])
     def test_partitioned_ensemble_returns_valid_tour(
-        self, default_test_simulator, two_bowties_problem, routine
+        self, default_test_simulator, two_bowties_problem, factory
     ):
         ensemble = PartitioningProgramEnsemble(
             problem=two_bowties_problem,
             n_layers=1,
-            quantum_routine=routine,
+            program_factory=factory,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=3,
             backend=default_test_simulator,

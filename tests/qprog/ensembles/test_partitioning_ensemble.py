@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from divi.qprog import EarlyStopping, VariationalQuantumAlgorithm
-from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
+from divi.qprog.algorithms import PCE, QAOA, VQE, IterativeQAOA
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensembles import (
     BeamSearchStrategy,
@@ -19,7 +19,6 @@ from divi.qprog.mixins import SolutionEntry
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
-    MaxCutProblem,
     MaxWeightMatchingProblem,
     QUBOPartitioningConfig,
     is_valid_matching,
@@ -32,6 +31,7 @@ _DEFAULT_OPTIMIZER = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)
 def _make_stub_problem(mocker, solution_size=4):
     """Create a mock QAOAProblem that supports the decomposition protocol."""
     problem = mocker.MagicMock()
+    problem.candidate_feasibility = "ignore"
     problem.decompose.return_value = {}
     problem.initial_solution_size.return_value = solution_size
     problem.order_partitions.side_effect = list
@@ -48,7 +48,6 @@ def _make_stub_problem(mocker, solution_size=4):
 def _make_mock_program(mocker, best_probs, top_solutions):
     """Create a mock VQA program with the given best_probs and top_solutions."""
     prog = mocker.MagicMock(spec=QAOA)
-    prog.problem = BinaryOptimizationProblem({(0,): -1.0})
     prog.best_probs = best_probs
     prog.losses_history = [1.0]
     prog.results = {"some": "result"}
@@ -61,25 +60,12 @@ def _make_ensemble(problem, backend, **overrides):
     """Construct a PartitioningProgramEnsemble with the common test defaults."""
     kwargs = {
         "problem": problem,
-        "n_layers": 1,
         "backend": backend,
         "optimizer": _DEFAULT_OPTIMIZER,
+        "program_factory": QAOA,
         **overrides,
     }
     return PartitioningProgramEnsemble(**kwargs)
-
-
-@pytest.mark.parametrize("routine", ["pce", "progressive_pce"])
-def test_pce_routines_reject_graph_problems(dummy_simulator, routine):
-    """A PCE routine on a graph problem fails at construction with a clear error."""
-    with pytest.raises(
-        TypeError, match=f"quantum_routine='{routine}' does not support graph"
-    ):
-        _make_ensemble(
-            MaxCutProblem(nx.path_graph(4)),
-            dummy_simulator,
-            quantum_routine=routine,
-        )
 
 
 _CONFLICT_CANDIDATES = [
@@ -135,78 +121,47 @@ def _attach_program_with_candidates(ensemble, mocker, decoded_candidates):
 _TWO_VARIABLE_QUBO = np.array([[1.0, -2.0], [0.0, 1.0]])
 
 
-@pytest.mark.parametrize(
-    "routine, engine_cls, depth_attrs",
-    [
-        pytest.param("qaoa", QAOA, {"n_layers": 2, "max_iterations": 7}, id="qaoa"),
-        pytest.param("pce", PCE, {"n_layers": 2, "max_iterations": 7}, id="pce"),
-        pytest.param(
-            "iterative_qaoa",
-            IterativeQAOA,
-            {"_max_depth": 2, "_max_iterations_per_depth": 7},
-            id="iterative_qaoa",
-        ),
-    ],
-)
-def test_children_are_built_from_the_routine_configuration(
-    mocker, dummy_simulator, routine, engine_cls, depth_attrs
-):
-    """Each child is the routine's engine with the ensemble's depth, a private
-    early-stopping copy, a seed derived per slot and the forwarded engine kwargs."""
+def _make_two_partition_problem(mocker):
+    """A stub problem decomposing into two two-variable QUBO partitions."""
     problem = _make_stub_problem(mocker, solution_size=2)
     problem.decompose.return_value = {
         pid: BinaryOptimizationProblem(_TWO_VARIABLE_QUBO) for pid in ("A", "B")
     }
-    early_stopping = EarlyStopping(patience=3)
-    ensemble = _make_ensemble(
-        problem,
-        dummy_simulator,
-        n_layers=2,
-        quantum_routine=routine,
-        max_iterations=7,
-        early_stopping=early_stopping,
-        reporting_level="off",
-        seed=5,
-    )
-
-    ensemble.create_programs()
-
-    assert ensemble._engine_kwargs == {}
-    assert ensemble.reporting_level == ReportingLevel.OFF
-    children = list(ensemble.programs.values())
-    assert len(children) == 2
-    for slot, child in enumerate(children):
-        assert type(child) is engine_cls
-        for attr, expected in depth_attrs.items():
-            assert getattr(child, attr) == expected
-        assert child._seed == _child_seed(5, slot)
-        assert child.backend is dummy_simulator
-        assert isinstance(child._early_stopping, EarlyStopping)
-        assert child._early_stopping is not early_stopping
-        assert child._early_stopping._loss_history is not early_stopping._loss_history
-        assert child._early_stopping.patience == 3
-        assert child.optimizer is not _DEFAULT_OPTIMIZER
-    assert children[0]._early_stopping is not children[1]._early_stopping
+    return problem
 
 
-def test_explicit_max_iterations_per_depth_wins_for_iterative_qaoa(
-    mocker, dummy_simulator
+@pytest.mark.parametrize(
+    "factory, factory_kwargs",
+    [
+        pytest.param(QAOA, {"n_layers": 2, "max_iterations": 7}, id="qaoa"),
+        pytest.param(PCE, {"n_layers": 2, "max_iterations": 7}, id="pce"),
+        pytest.param(
+            IterativeQAOA,
+            {
+                "max_depth": 2,
+                "max_iterations_per_depth": 7,
+                "convergence_threshold": 0.5,
+            },
+            id="iterative_qaoa",
+        ),
+    ],
+)
+def test_program_classes_accept_the_ensemble_wiring(
+    mocker, dummy_simulator, factory, factory_kwargs
 ):
-    problem = _make_stub_problem(mocker, solution_size=2)
-    problem.decompose.return_value = {
-        "A": BinaryOptimizationProblem(_TWO_VARIABLE_QUBO)
-    }
+    """Each program class builds from the ensemble's wiring and its own kwargs."""
     ensemble = _make_ensemble(
-        problem,
+        _make_two_partition_problem(mocker),
         dummy_simulator,
-        quantum_routine="iterative_qaoa",
-        max_iterations=7,
-        max_iterations_per_depth=3,
+        program_factory=factory,
+        early_stopping=EarlyStopping(patience=3),
+        seed=5,
+        **factory_kwargs,
     )
 
     ensemble.create_programs()
 
-    assert ensemble.programs["A"]._max_iterations_per_depth == 3
+    assert [type(child) for child in ensemble.programs.values()] == [factory, factory]
 
 
 def test_aggregation_extends_from_an_all_zero_global_solution(mocker, dummy_simulator):
@@ -232,6 +187,129 @@ def test_get_top_solutions_defaults_to_ten(mocker, dummy_simulator):
 
 
 class TestPartitioningProgramEnsemble:
+    def test_program_factory_receives_the_ensemble_wiring(
+        self, mocker, dummy_simulator
+    ):
+        """The factory gets each sub-problem, a per-slot seed, private optimizer
+        and early-stopping copies, the backend and the extra kwargs only."""
+        problem = _make_two_partition_problem(mocker)
+        calls = []
+
+        def record(**kwargs):
+            calls.append(kwargs)
+            return mocker.MagicMock(spec=QAOA)
+
+        early_stopping = EarlyStopping(patience=3)
+        ensemble = _make_ensemble(
+            problem,
+            dummy_simulator,
+            program_factory=record,
+            early_stopping=early_stopping,
+            sampling_backend=dummy_simulator,
+            reporting_level="off",
+            seed=5,
+            n_layers=2,
+        )
+
+        ensemble.create_programs()
+
+        assert ensemble.reporting_level == ReportingLevel.OFF
+        expected_keys = {
+            "problem",
+            "seed",
+            "optimizer",
+            "early_stopping",
+            "backend",
+            "n_layers",
+        }
+        assert [set(call) for call in calls] == [expected_keys, expected_keys]
+        for slot, (call, sub_problem) in enumerate(
+            zip(calls, problem.decompose.return_value.values())
+        ):
+            assert call["problem"] is sub_problem
+            assert call["seed"] == _child_seed(5, slot)
+            assert call["backend"] is dummy_simulator
+            assert call["n_layers"] == 2
+            assert call["optimizer"] is not _DEFAULT_OPTIMIZER
+            assert call["early_stopping"] is not early_stopping
+            assert call["early_stopping"].patience == 3
+        assert calls[0]["optimizer"] is not calls[1]["optimizer"]
+        assert calls[0]["early_stopping"] is not calls[1]["early_stopping"]
+
+    def test_program_factory_must_return_solution_sampling_programs(
+        self, mocker, dummy_simulator
+    ):
+        ensemble = _make_ensemble(
+            _make_two_partition_problem(mocker),
+            dummy_simulator,
+            program_factory=lambda **_: mocker.MagicMock(
+                spec=VariationalQuantumAlgorithm
+            ),
+        )
+
+        with pytest.raises(TypeError, match="must sample solutions .* program 'A'"):
+            ensemble.create_programs()
+
+    def test_program_factory_must_build_a_new_program_per_partition(
+        self, mocker, dummy_simulator
+    ):
+        shared = mocker.MagicMock(spec=QAOA)
+        ensemble = _make_ensemble(
+            _make_two_partition_problem(mocker),
+            dummy_simulator,
+            program_factory=lambda **_: shared,
+        )
+
+        with pytest.raises(ValueError, match="Program 'B' is the same object"):
+            ensemble.create_programs()
+
+    def test_failed_factory_leaves_no_programs_behind(self, mocker, dummy_simulator):
+        """A factory failing on a later partition keeps none of the earlier
+        programs, so ``create_programs`` can run again."""
+        factory = mocker.Mock(
+            side_effect=[
+                mocker.MagicMock(spec=QAOA),
+                RuntimeError("factory failed"),
+                mocker.MagicMock(spec=QAOA),
+                mocker.MagicMock(spec=QAOA),
+            ]
+        )
+        ensemble = _make_ensemble(
+            _make_two_partition_problem(mocker),
+            dummy_simulator,
+            program_factory=factory,
+        )
+
+        with pytest.raises(RuntimeError, match="factory failed"):
+            ensemble.create_programs()
+        assert ensemble.programs == {}
+
+        ensemble.create_programs()
+        assert list(ensemble.programs) == ["A", "B"]
+
+    def test_any_solution_sampling_program_aggregates(self, mocker, dummy_simulator):
+        """A non-QAOA/PCE sampling program is aggregated without ``feasibility``
+        when the problem ignores feasibility."""
+        candidates = [SolutionEntry(bitstring="11", prob=1.0, decoded=[1, 1])]
+
+        def make_program(**_):
+            program = mocker.MagicMock(spec=VQE)
+            program.best_probs = {"11": 1.0}
+            program.has_results.return_value = True
+            program.get_top_solutions.return_value = candidates
+            return program
+
+        ensemble = _make_ensemble(
+            _make_two_partition_problem(mocker),
+            dummy_simulator,
+            program_factory=make_program,
+        )
+        ensemble.create_programs()
+
+        assert ensemble.aggregate_results() == ([1, 1], -2)
+        for program in ensemble.programs.values():
+            program.get_top_solutions.assert_called_once_with(n=6, include_decoded=True)
+
     def test_checkpointing_rejects_arbitrary_binary_decomposer(
         self, dummy_simulator, tmp_path
     ):
@@ -353,7 +431,9 @@ class TestStrictAggregation:
 
         assert result == ([1, 1], -2)
         problem.evaluate_global_solution.assert_called()
-        problem.postprocess_candidates.assert_called_once_with([(-2, [1, 1])])
+        problem.postprocess_candidates.assert_called_once_with(
+            [(-2, [1, 1])], strict=False
+        )
 
     def test_aggregate_results_warns_when_postprocessing_rejects_everything(
         self, mocker, dummy_simulator
@@ -410,12 +490,47 @@ class TestStrictAggregation:
             strict=True,
         )
 
-        prog.get_top_solutions.assert_called_once_with(
-            n=2**20, include_decoded=True, feasibility="ignore"
-        )
+        prog.get_top_solutions.assert_called_once_with(n=2**20, include_decoded=True)
         candidates = problem.postprocess_candidates.call_args.args[0]
         assert len(candidates) == 1
         assert candidates[0][1] == [1, 1, 1]
+
+    def test_problem_feasibility_is_passed_to_every_program(
+        self, mocker, dummy_simulator
+    ):
+        problem = _make_stub_problem(mocker, solution_size=2)
+        problem.candidate_feasibility = "filter"
+        ensemble = _make_ensemble(problem, dummy_simulator)
+        ensemble.create_programs()
+        prog = _attach_program_with_candidates(ensemble, mocker, [[1, 1]])
+
+        ensemble.get_top_solutions(
+            n=1,
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None),
+        )
+
+        prog.get_top_solutions.assert_called_once_with(
+            n=2**20, include_decoded=True, feasibility="filter"
+        )
+
+    def test_matching_partitions_are_asked_to_repair(self, mocker, dummy_simulator):
+        ensemble = _make_matching_conflict_ensemble(
+            mocker,
+            dummy_simulator,
+            best_probs={"1": 0.9, "0": 0.1},
+            top_solutions=_CONFLICT_CANDIDATES,
+        )
+
+        ensemble.get_top_solutions(
+            n=1,
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None),
+            strict=True,
+        )
+
+        for program in ensemble.programs.values():
+            program.get_top_solutions.assert_called_once_with(
+                n=2**20, include_decoded=True, feasibility="repair"
+            )
 
     def test_matching_strict_filters_cross_partition_conflict(
         self, mocker, dummy_simulator

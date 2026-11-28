@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from types import SimpleNamespace
-
 import pytest
 
 from divi.qprog.ensembles import BeamSearchStrategy, HierarchicalStrategy
@@ -14,15 +12,16 @@ from divi.qprog.mixins import SolutionEntry
 # ──────────────────────────────────────────────────────────────────────
 
 
+_NO_CANDIDATES_WARNING = "Partition 'A' returned no candidates"
+
+
 class _MockProgram:
     """Minimal mock that implements get_top_solutions."""
-
-    problem = SimpleNamespace(candidate_feasibility="ignore")
 
     def __init__(self, candidates: list[SolutionEntry]):
         self._candidates = candidates
 
-    def get_top_solutions(self, n=10, *, include_decoded=False, feasibility="ignore"):
+    def get_top_solutions(self, n=10, *, include_decoded=False, **kwargs):
         return self._candidates[:n]
 
 
@@ -261,7 +260,7 @@ def test_fetch_count_follows_n_partition_candidates_not_beam_width(mocker):
     )
 
     for spy in spies.values():
-        spy.assert_called_once_with(n=2, include_decoded=True, feasibility="ignore")
+        spy.assert_called_once_with(n=2, include_decoded=True)
 
 
 def test_beam_wider_than_reachable_returns_only_reachable_solutions():
@@ -302,9 +301,7 @@ def test_default_strategy_uses_balanced_search(mocker):
         evaluate_fn=_neg_sum_evaluate,
     )
 
-    get_top_solutions.assert_called_once_with(
-        n=6, include_decoded=True, feasibility="ignore"
-    )
+    get_top_solutions.assert_called_once_with(n=6, include_decoded=True)
     assert result == [(pytest.approx(-1.0), [1, 0])]
 
 
@@ -520,16 +517,17 @@ class TestBeamSearchAggregateEdgeCases:
         assert result == [0, 0, 0]
 
     def test_program_with_no_candidates_skipped(self):
-        """A program returning no candidates is skipped without error."""
+        """A program returning no candidates is skipped with a warning."""
         programs = _mock_programs({"A": []})
 
-        result = beam_search_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=lambda c, p, s: c,
-            evaluate_fn=_sum_evaluate,
-            beam_width=1,
-        )
+        with pytest.warns(UserWarning, match=_NO_CANDIDATES_WARNING):
+            result = beam_search_aggregate(
+                programs=programs,
+                initial_solution=[0, 0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=_sum_evaluate,
+                beam_width=1,
+            )
 
         assert result == [0, 0]
 
@@ -802,9 +800,7 @@ class TestBeamSearchAggregateTopN:
             top_n=10,
         )
 
-        get_top_solutions.assert_called_once_with(
-            n=10, include_decoded=True, feasibility="ignore"
-        )
+        get_top_solutions.assert_called_once_with(n=10, include_decoded=True)
         assert len(results) == 10
 
 
@@ -934,15 +930,16 @@ class TestHierarchicalAggregateBasic:
         assert result == [0, 0, 0]
 
     def test_program_with_no_candidates_skipped(self):
-        """A program returning no candidates is effectively skipped."""
+        """A program returning no candidates is skipped with a warning."""
         programs = _mock_programs({"A": []})
 
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=lambda c, p, s: c,
-            evaluate_fn=_sum_evaluate,
-        )
+        with pytest.warns(UserWarning, match=_NO_CANDIDATES_WARNING):
+            result = hierarchical_aggregate(
+                programs=programs,
+                initial_solution=[0, 0],
+                extend_fn=lambda c, p, s: c,
+                evaluate_fn=_sum_evaluate,
+            )
 
         assert result == [0, 0]
 
@@ -1215,7 +1212,7 @@ class TestHierarchicalAggregateCost:
         assert len(results) == 3
 
 
-@pytest.mark.parametrize(
+_single_candidate_strategies = pytest.mark.parametrize(
     "strategy",
     [
         BeamSearchStrategy(beam_width=1, n_partition_candidates=1),
@@ -1223,6 +1220,9 @@ class TestHierarchicalAggregateCost:
     ],
     ids=["beam", "hierarchical"],
 )
+
+
+@_single_candidate_strategies
 def test_minimum_widths_are_accepted(strategy):
     programs, var_maps = _single_var_programs(2)
 
@@ -1255,13 +1255,14 @@ def test_beam_continues_past_a_partition_without_candidates():
     programs = _mock_programs({"A": [], "B": _binary_candidates()})
     var_maps = {"B": [1]}
 
-    result = beam_search_aggregate(
-        programs=programs,
-        initial_solution=[0, 0],
-        extend_fn=_write_extend(var_maps),
-        evaluate_fn=_neg_sum_evaluate,
-        beam_width=1,
-    )
+    with pytest.warns(UserWarning, match=_NO_CANDIDATES_WARNING):
+        result = beam_search_aggregate(
+            programs=programs,
+            initial_solution=[0, 0],
+            extend_fn=_write_extend(var_maps),
+            evaluate_fn=_neg_sum_evaluate,
+            beam_width=1,
+        )
 
     assert result == [0, 1]
 
@@ -1285,4 +1286,21 @@ def test_hierarchical_fetches_k_per_partition_candidates(mocker):
     )
 
     for spy in spies:
-        spy.assert_called_once_with(n=1, include_decoded=True, feasibility="ignore")
+        spy.assert_called_once_with(n=1, include_decoded=True)
+
+
+@_single_candidate_strategies
+def test_candidate_kwargs_reach_every_program(mocker, strategy):
+    programs, var_maps = _single_var_programs(2)
+    spies = [mocker.spy(program, "get_top_solutions") for program in programs.values()]
+
+    strategy.aggregate(
+        programs,
+        [0, 0],
+        _write_extend(var_maps),
+        _sum_evaluate,
+        feasibility="repair",
+    )
+
+    for spy in spies:
+        spy.assert_called_once_with(n=1, include_decoded=True, feasibility="repair")

@@ -30,7 +30,8 @@ detail on its own page — this section gives a quick overview and links.
 **Problem Decomposition (Graph / QUBO / Matching / Portfolio)**
    :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` decomposes a
    large :class:`~divi.qprog.problems.QAOAProblem` into sub-problems, solves
-   each partition with QAOA (or PCE / IterativeQAOA), and stitches the
+   each partition with the program class or factory passed as
+   ``program_factory`` (for example QAOA, PCE or IterativeQAOA), and stitches the
    per-partition results into a global solution using a configurable
    aggregation strategy (see `Aggregation Strategies`_).  Graph, QUBO,
    matching and portfolio partitioning are all covered in
@@ -253,8 +254,11 @@ cancellation, progress reporting, and accounting.
 
 .. code-block:: python
 
+   from divi.qprog.algorithms import QAOA
+
    ensemble = PartitioningProgramEnsemble(
        ...,
+       program_factory=QAOA,
        backend=optimisation_backend,
        sampling_backend=sampling_backend,
    )
@@ -619,10 +623,12 @@ is rendered. It is a :class:`~divi.qprog.ensembles.ReportingLevel`:
 
 .. code-block:: python
 
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.ensembles import ReportingLevel
 
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=2,
        backend=backend,
        optimizer=optimizer,

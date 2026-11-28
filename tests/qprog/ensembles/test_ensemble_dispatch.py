@@ -2025,6 +2025,7 @@ def _small_partitioning_ensemble(backend, *, materialise=True, **kwargs):
     kwargs.setdefault("optimizer", ScipyOptimizer(method=ScipyMethod.NELDER_MEAD))
     ensemble = PartitioningProgramEnsemble(
         problem=problem,
+        program_factory=QAOA,
         n_layers=1,
         max_iterations=2,
         backend=backend,

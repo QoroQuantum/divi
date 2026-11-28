@@ -5,15 +5,14 @@
 """Partitioning a large problem into many quantum sub-programs.
 
 ``PartitioningProgramEnsemble`` decomposes one big problem into smaller
-sub-problems, runs a quantum routine on each, and aggregates the results.
+sub-problems, solves each with a quantum program, and aggregates the results.
 This tutorial shows three distinct entry points:
 
 1. **Graph-level partitioning** — split a graph by topology (METIS), solve
    MaxCut on each cluster, then aggregate via greedy/beam search.
 2. **QUBO-level partitioning** — split a BQM two ways: the structure-aware
    ``CommunityDecomposer`` (with a ``local_search`` polish) and D-Wave
-   Ocean's ``hybrid`` ``EnergyImpactDecomposer``; compare two quantum routines
-   (QAOA vs PCE) on the same partitioned problem.
+   Ocean's ``hybrid`` ``EnergyImpactDecomposer``; compare two program classes\n   (QAOA vs PCE) on the same partitioned problem.
 3. **Edge-based partitioning** — use ``MaxWeightMatchingProblem``'s edge
    budget plus a Kernighan-Lin partitioner to chunk a weighted graph into
    matching-sized sub-instances.
@@ -33,7 +32,13 @@ import numpy as np
 from qiskit.circuit.library import RYGate, RZGate
 
 from divi.qprog import EarlyStopping
-from divi.qprog.algorithms import DenseEncoding, GenericLayerAnsatz, SoftObjective
+from divi.qprog.algorithms import (
+    PCE,
+    QAOA,
+    DenseEncoding,
+    GenericLayerAnsatz,
+    SoftObjective,
+)
 from divi.qprog.ensembles import (
     BeamSearchStrategy,
     HierarchicalStrategy,
@@ -89,12 +94,12 @@ def _cut_ratio(quantum_solution, classical_cut_size: int, graph: nx.Graph) -> fl
 
 
 def _run_qubo_partitioning(
-    problem: BinaryOptimizationProblem, engine: str, engine_kwargs: dict
+    problem: BinaryOptimizationProblem, engine: type, engine_kwargs: dict
 ) -> dict:
-    """Run one quantum routine on a decomposed BQM."""
+    """Run one program class on a decomposed BQM."""
     ensemble = PartitioningProgramEnsemble(
         problem=problem,
-        quantum_routine=engine,
+        program_factory=engine,
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=30,
@@ -232,6 +237,7 @@ if __name__ == "__main__":
 
     maxcut_ensemble = PartitioningProgramEnsemble(
         problem=maxcut_problem,
+        program_factory=QAOA,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=20,
@@ -299,10 +305,10 @@ if __name__ == "__main__":
     )
 
     results_by_engine = {
-        "qaoa": _run_qubo_partitioning(qaoa_problem, engine="qaoa", engine_kwargs={}),
+        "qaoa": _run_qubo_partitioning(qaoa_problem, QAOA, engine_kwargs={}),
         "pce": _run_qubo_partitioning(
             pce_problem,
-            engine="pce",
+            PCE,
             engine_kwargs={
                 "ansatz": GenericLayerAnsatz([RYGate, RZGate]),
                 "encoding": DenseEncoding(),
@@ -335,6 +341,7 @@ if __name__ == "__main__":
 
     matching_ensemble = PartitioningProgramEnsemble(
         problem=matching_problem,
+        program_factory=QAOA,
         n_layers=1,
         backend=get_backend(),
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),

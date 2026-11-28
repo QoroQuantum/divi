@@ -286,8 +286,6 @@ class _MatchingPartition(BinaryOptimizationProblem):
     """The matching QUBO of one partition's edges, whose candidates aggregation
     repairs into matchings and ranks by weight."""
 
-    candidate_feasibility = "repair"
-
     def __init__(
         self, edges: Sequence[_Edge], weights: Sequence[float], penalty_weight: float
     ):
@@ -388,6 +386,8 @@ class MaxWeightMatchingProblem(QAOAProblem):
                      backend=MaestroSimulator())
         qaoa.run()
     """
+
+    candidate_feasibility = "repair"
 
     def __init__(
         self,

@@ -1000,6 +1000,7 @@ _PARTITIONING_CONFIG = GraphPartitioningConfig(
 _PROBLEM = MaxCutProblem(_GRAPH, config=_PARTITIONING_CONFIG)
 _ENSEMBLE_ARGS = {
     "problem": _PROBLEM,
+    "program_factory": QAOA,
     "n_layers": 1,
     "optimizer": ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
     "max_iterations": 10,
@@ -1080,9 +1081,7 @@ def test_partitioned_solution_names_nodes_like_unpartitioned(
 
 
 class TestGraphPartitioningEnsemble:
-    def test_correct_number_of_programs_created(self, mocker, graph_ensemble):
-        mocker.patch("divi.qprog.ensembles._partitioning_ensemble.QAOA")
-
+    def test_correct_number_of_programs_created(self, graph_ensemble):
         graph_ensemble.create_programs()
 
         assert len(graph_ensemble.programs) >= _PARTITIONING_CONFIG.minimum_n_clusters

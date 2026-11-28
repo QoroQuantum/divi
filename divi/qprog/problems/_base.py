@@ -226,10 +226,14 @@ class QAOAProblem(ABC):
             "Override decompose() to enable partitioning workflows."
         )
 
+    def _has_reproducible_decomposition(self) -> bool:
+        """Whether repeated decomposition preserves program-slot meaning."""
+        return True
+
     candidate_feasibility: Literal["ignore", "filter", "repair"] = "ignore"
-    """How partition aggregation ranks this problem's candidates when it is a
-    partition: the ``feasibility`` passed to the program's ``get_top_solutions``.
-    ``"ignore"`` ranks by probability."""
+    """``feasibility`` that partition aggregation passes to each partition
+    program's ``get_top_solutions``; ``"ignore"`` passes none, so candidates
+    rank by probability."""
 
     def order_partitions(self, prog_ids: Sequence[Hashable]) -> list[Hashable]:
         """Order in which aggregation places the partitions.

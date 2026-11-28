@@ -19,6 +19,7 @@ import pytest
 import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.qprog.algorithms import QAOA
 from divi.qprog.ensembles import PartitioningProgramEnsemble
 from divi.qprog.problems import (
     GraphPartitioningConfig,
@@ -395,6 +396,7 @@ def test_partitioned_rx_ensemble_returns_node_indices(
     problem, _ = _partitioned(MaxCutProblem, graph, "spectral")
     ensemble = PartitioningProgramEnsemble(
         problem=problem,
+        program_factory=QAOA,
         n_layers=1,
         backend=default_test_simulator,
         optimizer=default_optimizer,

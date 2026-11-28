@@ -117,8 +117,8 @@ pair whose edge exchange adds the least cost.
   (Hungarian), for QAOA and PCE alike.
 - Binary: there is no repair; such a sub-solution is replaced by its cities in
   index order.
-- ``quantum_routine="pce"`` runs :class:`~divi.qprog.algorithms.PCE` on the
-  groups instead of QAOA.
+- ``program_factory=PCE`` runs :class:`~divi.qprog.algorithms.PCE` on the
+  groups.
 - The cost matrix must be finite and symmetric, and at least one group needs
   three cities.
 - Each group's default ``penalty_weight`` comes from its own costs; an explicit
@@ -128,11 +128,13 @@ pair whose edge exchange adds the least cost.
 
 .. code-block:: python
 
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.ensembles import PartitioningProgramEnsemble
 
    problem = TSPProblem(cost, max_cities_per_partition=4)
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=1,
        optimizer=optimizer,
        backend=backend,

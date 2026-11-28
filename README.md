@@ -65,6 +65,7 @@ stitch their candidates into a global solution:
 import networkx as nx
 
 from divi.backends import MaestroSimulator
+from divi.qprog.algorithms import QAOA
 from divi.qprog.ensembles import BeamSearchStrategy
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
@@ -82,6 +83,7 @@ problem = MaxCutProblem(
 backend = MaestroSimulator()
 ensemble = PartitioningProgramEnsemble(
     problem=problem,
+    program_factory=QAOA,
     n_layers=1,
     backend=backend,
     optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),

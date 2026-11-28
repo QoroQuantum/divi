@@ -763,6 +763,7 @@ assets, and returns ``(decoded, objective)``.
    import numpy as np
 
    from divi.backends import MaestroSimulator
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import PortfolioSelectionProblem, QUBOPartitioningConfig
    from divi.qprog.ensembles import PartitioningProgramEnsemble
@@ -783,6 +784,7 @@ assets, and returns ``(decoded, objective)``.
    )
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=1,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=5,
@@ -827,6 +829,7 @@ Edge-based partitioning is enabled with ``max_edges_per_partition``:
 
 .. code-block:: python
 
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.ensembles import PartitioningProgramEnsemble
 
    problem = MaxWeightMatchingProblem(
@@ -838,6 +841,7 @@ Edge-based partitioning is enabled with ``max_edges_per_partition``:
 
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
@@ -991,6 +995,7 @@ partitions a graph problem configured for partitioning via
 .. code-block:: python
 
    import networkx as nx
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import MaxCutProblem, GraphPartitioningConfig
    from divi.qprog.ensembles import PartitioningProgramEnsemble
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -1011,6 +1016,7 @@ partitions a graph problem configured for partitioning via
 
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=10,
@@ -1057,18 +1063,11 @@ QUBO Partitioning (QAOA or PCE)
 
 :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` partitions a
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` configured with D-Wave's hybrid decomposer/composer.
-The per-partition engine is chosen via ``quantum_routine``:
+``program_factory`` is required and selects the per-partition program class.
+The ensemble passes its remaining keyword arguments to every partition's
+program, so give the arguments that class takes.
 
-- ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.
-- ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding`` and ``objective``).
-- ``quantum_routine="progressive_pce"``: :class:`~divi.qprog.algorithms.ProgressivePCE` partitions;
-  ``max_iterations`` is the budget per step, and ``initial_alpha``,
-  ``threshold`` and the other ProgressivePCE kwargs are passed directly.
-- ``quantum_routine="iterative_qaoa"``: :class:`~divi.qprog.algorithms.IterativeQAOA` partitions with warm-started depth progression.
-  Pass ``strategy``, ``max_iterations_per_depth``, and other IterativeQAOA-specific kwargs
-  directly; ``n_layers`` is used as ``max_depth``.
-
-The examples share one BQM and setup; only routine-specific problem and
+The examples share one BQM and setup; only program-specific problem and
 ensemble arguments change:
 
 .. code-block:: python
@@ -1076,10 +1075,17 @@ ensemble arguments change:
    import dimod
    import hybrid
    from qiskit.circuit.library import RYGate, RZGate
-   from divi.qprog.algorithms import DenseEncoding, InterpolationStrategy, SoftObjective
+   from divi.qprog.algorithms import (
+       PCE,
+       QAOA,
+       DenseEncoding,
+       GenericLayerAnsatz,
+       InterpolationStrategy,
+       IterativeQAOA,
+       SoftObjective,
+   )
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.ensembles import PartitioningProgramEnsemble
-   from divi.qprog.algorithms import GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -1092,7 +1098,7 @@ ensemble arguments change:
    optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
    backend = MaestroSimulator()
 
-   # --- QAOA partitions (default ``quantum_routine``): add a composer ---
+   # --- QAOA partitions, with an explicit composer ---
    problem = BinaryOptimizationProblem(
        large_bqm,
        decomposer=decomposer,
@@ -1100,6 +1106,7 @@ ensemble arguments change:
    )
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=2,
        optimizer=optimizer,
        max_iterations=10,
@@ -1111,7 +1118,7 @@ ensemble arguments change:
    problem = BinaryOptimizationProblem(large_bqm, decomposer=decomposer)
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
-       quantum_routine="pce",
+       program_factory=PCE,
        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
        n_layers=2,
        encoding=DenseEncoding(),
@@ -1126,8 +1133,8 @@ ensemble arguments change:
    problem = BinaryOptimizationProblem(large_bqm, decomposer=decomposer)
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
-       quantum_routine="iterative_qaoa",
-       n_layers=2,  # used as max_depth
+       program_factory=IterativeQAOA,
+       max_depth=2,
        strategy=InterpolationStrategy.INTERP,
        max_iterations_per_depth=10,
        optimizer=optimizer,
@@ -1137,9 +1144,45 @@ ensemble arguments change:
 
 The hybrid ``decomposer`` and optional ``composer`` are configured on
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` (how the large BQM is split
-and, for the default QAOA path, stitched back together). The helper only groups
+and stitched back together; ``composer`` defaults to ``hybrid.SplatComposer``).
+The helper only groups
 the usual ensemble calls; for progress output, circuit batching, and Ctrl+C
 behaviour, see :doc:`../execution_workflows/program_ensembles`.
+
+Custom Partition Programs
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This applies to every partitioned problem, not only QUBOs. ``program_factory``
+can be any callable returning a new program that samples solutions
+(:class:`~divi.qprog.mixins.SolutionSamplingMixin`), such as a subclass or a
+function that prepares each partition's program. The ensemble calls it with
+each partition's ``problem`` together with ``seed``, ``optimizer``,
+``early_stopping`` and ``backend``:
+
+.. code-block:: python
+
+   from divi.qprog.algorithms import QAOA
+
+   def build_program(problem, **kwargs):
+       return QAOA(problem, n_layers=3, max_iterations=20, **kwargs)
+
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       program_factory=build_program,
+       optimizer=optimizer,
+       backend=backend,
+   )
+
+A custom program must meet the contract aggregation relies on:
+
+- **Decoded candidates** follow the partition's own variable order, with any
+  ancilla qubits already marginalised, as the problem's ``decode_fn`` produces
+  them.
+- **Feasibility.** When the problem's ``candidate_feasibility`` is not
+  ``"ignore"``, aggregation passes it as ``feasibility`` to each program's
+  ``get_top_solutions``, so that method must accept it.
+- **Determinism.** The factory is called again when a checkpoint is restored,
+  so it must build the same programs for the same partitions.
 
 Structure-Aware Partitioning (Community Decomposer)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1172,6 +1215,7 @@ solution.
 
 .. code-block:: python
 
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import CommunityDecomposer, QUBOPartitioningConfig
 
    problem = BinaryOptimizationProblem(
@@ -1184,6 +1228,7 @@ solution.
    )
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
+       program_factory=QAOA,
        n_layers=2,
        optimizer=optimizer,
        max_iterations=10,

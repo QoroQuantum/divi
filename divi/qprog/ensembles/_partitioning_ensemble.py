@@ -4,17 +4,13 @@
 
 import copy
 import warnings
+from collections.abc import Callable
 from functools import partial
-from typing import Literal
 
 from divi.backends import CircuitRunner
-from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA, ProgressivePCE
+from divi.qprog.mixins import SolutionSamplingMixin
 from divi.qprog.optimizers import Optimizer
-from divi.qprog.problems import (
-    BinaryOptimizationProblem,
-    GraphProblemBase,
-    QAOAProblem,
-)
+from divi.qprog.problems import QAOAProblem
 
 from ._aggregation import AggregationStrategy, BeamSearchStrategy
 from ._base import ProgramEnsemble, ReportingLevel, _child_seed
@@ -30,17 +26,15 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     Args:
         problem: A :class:`~divi.qprog.problems.QAOAProblem` configured for decomposition
             (e.g. ``MaxCutProblem(graph, config=...)``).
-        n_layers: Number of ansatz layers per sub-program; the maximum depth
-            for ``"iterative_qaoa"``.
         backend: Backend for circuit execution.
-        optimizer: Optimizer for each sub-program.
-        quantum_routine: Per-partition quantum algorithm.
-            ``"qaoa"`` (default), ``"pce"``, ``"progressive_pce"``, or
-            ``"iterative_qaoa"``.
-        max_iterations: Max optimisation iterations per sub-program; per depth
-            for ``"iterative_qaoa"`` and per step for ``"progressive_pce"``,
-            unless ``max_iterations_per_depth`` or ``max_iterations_per_step``
-            is passed.
+        optimizer: Optimizer for each sub-program; every sub-program gets its
+            own copy.
+        program_factory: Program class or callable returning a new
+            solution-sampling program for each sub-problem. It must build the
+            same program for the same sub-problem every time, decode
+            candidates in the sub-problem's own variable order, and accept
+            ``feasibility`` in ``get_top_solutions`` when the problem sets
+            ``candidate_feasibility``.
         **kwargs: If ``early_stopping`` is present it is extracted and
             deep-copied per sub-program.  ``reporting_level`` accepts a
             :class:`~divi.qprog.ensembles.ReportingLevel` controlling how much live
@@ -48,19 +42,16 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             separate backend for final solution sampling.  ``seed`` seeds
             each sub-program with its own seed derived from it and the
             sub-problem's position in the decomposition.  Remaining
-            kwargs are forwarded to the engine constructor.
+            kwargs are passed to ``program_factory`` for every sub-program.
     """
 
     def __init__(
         self,
         problem: QAOAProblem,
-        n_layers: int,
+        *,
         backend: CircuitRunner,
         optimizer: Optimizer,
-        quantum_routine: Literal[
-            "qaoa", "pce", "progressive_pce", "iterative_qaoa"
-        ] = "qaoa",
-        max_iterations: int = 10,
+        program_factory: Callable[..., SolutionSamplingMixin],
         **kwargs,
     ):
         super().__init__(
@@ -69,62 +60,14 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
         )
         self._problem = problem
-        self.quantum_routine = quantum_routine
-        self.max_iterations = max_iterations
         self._optimizer_template = optimizer
         self._early_stopping_template = kwargs.pop("early_stopping", None)
         self._seed = kwargs.pop("seed", None)
-        self._engine_kwargs = kwargs
-
-        # Build the engine constructor partial
-        _ENGINE_MAP = {
-            "qaoa": (QAOA, dict(max_iterations=max_iterations, n_layers=n_layers)),
-            "pce": (PCE, dict(max_iterations=max_iterations, n_layers=n_layers)),
-            "progressive_pce": (
-                ProgressivePCE,
-                dict(max_iterations_per_step=max_iterations, n_layers=n_layers),
-            ),
-            "iterative_qaoa": (
-                IterativeQAOA,
-                dict(max_depth=n_layers, max_iterations_per_depth=max_iterations),
-            ),
-        }
-
-        routine = quantum_routine.lower()
-        if routine not in _ENGINE_MAP:
-            raise ValueError(
-                f"Unsupported quantum_routine: {quantum_routine!r}. "
-                f"Supported values are {', '.join(map(repr, _ENGINE_MAP))}."
-            )
-
-        self._engine_cls, engine_args = _ENGINE_MAP[routine]
-
-        # PCE needs BinaryOptimizationProblem partitions; graph problems yield graph sub-problems.
-        if routine in ("pce", "progressive_pce") and isinstance(
-            self._problem, GraphProblemBase
-        ):
-            raise TypeError(
-                f"quantum_routine={routine!r} does not support graph problems "
-                f"({type(self._problem).__name__}): their partitions are graph "
-                "sub-problems, which PCE cannot consume. Use quantum_routine='qaoa' "
-                "or 'iterative_qaoa', or model the problem as a QUBO with "
-                "BinaryOptimizationProblem."
-            )
-
-        self._constructor = partial(
-            self._engine_cls, backend=backend, **{**engine_args, **self._engine_kwargs}
-        )
+        self._constructor = partial(program_factory, backend=backend, **kwargs)
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
-
-    def _make_program_args(self) -> dict:
-        """Return common kwargs for instantiating a sub-program."""
-        return dict(
-            optimizer=self._optimizer_template.copy(),
-            early_stopping=copy.deepcopy(self._early_stopping_template),
-        )
 
     def _check_best_probs_available(self):
         """Validate that all programs have computed final probabilities."""
@@ -138,24 +81,41 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     # ------------------------------------------------------------------
 
     def create_programs(self, state=None):
-        """Decompose the problem and create quantum programs for each sub-problem."""
+        """Decompose the problem and create quantum programs for each sub-problem.
+
+        Raises:
+            TypeError: If a sub-program does not sample solutions.
+            ValueError: If a sub-program is the same object as an earlier one.
+        """
         super().create_programs()
+        programs = {}
         sub_problems = self._problem.decompose()
         for slot, (prog_id, sub_problem) in enumerate(sub_problems.items()):
-            self._programs[prog_id] = self._constructor(
+            program = self._constructor(
                 problem=sub_problem,
                 seed=_child_seed(self._seed, slot),
-                **self._make_program_args(),
+                optimizer=self._optimizer_template.copy(),
+                early_stopping=copy.deepcopy(self._early_stopping_template),
             )
+            if not isinstance(program, SolutionSamplingMixin):
+                raise TypeError(
+                    "Partition sub-programs must sample solutions "
+                    f"(SolutionSamplingMixin); program {prog_id!r} is "
+                    f"{type(program).__name__}."
+                )
+            if any(program is other for other in programs.values()):
+                raise ValueError(
+                    f"Program {prog_id!r} is the same object as an earlier "
+                    "partition's; build a new program for every partition."
+                )
+            programs[prog_id] = program
+        self._programs.update(programs)
 
     def _child_recovery_states(self):
-        if (
-            isinstance(self._problem, BinaryOptimizationProblem)
-            and not self._problem._has_reproducible_decomposition()
-        ):
+        if not self._problem._has_reproducible_decomposition():
             raise ValueError(
                 "Ensemble checkpointing requires a deterministic decomposer for "
-                "BinaryOptimizationProblem."
+                f"{type(self._problem).__name__}."
             )
         return super()._child_recovery_states()
 
@@ -163,6 +123,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         def _extend_fn(current, prog_id, candidate):
             return self._problem.extend_solution(current, prog_id, candidate.decoded)
 
+        feasibility = self._problem.candidate_feasibility
+        candidate_kwargs = (
+            {} if feasibility == "ignore" else {"feasibility": feasibility}
+        )
         order = self._problem.order_partitions(list(self._programs))
         return strategy.aggregate(
             programs={prog_id: self._programs[prog_id] for prog_id in order},
@@ -170,9 +134,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             extend_fn=_extend_fn,
             evaluate_fn=self._problem.evaluate_global_solution,
             top_n=top_n,
+            **candidate_kwargs,
         )
 
-    def aggregate_results(self, strategy: AggregationStrategy | None = None):
+    def aggregate_results(self, strategy: AggregationStrategy = BeamSearchStrategy()):
         """Aggregate partition results into a global solution.
 
         Args:
@@ -185,14 +150,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             ``QAOAProblem.postprocess_candidates``), or ``None`` if
             post-processing rejects all candidates.
         """
-        super().aggregate_results()
-        self._check_best_probs_available()
-
-        if strategy is None:
-            strategy = BeamSearchStrategy()
-
-        candidates = self._aggregate(strategy, top_n=1)
-        results = self._problem.postprocess_candidates(candidates)
+        results = self.get_top_solutions(1, strategy=strategy)
         if not results:
             warnings.warn(
                 "aggregate_results produced no valid post-processed solution "
@@ -210,7 +168,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self,
         n=10,
         *,
-        strategy: AggregationStrategy | None = None,
+        strategy: AggregationStrategy = BeamSearchStrategy(),
         strict: bool = False,
     ):
         """Get the top-N global solutions from partition aggregation.
@@ -234,9 +192,6 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
 
         self._check_ready_for_aggregation()
         self._check_best_probs_available()
-
-        if strategy is None:
-            strategy = BeamSearchStrategy()
 
         top_results = self._aggregate(strategy, top_n=n)
 

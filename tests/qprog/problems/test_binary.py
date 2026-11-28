@@ -16,6 +16,7 @@ import divi.qprog.problems._binary as binary_module
 from divi.backends import CircuitRunner
 from divi.hamiltonians import BinaryPolynomialProblem, to_spo
 from divi.qprog.algorithms import (
+    PCE,
     QAOA,
     GenericLayerAnsatz,
     MultiBasisEncoding,
@@ -945,6 +946,7 @@ def qubo_ensemble_qaoa(sample_qubo_matrix, default_test_simulator):
     """Provides a PartitioningProgramEnsemble with BinaryOptimizationProblem for testing."""
     return PartitioningProgramEnsemble(
         problem=make_decomposed_problem(sample_qubo_matrix),
+        program_factory=QAOA,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
@@ -958,7 +960,7 @@ def qubo_ensemble_pce(sample_qubo_matrix, basic_ansatz, default_test_simulator):
     return PartitioningProgramEnsemble(
         problem=make_decomposed_problem(sample_qubo_matrix),
         n_layers=1,
-        quantum_routine="pce",
+        program_factory=PCE,
         ansatz=basic_ansatz,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=10,
@@ -967,37 +969,23 @@ def qubo_ensemble_pce(sample_qubo_matrix, basic_ansatz, default_test_simulator):
 
 
 class TestQUBOPartitioningEnsemble:
-    def test_correct_initialization(self, qubo_ensemble_qaoa, sample_qubo_matrix):
-        assert qubo_ensemble_qaoa.max_iterations == 10
-        assert qubo_ensemble_qaoa.quantum_routine == "qaoa"
-
-    def test_create_programs(self, mocker, qubo_ensemble_qaoa):
-        mock_constructor = mocker.MagicMock()
-        qubo_ensemble_qaoa._constructor = mock_constructor
-
+    def test_create_programs(self, qubo_ensemble_qaoa):
         qubo_ensemble_qaoa.create_programs()
 
         assert len(qubo_ensemble_qaoa.programs) == 2
-        assert mock_constructor.call_count == 2
+        assert all(type(p) is QAOA for p in qubo_ensemble_qaoa.programs.values())
 
-    def test_correct_initialization_pce(self, qubo_ensemble_pce, sample_qubo_matrix):
-        assert qubo_ensemble_pce.quantum_routine == "pce"
+    def test_create_programs_pce(self, qubo_ensemble_pce):
+        qubo_ensemble_pce.create_programs()
 
-    def test_invalid_engine_raises(self, sample_qubo_matrix, dummy_simulator):
-        with pytest.raises(ValueError, match="Unsupported quantum_routine"):
-            PartitioningProgramEnsemble(
-                problem=make_decomposed_problem(sample_qubo_matrix),
-                n_layers=1,
-                optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-                quantum_routine="invalid",
-                backend=dummy_simulator,
-            )
+        assert all(type(p) is PCE for p in qubo_ensemble_pce.programs.values())
 
     def test_trivial_subproblem_is_skipped(self, dummy_simulator):
         problem = make_decomposed_problem(TRIVIAL_QUBO)
 
         ensemble = PartitioningProgramEnsemble(
             problem=problem,
+            program_factory=QAOA,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             backend=dummy_simulator,
@@ -1034,6 +1022,7 @@ class TestQUBOPartitioningEnsemble:
         """Verify exact solutions and energies for a known QUBO problem."""
         ensemble = PartitioningProgramEnsemble(
             problem=make_decomposed_problem(make_known_qubo_bqm()),
+            program_factory=QAOA,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -1070,6 +1059,7 @@ class TestQUBOPartitioningEnsemble:
         as beam search."""
         ensemble = PartitioningProgramEnsemble(
             problem=make_decomposed_problem(make_known_qubo_bqm()),
+            program_factory=QAOA,
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -1135,6 +1125,7 @@ class TestQUBOPartitioningEnsemble:
 
         ensemble = PartitioningProgramEnsemble(
             problem=make_decomposed_problem(make_known_qubo_bqm()),
+            program_factory=QAOA,
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -1159,7 +1150,7 @@ class TestQUBOPartitioningEnsemble:
         ensemble = PartitioningProgramEnsemble(
             problem=make_decomposed_problem(make_known_qubo_bqm()),
             n_layers=2,
-            quantum_routine="pce",
+            program_factory=PCE,
             ansatz=basic_ansatz,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -1186,7 +1177,7 @@ class TestQUBOPartitioningEnsemble:
         ensemble = PartitioningProgramEnsemble(
             problem=make_decomposed_problem(bqm),
             n_layers=2,
-            quantum_routine="pce",
+            program_factory=PCE,
             encoding=MultiBasisEncoding(),
             ansatz=basic_ansatz,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -1213,10 +1204,10 @@ class TestQUBOPartitioningEnsemble:
         ensemble = PartitioningProgramEnsemble(
             problem=make_decomposed_problem(make_known_qubo_bqm()),
             n_layers=2,
-            quantum_routine="progressive_pce",
+            program_factory=ProgressivePCE,
             ansatz=basic_ansatz,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-            max_iterations=15,
+            max_iterations_per_step=15,
             backend=make_maestro_simulator(),
             seed=1997,
         )
@@ -1517,6 +1508,7 @@ class TestCommunityDecomposer:
         problem = self._community_problem(make_known_qubo_bqm(), local_search=True)
         ensemble = PartitioningProgramEnsemble(
             problem=problem,
+            program_factory=QAOA,
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,

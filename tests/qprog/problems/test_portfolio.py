@@ -682,6 +682,7 @@ def _selection_objectives(problem):
 def _partitioned_ensemble(problem, backend, max_iterations=5):
     return PartitioningProgramEnsemble(
         problem=problem,
+        program_factory=QAOA,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=max_iterations,

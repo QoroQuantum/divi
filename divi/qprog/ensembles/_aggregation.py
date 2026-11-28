@@ -17,6 +17,7 @@ Two strategies are provided:
   commitment via a pairwise merge tree.
 """
 
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -24,8 +25,7 @@ from heapq import nsmallest
 from operator import itemgetter
 from typing import Any
 
-from divi.qprog.algorithms import PCE, QAOA
-from divi.qprog.mixins import SolutionEntry
+from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 
 ExtendFn = Callable[[list[int], Any, SolutionEntry], list[int]]
 EvaluateFn = Callable[[list[int]], float]
@@ -33,12 +33,24 @@ EvaluateFn = Callable[[list[int]], float]
 _score = itemgetter(0)
 
 
-def _fetch_candidates(program: QAOA | PCE, n: int) -> list[SolutionEntry]:
-    """The top ``n`` decoded candidates of ``program``, ranked as its problem's
-    ``candidate_feasibility`` asks."""
-    return program.get_top_solutions(
-        n=n, include_decoded=True, feasibility=program.problem.candidate_feasibility
+def _fetch_candidates(
+    prog_id: Any,
+    program: SolutionSamplingMixin,
+    n: int,
+    candidate_kwargs: Mapping[str, Any],
+) -> list[SolutionEntry]:
+    """The top ``n`` decoded candidates of ``program``; warns when there are none."""
+    candidates = program.get_top_solutions(
+        n=n, include_decoded=True, **candidate_kwargs
     )
+    if not candidates:
+        warnings.warn(
+            f"Partition {prog_id!r} returned no candidates; its variables keep "
+            "their initial values in every aggregated solution.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return candidates
 
 
 class AggregationStrategy(ABC):
@@ -52,22 +64,24 @@ class AggregationStrategy(ABC):
     @abstractmethod
     def aggregate(
         self,
-        programs: Mapping[Any, QAOA | PCE],
+        programs: Mapping[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
         top_n: int = 1,
+        **candidate_kwargs: Any,
     ) -> list[tuple[float, list[int]]]:
         """Aggregate per-partition candidates into the top-N global solutions.
 
         Args:
-            programs: Mapping of program IDs to executed
-                :class:`~divi.qprog.VariationalQuantumAlgorithm` instances.
+            programs: Mapping of program IDs to executed solution-sampling
+                programs.
             initial_solution: Starting global solution vector (typically all zeros).
             extend_fn: ``(current_solution, prog_id, candidate) -> extended_solution``;
                 splices a partition's candidate into the global vector.
             evaluate_fn: ``(solution) -> float``. Lower is better.
             top_n: Number of top solutions to return.
+            **candidate_kwargs: Passed to every program's ``get_top_solutions``.
 
         Returns:
             List of ``(score, solution)`` tuples sorted ascending by score
@@ -118,11 +132,12 @@ class BeamSearchStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: Mapping[Any, QAOA | PCE],
+        programs: Mapping[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
         top_n: int = 1,
+        **candidate_kwargs: Any,
     ) -> list[tuple[float, list[int]]]:
         if top_n < 1:
             raise ValueError(f"top_n must be >= 1, got {top_n}")
@@ -146,7 +161,7 @@ class BeamSearchStrategy(AggregationStrategy):
         ]
 
         for prog_id, program in programs.items():
-            candidates = _fetch_candidates(program, n_fetch)
+            candidates = _fetch_candidates(prog_id, program, n_fetch, candidate_kwargs)
             if not candidates:
                 continue
 
@@ -238,11 +253,12 @@ class HierarchicalStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: Mapping[Any, QAOA | PCE],
+        programs: Mapping[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
         top_n: int = 1,
+        **candidate_kwargs: Any,
     ) -> list[tuple[float, list[int]]]:
         if top_n < 1:
             raise ValueError(f"top_n must be >= 1, got {top_n}")
@@ -259,7 +275,9 @@ class HierarchicalStrategy(AggregationStrategy):
             return [(evaluate_fn(initial_list), initial_list)][:top_n]
 
         candidates_by_prog: dict[Any, list[SolutionEntry]] = {
-            pid: _fetch_candidates(programs[pid], self.k_per_partition)
+            pid: _fetch_candidates(
+                pid, programs[pid], self.k_per_partition, candidate_kwargs
+            )
             for pid in prog_ids
         }
 

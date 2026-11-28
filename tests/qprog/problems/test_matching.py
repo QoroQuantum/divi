@@ -653,13 +653,12 @@ class TestMaxWeightMatchingProblem:
         p = MaxWeightMatchingProblem(
             nx.path_graph(6), max_edges_per_partition=2, partition_algorithm=algorithm
         )
-        subs = p.decompose()
+        p.decompose()
         partitioned = {i for ids in p._edge_index_maps.values() for i in ids}
 
         assert all(len(ids) == 2 for ids in p._edge_index_maps.values())
         assert sorted(partitioned | set(p._preset_edges)) == list(range(5))
         assert not partitioned & set(p._preset_edges)
-        assert all(sub.candidate_feasibility == "repair" for sub in subs.values())
 
     def test_partition_repairs_candidates_into_its_heaviest_matching(self):
         graph = nx.Graph()
@@ -1173,6 +1172,7 @@ class TestMaxWeightMatchingProblemE2E:
         default_test_simulator.set_seed(42)
         ensemble = PartitioningProgramEnsemble(
             problem=problem,
+            program_factory=QAOA,
             n_layers=2,
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),

@@ -309,7 +309,7 @@ def solve_partitioned_tsp(
     problem = TSPProblem(dist_matrix, max_cities_per_partition=max_cities_per_partition)
     ensemble = PartitioningProgramEnsemble(
         problem=problem,
-        quantum_routine="qaoa",
+        program_factory=QAOA,
         n_layers=n_layers,
         optimizer=MonteCarloOptimizer(
             population_size=population_size,
