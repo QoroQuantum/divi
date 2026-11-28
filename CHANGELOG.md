@@ -7,6 +7,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0](https://github.com/QoroQuantum/divi/compare/v0.16.2...v0.17.0) (2026-11-28)
+
+
+### ✨ Added
+
+* **lassqd:** split LUCJ layers by spin channel and regularise the refit ([8aa6db9](https://github.com/QoroQuantum/divi/commit/8aa6db9a411b425b37ba590c38753078f6ea06c8))
+* **qprog:** add ADAPT-VQE with qubit-excitation, Pauli and CEO pools ([#110](https://github.com/QoroQuantum/divi/issues/110)) ([3b299cc](https://github.com/QoroQuantum/divi/commit/3b299cc2da28f50fad5fb60d5492f50b726d9e4e))
+* **qprog:** add QSCI and a PySCF QSCISolver ([#108](https://github.com/QoroQuantum/divi/issues/108)) ([4df95a3](https://github.com/QoroQuantum/divi/commit/4df95a376201c62a768f45ea776ffb747a4fcca7))
+* **qprog:** add RotosolveOptimizer ([545cf74](https://github.com/QoroQuantum/divi/commit/545cf74ca7429c5f828bc1b666d4bbcedbe26d5a))
+* **qprog:** add UpCCDAnsatz and a ReferenceStateAnsatz base ([c09508f](https://github.com/QoroQuantum/divi/commit/c09508f03db90a24cae353043b198d09f8fbe40f))
+* **qprog:** build partition programs from a required program_factory ([71e60ef](https://github.com/QoroQuantum/divi/commit/71e60ef6c9ac91fb8f532734cd824e38a10b9fd5))
+* **qprog:** derive parameter-shift rules from circuit gates ([a5664b2](https://github.com/QoroQuantum/divi/commit/a5664b2d786255704f57d50bb72178afa6417012))
+* **qprog:** start populations within each parameter's period ([c1f548c](https://github.com/QoroQuantum/divi/commit/c1f548ccab6a092426873a32e16a6bdf01d9c6be))
+* **vqe:** measure spin-resolved reduced density matrices ([6f54eea](https://github.com/QoroQuantum/divi/commit/6f54eea72b456a46625ab11e3676b21def8d59b3))
+* **vqe:** solve PySCF active spaces with VQE through VQEFCISolver ([56ef18c](https://github.com/QoroQuantum/divi/commit/56ef18cc4f646593c2db793465a53b538929b6d0))
+
+
+### 🐛 Fixed
+
+* **qasm:** bind parameter names only inside gate arguments ([6780fd1](https://github.com/QoroQuantum/divi/commit/6780fd112e7fa60738af1f3c6e36c7d72ed4efc7))
+* **qasm:** reject parameter names Qoro cloud would substitute elsewhere ([94f575a](https://github.com/QoroQuantum/divi/commit/94f575a4c02ab0a50c3c9ded574a3a7a5146a8bf))
+* **qprog:** build QCCAnsatz from odd-Y excitation entanglers ([084dfbb](https://github.com/QoroQuantum/divi/commit/084dfbbbd2e3e07e4902bb903b2bfae7313df82b))
+* **qprog:** differentiate non-linear data-binding losses per sample ([43efd00](https://github.com/QoroQuantum/divi/commit/43efd00e40f08a5e3250e3a19b0683dc5fb47ded))
+
+
+### 🔄 Changed
+
+* **pipeline:** group Pauli terms natively and pass measurement results as position dicts ([3eb119f](https://github.com/QoroQuantum/divi/commit/3eb119f42c93572c5511d5ad358ae5e6f76cd374))
+* **qprog:** differentiate every loss through its expectation values ([a41799a](https://github.com/QoroQuantum/divi/commit/a41799aeb37d424c3d6c472d0456990859286118))
+* **qprog:** evaluate loss gradients for a batch of parameter sets ([169ec64](https://github.com/QoroQuantum/divi/commit/169ec649941a72533818152e7f1d4586589f1728))
+* **viz:** take gradients and Hessians from the program ([c58f3cd](https://github.com/QoroQuantum/divi/commit/c58f3cd7cc5bea98b73fae73193c5d3614a6de7d))
+
+
+### 📝 Documentation
+
+* add PySCF, UpCCD, QCC and LASSQD chemistry tutorials ([c64265f](https://github.com/QoroQuantum/divi/commit/c64265f5b3efbe91653042e00ac4da7beb929a13))
+* slim the optimizer guide and move per-class detail into docstrings ([6b79ac0](https://github.com/QoroQuantum/divi/commit/6b79ac04ad91d6e773314382d173c8d88837de0f))
+
 ## [0.16.2](https://github.com/QoroQuantum/divi/compare/v0.16.1...v0.16.2) (2026-11-19)
 
 ### ✨ Added
