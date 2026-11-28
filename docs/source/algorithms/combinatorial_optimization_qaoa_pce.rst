@@ -1239,7 +1239,7 @@ solution.
 Next Steps
 ----------
 
-- `tutorials/optimization/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/optimization>`_ — QAOA/PCE/partitioning examples: ``qubo_qaoa_vs_pce.py``, ``qaoa_graph_problems.py``, ``qaoa_partitioning.py``, ``qaoa_hubo.py``, ``qaoa_qdrift.py``, ``iterative_qaoa.py``, ``qaoa_portfolio.py``; routing in `tutorials/routing/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/routing>`_ (``ce_qaoa_routing.py``)
+- `tutorials/optimization/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/optimization>`_ — QAOA/PCE/partitioning examples: ``qubo_qaoa_vs_pce.py``, ``qaoa_graph_problems.py``, ``qaoa_partitioning.py``, ``qaoa_hubo.py``, ``qaoa_qdrift.py``, ``iterative_qaoa.py``, ``qaoa_portfolio.py``, ``qaoa_portfolio_sectors.py``; routing in `tutorials/routing/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/routing>`_ (``ce_qaoa_routing.py``)
 - :doc:`routing` — TSP and CVRP with constraint-preserving encodings
 - :doc:`../api_reference/qprog/optimizers` — available optimizers and their parameters
 - :doc:`../execution_workflows/backends` — simulators and services

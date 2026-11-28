@@ -73,6 +73,7 @@ NO_PATCHES = [
     "chemistry/adapt_vqe_lih.py",
     "chemistry/lassqd_ethylene_uvvis.py",
     "chemistry/qsci_lih.py",
+    "optimization/qaoa_portfolio_sectors.py",
 ]
 
 TUTORIALS: dict[str, dict] = {

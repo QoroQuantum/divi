@@ -52,6 +52,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 - **`qaoa_qdrift.py`** — QAOA with QDrift randomized Trotterization
 - **`iterative_qaoa.py`** — Iterative QAOA with parameter interpolation vs standard QAOA
 - **`qaoa_portfolio.py`** — Mean-variance portfolios: pick K assets under an ESG floor with XY-mixer QAOA, and choose weights on a grid with PCE, both checked against exhaustive search
+- **`qaoa_portfolio_sectors.py`** — Sector-balanced portfolios (exactly 2 of 4 names in each of three sectors): one global XY ring with a sector penalty against a complete XY mixer inside each sector, started from a Dicke state per sector, with filter, repair and a random-plus-repair baseline
 
 ### `routing/`
 
